@@ -254,6 +254,7 @@ class ClaudeLiveSession(LiveSession):
             cwd=spec.cwd,
             system_prompt=system_prompt,  # type: ignore[arg-type]
             permission_mode=spec.permission_mode or None,  # type: ignore[arg-type]
+            extra_args={"allow-dangerously-skip-permissions": None},  # lets the mode picker switch to bypass mid-session
             model=spec.model or None,
             effort=spec.effort or None,  # type: ignore[arg-type]
             settings=_effort_settings(spec.effort),

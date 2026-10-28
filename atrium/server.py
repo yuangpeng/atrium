@@ -348,7 +348,11 @@ async def interrupt(pid: str, sid: str):
 
 @app.post("/api/p/{pid}/sessions/{sid}/mode")
 async def set_mode(pid: str, sid: str, body: dict[str, Any] = Body(...)):
-    await sessions.set_mode(P(pid), sid, body["mode"])
+    project = P(pid)
+    try:
+        await sessions.set_mode(project, sid, body["mode"])
+    except Exception as e:  # e.g. the CLI refusing the mode: show its reason instead of a bare 500
+        raise HTTPException(400, str(e) or type(e).__name__)
     return {"ok": True}
 
 
