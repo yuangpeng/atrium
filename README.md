@@ -100,7 +100,7 @@ Atrium binds to `127.0.0.1` and has **no authentication** — don't expose it.
 
 | Path | What |
 |---|---|
-| `~/.atrium/settings.json` | Atrium settings: defaults per harness (mode / model / effort), tracker, Git Agent, web keys (`chmod 600`; env vars take precedence), extra MCP servers |
+| `~/.atrium/settings.json` | Atrium settings: defaults per harness (mode / model / effort), tracker, Git Agent, desktop notifications, web keys (`chmod 600`; env vars take precedence), extra MCP servers |
 | `~/.atrium/config.json` | the project list |
 | `~/.atrium/uploads/` | composer attachments |
 | `~/.atrium/backups/` | the previous versions of config files saved from Settings (last 20 each) |
@@ -122,6 +122,14 @@ Codex's `~/.codex/config.toml` plus the project's `.codex/config.toml`. Saves ar
 The editor's language servers are configured under `lsp` there (`enabled`, `commands` to override
 the server per language, `python.typeCheckingMode`).
 
+**Notifications.** Agents keep running when you close the page; Atrium posts a desktop notification
+when one asks for approval (or asks a question) and when its turn ends — except for a session whose
+chat is open in a visible, focused tab. On macOS they go through `osascript` (they show up as
+*Script Editor*; allow it under System Settings → Notifications), or through `terminal-notifier` if
+it is installed (`brew install terminal-notifier`), which groups them per session and opens the
+session when clicked. Linux uses `notify-send`. Toggle them under `notifications` in `settings.json`
+(`enabled`, `permission`, `turn_end`, `sound`).
+
 ## Architecture
 
 ```
@@ -134,6 +142,7 @@ atrium/
   harness/codex_rpc.py   the shared JSON-RPC client for `codex app-server`
   sessions.py            live session manager (start/resume, streaming, permissions, idle reaping,
                          turn snapshots)
+  notify.py              desktop notifications (approval requests, finished turns) unless watched
   config.py, configfiles.py  Atrium settings; the raw config-file editor (validate, conflict, backup)
   snapshots.py           turn snapshots as git tree objects
   board/                 board store + HTML template, board tools, system prompts

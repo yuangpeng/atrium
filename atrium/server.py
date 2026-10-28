@@ -682,6 +682,8 @@ async def ws(socket: WebSocket):
                 hub.subscribe(sub, topic)
             elif op == "unsub" and topic:
                 hub.unsubscribe(sub, topic)
+            elif op == "presence":
+                sub.active = bool(msg.get("active"))
             elif op == "ping":
                 await socket.send_json({"topic": "_", "type": "pong"})
     except (WebSocketDisconnect, RuntimeError):

@@ -42,6 +42,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "codex": {"enabled": True, "binary": "codex", "permission_mode": "auto", "model": "", "effort": ""},
     },
     "sessions": {"idle_close_minutes": 30},
+    # Desktop notifications when an agent asks for approval or finishes a turn — skipped while its
+    # chat is open in a focused browser tab. macOS: terminal-notifier if installed (click opens the
+    # session), else osascript; Linux: notify-send.
+    "notifications": {"enabled": True, "permission": True, "turn_end": True, "sound": True},
     # Background Tracker Agent (one per project)
     "tracker": {
         "enabled": True,

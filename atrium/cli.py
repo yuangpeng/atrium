@@ -23,6 +23,7 @@ def main() -> None:
     logging.basicConfig(level=args.log_level.upper(), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
     url = f"http://{args.host}:{args.port}/"
+    os.environ.setdefault("ATRIUM_URL", url)  # links in desktop notifications
     if args.project:
         from .config import config
 

@@ -17,6 +17,7 @@ class Subscriber:
     def __init__(self) -> None:
         self.queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=5000)
         self.topics: set[str] = set()
+        self.active: bool = False  # the browser page is visible and focused (reported over the socket)
 
 
 class Hub:
@@ -38,6 +39,10 @@ class Hub:
     def drop(self, sub: Subscriber) -> None:
         for t in list(sub.topics):
             self.unsubscribe(sub, t)
+
+    def watching(self, topic: str) -> bool:
+        """Whether someone is looking at ``topic``: an active page is subscribed to it."""
+        return any(sub.active for sub in self._subs.get(topic, ()))
 
     def publish(self, topic: str, event: dict[str, Any]) -> None:
         """Publish from the event loop thread."""

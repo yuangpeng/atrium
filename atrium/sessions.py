@@ -21,6 +21,7 @@ from .harness import all_harnesses, get_harness
 from .harness.base import Attachment, Item, LiveSession, LiveSpec, SessionSummary
 from .harness.util import upload_url
 from .mcp.web import WEB_SERVER, web_toolset
+from .notify import notifier
 from .project import Project
 
 log = logging.getLogger("atrium.sessions")
@@ -146,17 +147,21 @@ class SessionManager:
             topic = f"session:{h.sid}"
             ptopic = f"project:{h.project.id}"
             if kind == "state":
-                h.state = item["state"]
+                prev, h.state = h.state, item["state"]
                 hub.publish(ptopic, {"type": "session_state", "session_id": h.sid, "state": h.state, "pending": len(h.pending)})
                 if h.role == "worker" and h.sid in self.live:
                     h.project.board.update_agent(h.sid, stats={"live": h.state if h.alive else None, "last_active": h.last_activity})
+                if h.state == "error" and prev in ("running", "waiting"):
+                    notifier.failed(h)
             elif kind == "permission":
                 h.pending[item["id"]] = item
                 hub.publish(ptopic, {"type": "session_state", "session_id": h.sid, "state": "waiting", "pending": len(h.pending)})
+                notifier.permission(h, item)
             elif kind == "permission_resolved":
                 h.pending.pop(item["id"], None)
             elif kind == "result":
                 asyncio.get_running_loop().create_task(self._turn_ended(h))
+                notifier.turn_ended(h, item)
             hub.publish(topic, {"type": "item", "item": item})
 
         return emit

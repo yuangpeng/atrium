@@ -1,6 +1,10 @@
 // Single multiplexed websocket with topic subscriptions and auto-reconnect.
+// Also reports whether the page is active (visible and focused): the server skips desktop
+// notifications for sessions whose chat is open in an active page.
 
 type Handler = (msg: any) => void;
+
+const pageActive = () => document.visibilityState === "visible" && document.hasFocus();
 
 class Socket {
   private ws: WebSocket | null = null;
@@ -8,10 +12,16 @@ class Socket {
   private backoff = 500;
   private reconnectListeners = new Set<() => void>();
   private everConnected = false;
+  private active = pageActive();
   connected = false;
 
   constructor() {
     this.connect();
+    // read after the event settles: focus moving into an iframe still counts as this page
+    const update = () => setTimeout(() => this.setActive(pageActive()));
+    document.addEventListener("visibilitychange", update);
+    window.addEventListener("focus", update);
+    window.addEventListener("blur", update);
   }
 
   private url() {
@@ -26,6 +36,7 @@ class Socket {
       this.connected = true;
       this.backoff = 500;
       for (const topic of this.handlers.keys()) ws.send(JSON.stringify({ op: "sub", topic }));
+      ws.send(JSON.stringify({ op: "presence", active: this.active }));
       if (this.everConnected) this.reconnectListeners.forEach((f) => f());
       this.everConnected = true;
     };
@@ -67,6 +78,12 @@ class Socket {
   onReconnect(f: () => void): () => void {
     this.reconnectListeners.add(f);
     return () => this.reconnectListeners.delete(f);
+  }
+
+  private setActive(active: boolean) {
+    if (active === this.active) return;
+    this.active = active;
+    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify({ op: "presence", active }));
   }
 }
 
