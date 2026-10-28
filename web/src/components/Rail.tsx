@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { api, SessionRow } from "../api";
 import { useApp } from "../store";
+import { hasContent, useDrafts } from "../drafts";
 import { clsx, displayName, timeAgo } from "../util";
 import { Popover, useTick } from "./ui";
 
@@ -253,6 +254,7 @@ function AgentsFlyout({ onClose }: { onClose: () => void }) {
 export function Rail() {
   useTick(30000);
   const { project, sessions, sessionId, selectSession, setPickerOpen, setSettingsOpen, theme, setTheme, setPanel } = useApp();
+  const draftWaiting = useDrafts((s) => hasContent(s.byProject[project?.id ?? ""]));
   const [tip, setTip] = useState<{ el: HTMLElement; content: ReactNode } | null>(null);
   const [flyout, setFlyout] = useState(false);
   const glyphs = useGlyphs();
@@ -279,8 +281,9 @@ export function Rail() {
       </button>
       {project && (
         <>
-          <button className={clsx("rail-btn rail-new", !sessionId && "on")} onClick={() => selectSession(null)} aria-label="New agent">
+          <button className={clsx("rail-btn rail-new", !sessionId && "on")} onClick={() => selectSession(null)} aria-label={draftWaiting ? "New agent (draft saved)" : "New agent"}>
             <SquarePen size={17} />
+            {draftWaiting && sessionId && <span className="draft-dot" />}
           </button>
           <div className="rail-sep" />
           <div className="rail-agents">

@@ -185,7 +185,9 @@ a { color: var(--accent-strong); }
 .rail-btn { width: 34px; height: 34px; border-radius: 9px; border: 0; background: transparent; color: var(--muted); cursor: pointer; display: grid; place-items: center; flex: none; }
 .rail-btn:hover { background: var(--hover); color: var(--text); }
 .rail-btn.on { background: var(--active); color: var(--text); }
-.rail-new { color: var(--accent-strong); }
+.rail-new { color: var(--accent-strong); position: relative; }
+/* something typed on the new-agent page is waiting there */
+.rail-new .draft-dot { position: absolute; top: 4px; right: 4px; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); border: 2px solid var(--sidebar); }
 .rail-sep { width: 20px; height: 1px; background: var(--border); margin: 4px 0; flex: none; }
 /* full rail width + vertical padding: the scroll box clips, and the selection ring / badges sit outside the avatar */
 .rail-agents { flex: 0 1 auto; min-height: 0; align-self: stretch; overflow-y: auto; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 7px 0; scrollbar-width: none; }

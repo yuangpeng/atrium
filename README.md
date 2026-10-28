@@ -71,7 +71,10 @@ A project-centric workbench for coding agents — Claude Code and Codex side by 
    to the model as images (base64 for Claude, `localImage` for Codex), other files are passed by
    path. Next to send there is a **reasoning-effort** picker (`Auto` = whatever the harness config
    says; Claude low…max, applied mid-session; Codex per turn, from the model's supported levels).
-   Sending while a Codex turn runs steers that turn.
+   Sending while a Codex turn runs steers that turn. The new-agent page keeps a **draft** per project
+   (name, task, attachments, workspace / harness / mode / model / effort) in the browser's
+   localStorage: open another agent, hide the chat or reload, and it's still there until the agent
+   starts; a dot on the rail's new-agent button says one is waiting.
 
 ## Quick start
 

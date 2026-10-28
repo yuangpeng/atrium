@@ -1,38 +1,32 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ArrowUp, FolderGit2, GitBranchPlus } from "lucide-react";
 import { api } from "../api";
 import { useApp } from "../store";
+import { EMPTY_DRAFT, NewAgentDraft, Workspace, useDrafts } from "../drafts";
 import { clsx, relTo } from "../util";
 import { Popover, Spinner } from "./ui";
-import { AttachButton, AttachmentTray, EffortPicker, effortOptions, useAttachments } from "../chat/Composer";
-
-type Workspace = { kind: "root" } | { kind: "worktree"; path: string; branch: string | null } | { kind: "new"; branch: string; base: string };
+import { AttachButton, AttachmentTray, EffortPicker, PendingUpload, effortOptions, useAttachments } from "../chat/Composer";
 
 export function Home() {
   const { project, meta, selectSession, toast, refreshSessions, refreshProject } = useApp();
-  const [name, setName] = useState("");
-  const [prompt, setPrompt] = useState("");
-  const [ws, setWs] = useState<Workspace>({ kind: "root" });
-  const [harnessId, setHarnessId] = useState<string>(meta?.settings.defaults?.harness || "claude-code");
-  const defaults = meta?.settings.harnesses?.[harnessId] ?? {};
-  const [mode, setMode] = useState<string>(defaults.permission_mode || "");
-  const [model, setModel] = useState<string>(defaults.model || "");
-  const [effort, setEffort] = useState<string>(defaults.effort || "");
+  // what's typed and picked here is the project's draft, kept outside this component (../drafts)
+  const pid = project?.id ?? "";
+  const draft = useDrafts((s) => s.byProject[pid]) ?? EMPTY_DRAFT;
+  const update = useDrafts((s) => s.update);
+  const patch = (p: Partial<NewAgentDraft>) => update(pid, (d) => ({ ...d, ...p }));
+  const setAttachments = useCallback(
+    (fn: (xs: PendingUpload[]) => PendingUpload[]) => update(pid, (d) => ({ ...d, attachments: fn(d.attachments) })),
+    [pid, update],
+  );
+  const att = useAttachments([draft.attachments, setAttachments]);
+  const { name, prompt } = draft;
   const [busy, setBusy] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
-  const att = useAttachments();
-
-  // switching harness loads that harness's defaults from ~/.atrium/settings.json
-  useEffect(() => {
-    const d = meta?.settings.harnesses?.[harnessId] ?? {};
-    const h = meta?.harnesses.find((x) => x.id === harnessId);
-    setMode(d.permission_mode || h?.permission_modes[0]?.id || "");
-    setModel(d.model || "");
-    setEffort(d.effort || "");
-  }, [harnessId, meta]);
 
   useEffect(() => {
-    ref.current?.focus();
+    const el = ref.current;
+    el?.focus();
+    el?.setSelectionRange(el.value.length, el.value.length); // carry on at the end of a restored draft
   }, [project?.id]);
   useLayoutEffect(() => {
     const el = ref.current;
@@ -42,9 +36,18 @@ export function Home() {
   }, [prompt]);
 
   if (!project || !meta) return null;
-  const harness = meta.harnesses.find((h) => h.id === harnessId) ?? meta.harnesses[0];
+  // picks left unset follow the harness's defaults from ~/.atrium/settings.json
+  const harness = meta.harnesses.find((h) => h.id === (draft.harness ?? (meta.settings.defaults?.harness || "claude-code"))) ?? meta.harnesses[0];
+  const defaults = meta.settings.harnesses?.[harness.id] ?? {};
+  const mode = draft.mode ?? (defaults.permission_mode || harness.permission_modes[0]?.id || "");
+  const model = draft.model ?? (defaults.model || "");
+  const effort = draft.effort ?? (defaults.effort || "");
   const worktrees = project.worktrees.filter((w) => !w.main);
   const currentBranch = project.worktrees.find((w) => w.main)?.branch || "HEAD";
+  // a worktree removed since the draft was written falls back to the project directory
+  const saved = draft.ws;
+  const ws: Workspace = saved.kind === "worktree" && !worktrees.some((w) => w.path === saved.path) ? { kind: "root" } : saved;
+  const setWs = (ws: Workspace) => patch({ ws });
 
   const { efforts, fallback } = effortOptions(harness, model);
   const canStart = !!prompt.trim() && !busy && !att.uploading && harness.available;
@@ -57,7 +60,7 @@ export function Home() {
       const res = await api.createSession(project.id, {
         name: name.trim(),
         prompt: prompt.trim(),
-        harness: harnessId,
+        harness: harness.id,
         mode,
         model: model || undefined,
         effort: effort || undefined,
@@ -65,9 +68,8 @@ export function Home() {
         cwd: ws.kind === "worktree" ? ws.path : undefined,
         worktree: ws.kind === "new" ? { branch: ws.branch.trim(), base: ws.base || undefined, create: true } : undefined,
       });
-      setPrompt("");
-      setName("");
       att.clear();
+      update(project.id, () => EMPTY_DRAFT);
       if (ws.kind === "new") void refreshProject();
       await refreshSessions();
       selectSession(res.id);
@@ -93,14 +95,14 @@ export function Home() {
       <div className="composer">
         <div className={clsx("composer-box", att.dragging && "dragging")} {...att.dropProps}>
           {att.picker}
-          <input className="name-input" placeholder="Agent name (optional)" title="Leave empty and the Tracker names it" value={name} onChange={(e) => setName(e.target.value)} />
+          <input className="name-input" placeholder="Agent name (optional)" title="Leave empty and the Tracker names it" value={name} onChange={(e) => patch({ name: e.target.value })} />
           <textarea
             ref={ref}
             className="composer-input"
             rows={3}
             placeholder="Describe the task"
             value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
+            onChange={(e) => patch({ prompt: e.target.value })}
             onPaste={att.onPaste}
             onKeyDown={(e) => {
               if (e.key === "Enter" && (e.metaKey || e.ctrlKey || !e.shiftKey) && !e.nativeEvent.isComposing) {
@@ -123,7 +125,8 @@ export function Home() {
             {meta.harnesses.length > 1 && (
               <label className={clsx("chip", "harness-chip")} title={harness.available ? "Harness" : harness.unavailable_reason ?? ""}>
                 {harness.label}
-                <select value={harnessId} onChange={(e) => setHarnessId(e.target.value)}>
+                {/* another harness: back to its defaults */}
+                <select value={harness.id} onChange={(e) => patch({ harness: e.target.value, mode: undefined, model: undefined, effort: undefined })}>
                   {meta.harnesses.map((h) => (
                     <option key={h.id} value={h.id} disabled={!h.available}>
                       {h.label}
@@ -181,7 +184,7 @@ export function Home() {
             )}
             <label className="chip" title="Permission mode">
               {harness.permission_modes.find((m) => m.id === mode)?.label ?? mode}
-              <select value={mode} onChange={(e) => setMode(e.target.value)}>
+              <select value={mode} onChange={(e) => patch({ mode: e.target.value })}>
                 {harness.permission_modes.map((m) => (
                   <option key={m.id} value={m.id}>
                     {m.label}
@@ -191,7 +194,7 @@ export function Home() {
             </label>
             <label className="chip" title="Model">
               {harness.models.find((m) => m.id === model)?.label ?? (model || "Default model")}
-              <select value={model} onChange={(e) => setModel(e.target.value)}>
+              <select value={model} onChange={(e) => patch({ model: e.target.value })}>
                 {harness.models.map((m) => (
                   <option key={m.id || "d"} value={m.id}>
                     {m.label}
@@ -201,7 +204,7 @@ export function Home() {
             </label>
             </div>
             <div className="bar-end">
-              <EffortPicker efforts={efforts} value={effort} fallback={fallback} onChange={setEffort} />
+              <EffortPicker efforts={efforts} value={effort} fallback={fallback} onChange={(effort) => patch({ effort })} />
               <button className="send-btn" disabled={!canStart} onClick={() => void start()} title="Start agent (Enter)">
                 {busy ? <Spinner /> : <ArrowUp size={17} strokeWidth={2.4} />}
               </button>

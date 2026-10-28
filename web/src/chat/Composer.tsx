@@ -11,14 +11,18 @@ export interface PendingUpload {
   key: string;
   name: string;
   mime: string;
-  preview?: string; // object URL for local image previews
+  preview?: string; // object URL for local image previews (the upload's URL once restored from a saved draft)
   upload?: Upload;
   error?: string;
 }
 
-export function useAttachments() {
+type SetItems = (fn: (xs: PendingUpload[]) => PendingUpload[]) => void;
+
+/** Pending attachments, held by the component unless `state` keeps them elsewhere (the new-agent draft). */
+export function useAttachments(state?: [PendingUpload[], SetItems]) {
   const toast = useApp((s) => s.toast);
-  const [items, setItems] = useState<PendingUpload[]>([]);
+  const local = useState<PendingUpload[]>([]);
+  const [items, setItems]: [PendingUpload[], SetItems] = state ?? local;
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -38,7 +42,7 @@ export function useAttachments() {
           });
       }
     },
-    [toast],
+    [toast, setItems],
   );
 
   const remove = (key: string) =>
@@ -49,7 +53,7 @@ export function useAttachments() {
     });
   const clear = () => {
     items.forEach((x) => x.preview && URL.revokeObjectURL(x.preview));
-    setItems([]);
+    setItems(() => []);
   };
 
   const onPaste = (e: React.ClipboardEvent) => {
