@@ -76,6 +76,7 @@ export interface Meta {
   version: string;
   harnesses: Harness[];
   settings: Settings;
+  lsp: Record<string, { server: string }>; // Monaco language id -> language server on this machine
 }
 
 export interface Project {
@@ -452,6 +453,7 @@ export const api = {
       "GET",
       `/api/p/${pid}/git/diff${q({ path, root, staged })}`,
     ),
+  gitInit: (pid: string) => req("POST", `/api/p/${pid}/git/init`),
   gitStage: (pid: string, paths: string[], root?: string) => req("POST", `/api/p/${pid}/git/stage`, { paths, root }),
   gitUnstage: (pid: string, paths: string[], root?: string) => req("POST", `/api/p/${pid}/git/unstage`, { paths, root }),
   gitDiscard: (pid: string, paths: string[], root?: string) => req("POST", `/api/p/${pid}/git/discard`, { paths, root }),

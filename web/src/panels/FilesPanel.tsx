@@ -1,10 +1,12 @@
 import type { JSX } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, ChevronRight, Eye, EyeOff, File, FilePlus, Folder, FolderOpen, FolderPlus, Pencil, RefreshCw, Trash2, X } from "lucide-react";
+import { ChevronDown, ChevronRight, CircleAlert, Eye, EyeOff, File, FilePlus, Folder, FolderOpen, FolderPlus, Lock, Pencil, RefreshCw, Trash2, TriangleAlert, X } from "lucide-react";
 import { api, ApiError, DirEntry } from "../api";
-import { useApp } from "../store";
-import { basename, clsx, languageFor, throttle } from "../util";
+import { FileTarget, useApp } from "../store";
+import { basename, clsx, languageFor, shortPath, throttle } from "../util";
 import { CodeEditor } from "../components/LazyEditors";
+import type { Reveal } from "../components/Editors";
+import { editorBridge, useEditorStatus } from "../editorStatus";
 
 interface OpenFile {
   key: string;
@@ -16,7 +18,36 @@ interface OpenFile {
   sha: string | null;
   binary: boolean;
   diskChanged: boolean;
-  line?: number;
+  external?: boolean; // outside the project (a library the language server pointed at): read-only
+  reveal?: Reveal;
+}
+
+const toReveal = (t?: FileTarget): Reveal | undefined => (t?.line ? { line: t.line, column: t.column, nonce: Date.now() } : undefined);
+
+/** Language server state + problem counts for the open file. */
+function EditorStatusLine({ path, language }: { path: string; language: string }) {
+  const st = useEditorStatus((s) => s.files[path]);
+  const server = useApp((s) => s.meta?.lsp?.[language]?.server);
+  if (!server) return null;
+  const name = (st?.server ?? server).replace(/-langserver$/, "");
+  return (
+    <div className="editor-status">
+      <span className={clsx("lsp-dot", st?.state ?? "connecting")} />
+      <span title={st?.detail}>{st?.state === "unavailable" ? `${name} unavailable` : st?.state === "ready" ? name : `starting ${name}…`}</span>
+      {st?.state === "ready" && (
+        <>
+          <span className={clsx("count", st.errors > 0 && "err")}>
+            <CircleAlert size={12} /> {st.errors}
+          </span>
+          <span className={clsx("count", st.warnings > 0 && "warn")}>
+            <TriangleAlert size={12} /> {st.warnings}
+          </span>
+        </>
+      )}
+      <span className="grow" />
+      {st?.state === "ready" && <span className="faint hide-narrow">⌘-click to go to definition · ⇧F12 references</span>}
+    </div>
+  );
 }
 
 export function FilesPanel() {
@@ -68,7 +99,7 @@ export function FilesPanel() {
     const changed = new Set(fsPaths);
     setOpen((files) => {
       files.forEach((f) => {
-        if (!changed.has(f.abs)) return;
+        if (f.external || !changed.has(f.abs)) return;
         void api.file(pid, f.path, f.root).then((d) => {
           setOpen((cur) =>
             cur.map((x) => {
@@ -85,17 +116,18 @@ export function FilesPanel() {
   }, [fsVersion]);
 
   const openFile = useCallback(
-    async (rootPath: string, rel: string, line?: number) => {
+    async (rootPath: string, rel: string, target?: FileTarget) => {
       const key = `${rootPath}::${rel}`;
+      const reveal = toReveal(target);
       const existing = open.find((f) => f.key === key);
       if (existing) {
         setActive(key);
-        if (line) setOpen((cur) => cur.map((f) => (f.key === key ? { ...f, line } : f)));
+        if (reveal) setOpen((cur) => cur.map((f) => (f.key === key ? { ...f, reveal } : f)));
         return;
       }
       try {
         const d = await api.file(pid, rel, rootPath);
-        const f: OpenFile = { key, root: rootPath, path: d.path, abs: d.abs, content: d.content ?? "", saved: d.content ?? "", sha: d.sha, binary: d.binary, diskChanged: false, line };
+        const f: OpenFile = { key, root: rootPath, path: d.path, abs: d.abs, content: d.content ?? "", saved: d.content ?? "", sha: d.sha, binary: d.binary, diskChanged: false, reveal };
         setOpen((cur) => [...cur, f]);
         setActive(key);
       } catch (e: any) {
@@ -105,9 +137,21 @@ export function FilesPanel() {
     [open, pid, toast],
   );
 
+  const openExternal = (abs: string, content: string, target?: FileTarget) => {
+    const key = `external::${abs}`;
+    const reveal = toReveal(target);
+    setOpen((cur) =>
+      cur.some((f) => f.key === key)
+        ? cur.map((f) => (f.key === key ? { ...f, reveal: reveal ?? f.reveal } : f))
+        : [...cur, { key, root: "", path: abs, abs, content, saved: content, sha: null, binary: false, diskChanged: false, external: true, reveal }],
+    );
+    setActive(key);
+  };
+
   // external "open this file" requests (from chat, changes, git)
   useEffect(() => {
     if (!fileRequest || !project) return;
+    if (fileRequest.external && fileRequest.content != null) return openExternal(fileRequest.path, fileRequest.content, fileRequest);
     let p = fileRequest.path;
     let r = fileRequest.root ?? root;
     if (p.startsWith("/")) {
@@ -120,7 +164,7 @@ export function FilesPanel() {
       r = fileRequest.root;
     }
     if (r !== root && roots.some((x) => x.path === r)) setRoot(r);
-    if (p) void openFile(r, p);
+    if (p) void openFile(r, p, fileRequest);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fileRequest?.nonce]);
 
@@ -151,6 +195,7 @@ export function FilesPanel() {
     const rest = open.filter((x) => x.key !== key);
     setOpen(rest);
     if (active === key) setActive(rest[rest.length - 1]?.key ?? null);
+    if (f) editorBridge.closeFile?.(f.abs);
   };
 
   const create = async (dir: string, kind: "file" | "dir") => {
@@ -269,9 +314,10 @@ export function FilesPanel() {
           {open.length > 0 && (
             <div className="editor-tabs">
               {open.map((f) => (
-                <div key={f.key} className={clsx("editor-tab", f.key === active && "on")} onClick={() => setActive(f.key)} title={`${f.root}/${f.path}`}>
+                <div key={f.key} className={clsx("editor-tab", f.key === active && "on", f.external && "external")} onClick={() => setActive(f.key)} title={f.abs}>
+                  {f.external && <Lock size={11} className="faint" />}
                   {basename(f.path)}
-                  {f.root !== project.path && <span className="faint mono" style={{ fontSize: 10.5 }}>⎇</span>}
+                  {!f.external && f.root !== project.path && <span className="faint mono" style={{ fontSize: 10.5 }}>⎇</span>}
                   {f.content !== f.saved ? <span className="dirty" /> : null}
                   <button className="icon-btn sm" onClick={(e) => (e.stopPropagation(), close(f.key))}>
                     <X size={12} />
@@ -291,20 +337,29 @@ export function FilesPanel() {
               </button>
             </div>
           )}
+          {cur?.external && (
+            <div className="banner subtle">
+              <Lock size={13} />
+              <span className="grow ellipsis mono" title={cur.abs}>
+                Read-only · outside the project · {shortPath(cur.abs)}
+              </span>
+            </div>
+          )}
           <div className="editor-host">
             {cur ? (
               cur.binary ? (
                 <div className="empty-state">Binary file — not shown.</div>
               ) : (
                 <CodeEditor
-                  path={cur.key}
+                  filePath={cur.abs}
                   value={cur.content}
                   language={languageFor(cur.path)}
-                  line={cur.line}
+                  readOnly={cur.external}
+                  reveal={cur.reveal}
                   onChange={(v) => setOpen((all) => all.map((x) => (x.key === cur.key ? { ...x, content: v } : x)))}
                   onSave={() => {
                     const latest = open.find((x) => x.key === cur.key);
-                    if (latest) void save(latest);
+                    if (latest && !latest.external) void save(latest);
                   }}
                 />
               )
@@ -318,6 +373,7 @@ export function FilesPanel() {
               </div>
             )}
           </div>
+          {cur && !cur.binary && <EditorStatusLine path={cur.abs} language={languageFor(cur.path)} />}
         </div>
       </div>
     </div>

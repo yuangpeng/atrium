@@ -123,6 +123,7 @@ export function GitPanel() {
   const [agentOpen, setAgentOpen] = useState(false);
   const [agentBusy, setAgentBusy] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [initBusy, setInitBusy] = useState(false);
 
   const load = useCallback(async () => {
     if (!pid) return;
@@ -131,14 +132,16 @@ export function GitPanel() {
       const [g, s] = await Promise.all([api.gitGraph(pid, mode === "custom" ? "custom" : mode, mode === "custom" ? custom : undefined), api.gitSummary(pid)]);
       setGraph(g);
       setSum(s);
+      if (s.is_repo !== useApp.getState().project?.is_git) void refreshProject(); // repo created / removed outside Atrium
     } catch (e: any) {
       toast(e.message, "error");
     } finally {
       setLoading(false);
     }
-  }, [pid, mode, custom, toast]);
+  }, [pid, mode, custom, toast, refreshProject]);
   const loadThrottled = useMemo(() => throttle(() => void load(), 1500), [load]);
-  useEffect(() => void load(), [load]);
+  const isGit = !!project?.is_git;
+  useEffect(() => void load(), [load, isGit]);
   useEffect(() => {
     if (gitVersion) loadThrottled();
   }, [gitVersion, loadThrottled]);
@@ -199,7 +202,25 @@ export function GitPanel() {
       <div className="empty-state">
         <GitBranch size={28} />
         <h3>Not a git repository</h3>
-        <div>Run <span className="mono">git init</span> in {project.name} to get the graph, worktrees and commit tools.</div>
+        <div>Initialize one in {project.name} to get the graph, worktrees and commit tools.</div>
+        <button
+          className="btn btn-primary"
+          style={{ marginTop: 10 }}
+          disabled={initBusy}
+          onClick={async () => {
+            setInitBusy(true);
+            try {
+              await api.gitInit(pid);
+              await refreshProject();
+            } catch (e: any) {
+              toast(e.message, "error");
+            } finally {
+              setInitBusy(false);
+            }
+          }}
+        >
+          {initBusy ? <Spinner /> : <GitBranchPlus size={14} />} Initialize repository
+        </button>
       </div>
     );
 
@@ -292,7 +313,12 @@ export function GitPanel() {
                 <span className="meta mono">{r.c.sha.slice(0, 7)}</span>
               </div>
             ))}
-            {graph && rows.length === 0 && <div className="empty-state">No commits yet.</div>}
+            {graph && rows.length === 0 && (
+              <div className="empty-state">
+                <h3>No commits yet</h3>
+                <div>Stage and commit from Changes → Working tree, or ask an agent to.</div>
+              </div>
+            )}
           </div>
           {detail && (
             <div className="commit-detail">

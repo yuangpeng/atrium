@@ -344,7 +344,7 @@ export function ChatView({ pid, sid, cwd, compact, placeholder, emptyHint }: { p
             ref={inputRef}
             className="composer-input"
             rows={1}
-            placeholder={placeholder ?? (running ? (harnessId === "codex" ? "Steer the running turn…" : "Send a follow-up — it will be queued for the agent…") : "Reply…")}
+            placeholder={placeholder ?? (running ? (harnessId === "codex" ? "Steer the running turn…" : "Queue a follow-up…") : "Reply…")}
             value={text}
             onChange={(e) => setText(e.target.value)}
             onPaste={att.onPaste}
@@ -356,6 +356,7 @@ export function ChatView({ pid, sid, cwd, compact, placeholder, emptyHint }: { p
             }}
           />
           <div className="composer-bar">
+            <div className="bar-chips">
             <AttachButton onClick={att.open} />
             {harness && (
               <label className={clsx("chip", !st.mode && "faded")} title={st.mode ? "Permission mode" : "Permission mode (applies when the session is attached)"}>
@@ -385,8 +386,8 @@ export function ChatView({ pid, sid, cwd, compact, placeholder, emptyHint }: { p
                 </select>
               </label>
             )}
-            {!st.state && !loading && !compact && <span className="faint hide-narrow" style={{ fontSize: 11.5 }}>Not attached — sending resumes the session</span>}
-            <span className="grow" />
+            </div>
+            <div className="bar-end">
             <EffortPicker efforts={efforts} value={settings.effort} fallback={fallback} onChange={(e) => void setEffort(e)} />
             {running ? (
               <>
@@ -400,10 +401,11 @@ export function ChatView({ pid, sid, cwd, compact, placeholder, emptyHint }: { p
                 </button>
               </>
             ) : (
-              <button className="send-btn" disabled={!canSend} onClick={() => void send()} title="Send (Enter)">
+              <button className="send-btn" disabled={!canSend} onClick={() => void send()} title={st.state ? "Send (Enter)" : "Send (Enter) — resumes the session"}>
                 {sending ? <Spinner /> : <ArrowUp size={17} strokeWidth={2.4} />}
               </button>
             )}
+            </div>
           </div>
         </div>
       </div>

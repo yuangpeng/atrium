@@ -16,7 +16,7 @@ from fastapi import Body, FastAPI, HTTPException, Query, Request, WebSocket, Web
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import __version__, changes, configfiles, fs, gitops
+from . import __version__, changes, configfiles, fs, gitops, lsp
 from .config import UPLOADS_DIR, config
 from .events import Subscriber, hub
 from .gitagent import set_view
@@ -74,6 +74,7 @@ async def lifespan(_app: FastAPI):
     for h in all_harnesses():
         if hasattr(h, "shutdown"):
             await h.shutdown()
+    await lsp.registry.shutdown()
 
 
 app = FastAPI(title="Atrium", version=__version__, lifespan=lifespan)
@@ -147,7 +148,7 @@ async def _catalog(h: Any) -> dict[str, Any]:
 @app.get("/api/meta")
 async def meta():
     harnesses = await asyncio.gather(*(_catalog(h) for h in all_harnesses()))
-    return {"version": __version__, "harnesses": harnesses, "settings": config.public_settings()}
+    return {"version": __version__, "harnesses": harnesses, "settings": config.public_settings(), "lsp": await asyncio.to_thread(lsp.available)}
 
 
 @app.get("/api/settings")
@@ -553,6 +554,15 @@ async def git_diff(pid: str, path: str, root: str | None = None, staged: bool = 
     return {"path": path, "original": original, "current": current or "", "editable": not staged}
 
 
+@app.post("/api/p/{pid}/git/init")
+async def git_init(pid: str):
+    p = P(pid)
+    if not gitops.is_repo(p.path):
+        await gitops.init(p.path)
+    hub.publish(f"project:{pid}", {"type": "git_changed"})
+    return {"ok": True}
+
+
 @app.post("/api/p/{pid}/git/stage")
 async def git_stage(pid: str, body: dict[str, Any] = Body(...)):
     await gitops.stage(_git_root(P(pid), body.get("root")), body["paths"])
@@ -661,6 +671,36 @@ async def ws(socket: WebSocket):
     finally:
         sender.cancel()
         hub.drop(sub)
+
+
+def _lsp_roots() -> list[tuple[str, str]]:
+    return [(r, p.path) for p in projects.loaded() for r in p.roots()]
+
+
+@app.websocket("/ws/lsp")
+async def ws_lsp(socket: WebSocket):
+    """LSP for the editor; see atrium/lsp.py."""
+    await socket.accept()
+    client = lsp.LspClient(_lsp_roots)
+
+    async def pump() -> None:
+        while True:
+            await socket.send_json(await client.queue.get())
+
+    sender = asyncio.create_task(pump())
+    try:
+        while True:
+            msg = await socket.receive_json()
+            # attach waits for the server to initialize; keep reading meanwhile
+            if msg.get("op") == "attach":
+                asyncio.create_task(client.handle(msg))
+            else:
+                await client.handle(msg)
+    except (WebSocketDisconnect, RuntimeError):
+        pass
+    finally:
+        sender.cancel()
+        await client.close()
 
 
 # ---------------------------------------------------------------------------

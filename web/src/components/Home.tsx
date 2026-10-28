@@ -1,16 +1,15 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ArrowUp, FolderGit2, GitBranchPlus, Sparkle } from "lucide-react";
+import { ArrowUp, FolderGit2, GitBranchPlus } from "lucide-react";
 import { api } from "../api";
 import { useApp } from "../store";
-import { clsx, displayName, relTo, timeAgo } from "../util";
+import { clsx, relTo } from "../util";
 import { Popover, Spinner } from "./ui";
-import { statusClass } from "./Sidebar";
 import { AttachButton, AttachmentTray, EffortPicker, effortOptions, useAttachments } from "../chat/Composer";
 
 type Workspace = { kind: "root" } | { kind: "worktree"; path: string; branch: string | null } | { kind: "new"; branch: string; base: string };
 
 export function Home() {
-  const { project, meta, sessions, selectSession, toast, refreshSessions, refreshProject } = useApp();
+  const { project, meta, selectSession, toast, refreshSessions, refreshProject } = useApp();
   const [name, setName] = useState("");
   const [prompt, setPrompt] = useState("");
   const [ws, setWs] = useState<Workspace>({ kind: "root" });
@@ -39,7 +38,7 @@ export function Home() {
     const el = ref.current;
     if (!el) return;
     el.style.height = "auto";
-    el.style.height = Math.min(el.scrollHeight, 320) + "px";
+    el.style.height = Math.min(el.scrollHeight, 280) + "px";
   }, [prompt]);
 
   if (!project || !meta) return null;
@@ -80,30 +79,26 @@ export function Home() {
   };
 
   const wsLabel =
-    ws.kind === "root" ? `${project.name} (${currentBranch})` : ws.kind === "worktree" ? `⎇ ${ws.branch ?? relTo(project.path, ws.path)}` : `New worktree: ${ws.branch || "…"}`;
-  const recent = sessions.filter((s) => s.role === "worker").slice(0, 6);
-
+    ws.kind === "root" ? currentBranch : ws.kind === "worktree" ? `⎇ ${ws.branch ?? relTo(project.path, ws.path)}` : `+ ${ws.branch || "new worktree"}`;
   return (
     <div className="home">
-      <h1>
-        <span className="spark">
-          <Sparkle size={28} fill="currentColor" />
-        </span>
-        What should the next agent take on?
-      </h1>
-      <div className="sub">
-        New agents work in <span className="mono">{project.name}</span>, report to the shared board, and leave reviewable diffs.
+      <div className="home-empty">
+        {/* the Atrium mark, same as the favicon */}
+        <svg className="home-logo" viewBox="0 0 32 32" aria-label="Atrium">
+          <rect width="32" height="32" rx="8" fill="currentColor" />
+          <path d="M9 23 16 8l7 15M12 17h8" stroke="white" strokeWidth="2.6" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
       </div>
 
       <div className="composer">
         <div className={clsx("composer-box", att.dragging && "dragging")} {...att.dropProps}>
           {att.picker}
-          <input className="name-input" placeholder="Agent name — e.g. “Auth Refactor Agent” (leave empty to let the Tracker name it)" value={name} onChange={(e) => setName(e.target.value)} />
+          <input className="name-input" placeholder="Agent name (optional)" title="Leave empty and the Tracker names it" value={name} onChange={(e) => setName(e.target.value)} />
           <textarea
             ref={ref}
             className="composer-input"
             rows={3}
-            placeholder="Describe the task…"
+            placeholder="Describe the task"
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             onPaste={att.onPaste}
@@ -123,10 +118,11 @@ export function Home() {
             </div>
           )}
           <div className="composer-bar">
+            <div className="bar-chips">
             <AttachButton onClick={att.open} />
             {meta.harnesses.length > 1 && (
               <label className={clsx("chip", "harness-chip")} title={harness.available ? "Harness" : harness.unavailable_reason ?? ""}>
-                <span className={clsx("harness-badge", harness.id)}>{harness.label}</span>
+                {harness.label}
                 <select value={harnessId} onChange={(e) => setHarnessId(e.target.value)}>
                   {meta.harnesses.map((h) => (
                     <option key={h.id} value={h.id} disabled={!h.available}>
@@ -143,7 +139,7 @@ export function Home() {
                 width={300}
                 trigger={(_o, toggle) => (
                   <button className="chip" onClick={toggle} title="Where the agent works">
-                    <FolderGit2 size={13} /> <span className="ellipsis" style={{ maxWidth: 220 }}>{wsLabel}</span>
+                    <FolderGit2 size={13} /> <span className="ellipsis" style={{ maxWidth: 160 }}>{wsLabel}</span>
                   </button>
                 )}
               >
@@ -203,46 +199,17 @@ export function Home() {
                 ))}
               </select>
             </label>
-            <span className="grow" />
-            <EffortPicker efforts={efforts} value={effort} fallback={fallback} onChange={setEffort} />
-            <button className="send-btn" disabled={!canStart} onClick={() => void start()} title="Start agent (Enter)">
-              {busy ? <Spinner /> : <ArrowUp size={17} strokeWidth={2.4} />}
-            </button>
-          </div>
-        </div>
-        <div className="composer-hint">
-          {harness.available ? (
-            <>
-              {harness.label} · Enter to start · Shift+Enter for a new line · paste or drop images and files
-            </>
-          ) : (
-            <span style={{ color: "var(--err)" }}>{harness.unavailable_reason}</span>
-          )}
-        </div>
-      </div>
-
-      {recent.length > 0 && (
-        <div className="recent">
-          <h4>Recent agents</h4>
-          <div className="cards">
-            {recent.map((s) => (
-              <button key={s.id} className="agent-card" onClick={() => selectSession(s.id)}>
-                <div className="n">
-                  <span className={clsx("dot", statusClass(s))} />
-                  <span className="ellipsis" style={{ flex: 1 }}>{displayName(s)}</span>
-                  <span className="faint" style={{ fontSize: 11.5, fontWeight: 400 }}>{timeAgo(s.updated_at)}</span>
-                </div>
-                <div className="d">{s.doing || s.first_prompt || "—"}</div>
-                {s.progress != null && s.progress > 0 && (
-                  <div className={clsx("bar", s.status === "done" && "done")}>
-                    <span style={{ width: `${s.progress}%` }} />
-                  </div>
-                )}
+            </div>
+            <div className="bar-end">
+              <EffortPicker efforts={efforts} value={effort} fallback={fallback} onChange={setEffort} />
+              <button className="send-btn" disabled={!canStart} onClick={() => void start()} title="Start agent (Enter)">
+                {busy ? <Spinner /> : <ArrowUp size={17} strokeWidth={2.4} />}
               </button>
-            ))}
+            </div>
           </div>
         </div>
-      )}
+        {!harness.available && <div className="composer-hint err">{harness.unavailable_reason}</div>}
+      </div>
     </div>
   );
 }

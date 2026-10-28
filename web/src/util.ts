@@ -47,7 +47,7 @@ export function displayName(s: { name: string | null; title: string }): string {
 
 const EXT_LANG: Record<string, string> = {
   ts: "typescript", tsx: "typescript", js: "javascript", jsx: "javascript", mjs: "javascript", cjs: "javascript",
-  py: "python", rs: "rust", go: "go", java: "java", kt: "kotlin", c: "c", h: "c", cc: "cpp", cpp: "cpp", hpp: "cpp",
+  py: "python", pyi: "python", rs: "rust", go: "go", java: "java", kt: "kotlin", c: "c", h: "c", cc: "cpp", cpp: "cpp", hpp: "cpp",
   cs: "csharp", rb: "ruby", php: "php", swift: "swift", scala: "scala", sh: "shell", bash: "shell", zsh: "shell",
   json: "json", jsonc: "json", yaml: "yaml", yml: "yaml", toml: "ini", ini: "ini", md: "markdown", markdown: "markdown",
   html: "html", htm: "html", css: "css", scss: "scss", less: "less", sql: "sql", xml: "xml", svg: "xml",

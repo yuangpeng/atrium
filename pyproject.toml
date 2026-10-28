@@ -10,6 +10,7 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "httpx>=0.27",
     "watchfiles>=0.24",
+    "basedpyright>=1.30",  # Python language server for the editor (bundles its own Node)
 ]
 
 [project.scripts]

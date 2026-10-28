@@ -6,16 +6,14 @@ A project-centric workbench for coding agents — Claude Code and Codex side by 
 > project: every agent session, the human, the files, the diffs and the git history, around one board.
 
 ```
-┌ Sidebar ─────────┬ Chat (selected agent) ────────────┬ Workspace ──────────────────────┐
-│ Project ▾        │                                   │ Board · Files · Changes · Git   │
-│ + New agent      │  user ▸ task                      │                                 │
-│ Active           │  ◆ tool calls (inline diffs)      │  board.html  (live, shared)     │
-│  ● Auth Agent 60%│  ◆ board.status / board.publish   │  Monaco editor / diff review    │
-│ Agents    CODEX  │  ⚠ permission card (allow/deny)   │  commit graph + Git Agent chat  │
-│ System           │  ─ composer: 📎 · mode · model ·  │                                 │
-│                  │             effort · send/stop    │                                 │
-│  Tracker · Git   │                                   │                                 │
-└──────────────────┴───────────────────────────────────┴─────────────────────────────────┘
+┌ Workspace ─────────────────────────────────┬ Chat (selected agent) ─────┬ Rail ┐
+│ Board · Files · Changes · Git              │  user ▸ task               │  AD  │ project
+│                                            │  ◆ tool calls, diffs       │  +   │ new agent
+│  board.html (live, shared)                 │  ◆ board.status / publish  │  ●○  │ agents (hover
+│  Monaco editor + language server           │  ⚠ permission card         │  ●○  │  for details)
+│  diff review · commit graph + Git Agent    │                            │  ≡   │ all agents
+│                                            │  📎 mode model · effort ↑  │  ⚙   │ tracker, git,
+└────────────────────────────────────────────┴────────────────────────────┴──────┘ settings
 ```
 
 ## Design principles
@@ -36,7 +34,10 @@ A project-centric workbench for coding agents — Claude Code and Codex side by 
      call when nothing changed. It also names unnamed sessions as **"<Topic> Agent"**.
 3. **You stay in control of the craft.**
    * **Files** — tree + Monaco editor for every root (project + worktrees); agent edits to open
-     files show up live, conflicting saves are detected.
+     files show up live, conflicting saves are detected. Language servers run behind the editor
+     (Python: basedpyright, installed with Atrium; clangd / gopls / rust-analyzer when on `PATH`):
+     semantic highlighting in VS Code's Light+ / Dark+ colours, hover types, completion,
+     diagnostics, ⌘-click / F12 go to definition (library files open read-only), ⇧F12 references.
    * **Changes** — per-agent diffs. The baseline is a **git snapshot** Atrium takes at the start and
      end of every turn (a tree object written through a temporary index — no refs, your index and
      stash are untouched). Files changed by shell commands are detected by diffing those snapshots.
@@ -48,7 +49,8 @@ A project-centric workbench for coding agents — Claude Code and Codex side by 
    * **Git** — commit graph with lanes; *Smart* / *All* / *Custom* branch sets, and an
      **Agent view**: the **Git Agent** (a chat drawer) investigates with read-only git and drives
      the graph through a `graph.set_view` tool — "simplify the graph to what matters". Worktrees:
-     create / remove, start an agent directly in a new worktree.
+     create / remove, start an agent directly in a new worktree. A repository created later
+     (`git init` in a terminal, or the button in the Git tab) is picked up live.
 4. **MCP.** `web.search` (Serper) and `web.fetch` (Jina Reader) are mounted into every agent —
    Claude sees them as `mcp__web__search` / `mcp__web__fetch` (optionally replacing the built-in
    WebSearch/WebFetch); Codex reserves the `web` namespace, so there they are `internet.search` /
@@ -108,6 +110,8 @@ so `claude --resume` and `codex resume` show them.
 `~/.claude/settings.json` plus the project's `.claude/settings.json` / `settings.local.json`, and
 Codex's `~/.codex/config.toml` plus the project's `.codex/config.toml`. Saves are validated
 (JSON / TOML), refused if the file changed on disk meanwhile, and back up the previous version.
+The editor's language servers are configured under `lsp` there (`enabled`, `commands` to override
+the server per language, `python.typeCheckingMode`).
 
 ## Architecture
 
@@ -126,6 +130,7 @@ atrium/
   board/                 board store + HTML template, board tools, system prompts
   tracker.py             the per-project Tracker Agent
   gitagent.py            graph.set_view tool for the Git Agent
+  lsp.py                 language servers for the editor, shared by all tabs over /ws/lsp
   gitops.py, fs.py       git plumbing, sandboxed file access
   changes.py             per-session change sets (diff review)
   mcp/web.py             Serper + Jina tools (in-process and stdio MCP)

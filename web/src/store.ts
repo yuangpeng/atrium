@@ -4,7 +4,16 @@ import { socket } from "./ws";
 import { throttle } from "./util";
 
 export type Panel = "board" | "files" | "changes" | "git";
+const PANELS: Panel[] = ["board", "files", "changes", "git"];
 export type Theme = "light" | "dark" | "system";
+
+/** Where to put the cursor when a file opens; `external` = read-only, outside the project. */
+export interface FileTarget {
+  line?: number;
+  column?: number;
+  external?: boolean;
+  content?: string;
+}
 
 interface Toast {
   id: number;
@@ -18,16 +27,15 @@ interface AppState {
   project: ProjectInfo | null;
   sessions: SessionRow[];
   sessionId: string | null;
-  panel: Panel | null;
-  panelMax: boolean;
-  panelWidth: number;
+  panel: Panel; // the workspace tab (left, always shown)
+  chatOpen: boolean; // the chat column (right)
+  chatWidth: number;
   theme: Theme;
   showArchived: boolean;
   pickerOpen: boolean;
   settingsOpen: boolean;
-  sidebarOpen: boolean;
   // cross-panel requests / change counters
-  fileRequest: { root?: string; path: string; nonce: number } | null;
+  fileRequest: ({ root?: string; path: string; nonce: number } & FileTarget) | null;
   changesSession: string | null;
   boardVersion: number;
   trackerVersion: number;
@@ -44,16 +52,14 @@ interface AppState {
   refreshProject: () => Promise<void>;
   refreshSessions: () => Promise<void>;
   selectSession: (sid: string | null) => void;
-  setPanel: (p: Panel | null) => void;
-  togglePanel: (p: Panel) => void;
-  setPanelMax: (v: boolean) => void;
-  setPanelWidth: (w: number) => void;
+  setPanel: (p: Panel) => void;
+  setChatOpen: (v: boolean) => void;
+  setChatWidth: (w: number) => void;
   setTheme: (t: Theme) => void;
   setShowArchived: (v: boolean) => void;
   setPickerOpen: (v: boolean) => void;
   setSettingsOpen: (v: boolean) => void;
-  setSidebarOpen: (v: boolean) => void;
-  openFile: (path: string, root?: string) => void;
+  openFile: (path: string, root?: string, target?: FileTarget) => void;
   reviewChanges: (sid: string | null) => void;
   toast: (text: string, kind?: Toast["kind"]) => void;
 }
@@ -79,6 +85,7 @@ export function resolvedTheme(): "light" | "dark" {
 
 export const useApp = create<AppState>((set, get) => {
   const refreshSessionsThrottled = throttle(() => void get().refreshSessions(), 800);
+  const refreshProjectThrottled = throttle(() => void get().refreshProject(), 800);
 
   return {
     meta: null,
@@ -86,14 +93,13 @@ export const useApp = create<AppState>((set, get) => {
     project: null,
     sessions: [],
     sessionId: null,
-    panel: (localStorage.getItem("atrium.panel") as Panel | null) ?? "board",
-    panelMax: false,
-    panelWidth: Number(localStorage.getItem("atrium.panelWidth")) || Math.round(Math.max(560, window.innerWidth * 0.46)),
+    panel: PANELS.find((p) => p === localStorage.getItem("atrium.panel")) ?? "board",
+    chatOpen: localStorage.getItem("atrium.chatOpen") !== "0",
+    chatWidth: Number(localStorage.getItem("atrium.chatWidth")) || Math.round(Math.min(520, Math.max(400, window.innerWidth * 0.3))),
     theme: (localStorage.getItem("atrium.theme") as Theme) || "system",
     showArchived: false,
     pickerOpen: false,
     settingsOpen: false,
-    sidebarOpen: true,
     fileRequest: null,
     changesSession: null,
     boardVersion: 0,
@@ -162,6 +168,8 @@ export const useApp = create<AppState>((set, get) => {
           case "git_changed":
           case "git_view":
             set((s) => ({ gitVersion: s.gitVersion + 1 }));
+            // `git init` in a plain directory: is_git / worktrees were captured when the project opened
+            if (msg.type === "git_changed" && !get().project?.is_git) refreshProjectThrottled();
             break;
         }
       });
@@ -178,7 +186,9 @@ export const useApp = create<AppState>((set, get) => {
 
     refreshProject: async () => {
       const p = get().project;
-      if (p) set({ project: await api.project(p.id) });
+      if (!p) return;
+      const fresh = await api.project(p.id);
+      if (get().project?.id === p.id) set({ project: fresh });
     },
 
     refreshSessions: async () => {
@@ -193,22 +203,22 @@ export const useApp = create<AppState>((set, get) => {
     },
 
     selectSession: (sid) => {
-      set({ sessionId: sid, panelMax: false });
+      get().setChatOpen(true);
+      set({ sessionId: sid });
       syncUrl(get().project?.id ?? null, sid);
     },
 
     setPanel: (p) => {
-      if (p) localStorage.setItem("atrium.panel", p);
-      set({ panel: p, panelMax: p ? get().panelMax : false });
+      localStorage.setItem("atrium.panel", p);
+      set({ panel: p });
     },
-    togglePanel: (p) => {
-      const cur = get().panel;
-      get().setPanel(cur === p ? null : p);
+    setChatOpen: (v) => {
+      localStorage.setItem("atrium.chatOpen", v ? "1" : "0");
+      set({ chatOpen: v });
     },
-    setPanelMax: (v) => set({ panelMax: v }),
-    setPanelWidth: (w) => {
-      localStorage.setItem("atrium.panelWidth", String(Math.round(w)));
-      set({ panelWidth: w });
+    setChatWidth: (w) => {
+      localStorage.setItem("atrium.chatWidth", String(Math.round(w)));
+      set({ chatWidth: w });
     },
     setTheme: (t) => {
       localStorage.setItem("atrium.theme", t);
@@ -221,9 +231,8 @@ export const useApp = create<AppState>((set, get) => {
     },
     setPickerOpen: (v) => set({ pickerOpen: v }),
     setSettingsOpen: (v) => set({ settingsOpen: v }),
-    setSidebarOpen: (v) => set({ sidebarOpen: v }),
-    openFile: (path, root) => {
-      set({ fileRequest: { path, root, nonce: Date.now() } });
+    openFile: (path, root, target) => {
+      set({ fileRequest: { path, root, ...target, nonce: Date.now() } });
       get().setPanel("files");
     },
     reviewChanges: (sid) => {

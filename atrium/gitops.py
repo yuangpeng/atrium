@@ -278,6 +278,10 @@ async def discard(path: str, files: list[str]) -> None:
     await run_git(path, "restore", "--worktree", "--", *files)
 
 
+async def init(path: str) -> None:
+    await run_git(path, "init")
+
+
 async def commit(path: str, message: str, amend: bool = False) -> str:
     args = ["commit", "-m", message] + (["--amend"] if amend else [])
     return await run_git(path, *args)

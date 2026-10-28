@@ -1,12 +1,10 @@
 import type { JSX } from "react";
-import { useEffect, useRef, useState } from "react";
-import {
-  Archive, ArchiveRestore, FileDiff, Files, GitBranch, LayoutDashboard, Maximize2, Minimize2, PanelRightClose, PanelRightOpen, Plug, Unplug,
-} from "lucide-react";
+import { useEffect, useState } from "react";
+import { Archive, ArchiveRestore, FileDiff, Files, FolderOpen, GitBranch, LayoutDashboard, MessageSquare, PanelRightClose, Plug, Unplug } from "lucide-react";
 import { api } from "./api";
 import { Panel, useApp } from "./store";
-import { clsx, displayName, shortPath } from "./util";
-import { Sidebar, liveLabel, statusClass } from "./components/Sidebar";
+import { clsx, displayName } from "./util";
+import { Rail, liveLabel, statusClass } from "./components/Rail";
 import { Home } from "./components/Home";
 import { ProjectPicker } from "./components/Dialogs";
 import { SettingsDialog } from "./components/SettingsDialog";
@@ -22,17 +20,16 @@ const TABS: { id: Panel; label: string; icon: JSX.Element }[] = [
   { id: "changes", label: "Changes", icon: <FileDiff size={14} /> },
   { id: "git", label: "Git", icon: <GitBranch size={14} /> },
 ];
+const RAIL_WIDTH = 52;
+const MIN_CHAT = 340;
+const MIN_WORKSPACE = 420;
 
-function PanelToggles() {
-  const { panel, togglePanel } = useApp();
+function CloseChat() {
+  const setChatOpen = useApp((s) => s.setChatOpen);
   return (
-    <>
-      {TABS.map((t) => (
-        <button key={t.id} className={clsx("icon-btn", panel === t.id && "active")} title={t.label} onClick={() => togglePanel(t.id)}>
-          {t.icon}
-        </button>
-      ))}
-    </>
+    <button className="icon-btn" title="Hide chat" onClick={() => setChatOpen(false)}>
+      <PanelRightClose size={15} />
+    </button>
   );
 }
 
@@ -51,7 +48,7 @@ function SessionHeader() {
   return (
     <div className="topbar bordered">
       <div className="t-name">
-        {s && <span className={clsx("dot", statusClass(s))} />}
+        {s && <span className={clsx("dot", statusClass(s))} title={liveLabel(s) || undefined} />}
         {editing ? (
           <input autoFocus value={name} onChange={(e) => setName(e.target.value)} onBlur={() => void save()} onKeyDown={(e) => (e.key === "Enter" ? void save() : e.key === "Escape" && setEditing(false))} />
         ) : (
@@ -59,20 +56,16 @@ function SessionHeader() {
             {s ? displayName(s) : "Session"}
           </span>
         )}
-        {s && <span className={clsx("harness-badge", s.harness)}>{s.harness === "claude-code" ? "Claude Code" : s.harness}</span>}
-        {s && !s.name && <span className="pill hide-narrow">unnamed</span>}
+        {s && s.harness !== "claude-code" && <span className={clsx("harness-badge", s.harness)}>{s.harness}</span>}
         {s?.branch && (
-          <span className={clsx("pill mono", s.worktree && "accent")} title={s.cwd}>
+          <span className={clsx("pill mono hide-narrow", s.worktree && "accent")} title={s.cwd}>
             ⎇ {s.branch}
-            <span className="hide-narrow">{s.worktree ? " · worktree" : ""}</span>
           </span>
         )}
-        {s && liveLabel(s) && <span className={clsx("pill hide-narrow", s.live === "waiting" || s.pending ? "warn" : "ok")}>{liveLabel(s)}</span>}
-        {s?.status && s.progress != null && s.progress > 0 && <span className="pill hide-narrow">{s.progress}%</span>}
       </div>
       <div className="actions">
-        <button className="btn btn-sm btn-ghost" onClick={() => reviewChanges(sessionId)} title="Review this agent's file changes">
-          <FileDiff size={14} /> <span className="hide-narrow">Review changes</span>
+        <button className="icon-btn" onClick={() => reviewChanges(sessionId)} title="Review this agent's changes">
+          <FileDiff size={15} />
         </button>
         {s?.live ? (
           <button className="icon-btn" title="Detach (stop the agent process; the session stays resumable)" onClick={() => void api.closeSession(project.id, sessionId).then(refreshSessions)}>
@@ -85,7 +78,7 @@ function SessionHeader() {
         )}
         <button
           className="icon-btn"
-          title={s?.archived ? "Unarchive" : "Archive (hide from the list and the board)"}
+          title={s?.archived ? "Unarchive" : "Archive"}
           onClick={async () => {
             await api.patchSession(project.id, sessionId, { archived: !s?.archived });
             await refreshSessions();
@@ -94,49 +87,33 @@ function SessionHeader() {
         >
           {s?.archived ? <ArchiveRestore size={15} /> : <Archive size={15} />}
         </button>
-        <span className="sep" />
-        <PanelToggles />
+        <CloseChat />
       </div>
     </div>
   );
 }
 
-function WorkspacePanel() {
-  const { panel, setPanel, panelMax, setPanelMax, panelWidth, setPanelWidth, project } = useApp();
-  const [drag, setDrag] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!drag) return;
-    const move = (e: MouseEvent) => setPanelWidth(Math.max(360, Math.min(window.innerWidth - 520, window.innerWidth - e.clientX)));
-    const up = () => setDrag(false);
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
-    window.addEventListener("mousemove", move);
-    window.addEventListener("mouseup", up);
-    return () => {
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-      window.removeEventListener("mousemove", move);
-      window.removeEventListener("mouseup", up);
-    };
-  }, [drag, setPanelWidth]);
-  if (!panel || !project) return null;
+/** Board / Files / Changes / Git — the large area on the left. */
+function Workspace() {
+  const { panel, setPanel, project, chatOpen, setChatOpen } = useApp();
+  if (!project) return null;
   return (
-    <div ref={ref} className={clsx("panel", panelMax && "max")} style={panelMax ? undefined : { width: panelWidth }}>
-      {!panelMax && <div className={clsx("resizer", drag && "drag")} onMouseDown={() => setDrag(true)} />}
-      <div className="panel-tabs">
+    <main className="workspace">
+      <div className="ws-tabs">
         {TABS.map((t) => (
           <button key={t.id} className={clsx("panel-tab", panel === t.id && "on")} onClick={() => setPanel(t.id)}>
             {t.icon} {t.label}
           </button>
         ))}
         <span className="grow" />
-        <button className="icon-btn" title={panelMax ? "Restore" : "Maximize"} onClick={() => setPanelMax(!panelMax)}>
-          {panelMax ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
-        </button>
-        <button className="icon-btn" title="Close panel" onClick={() => setPanel(null)}>
-          <PanelRightClose size={15} />
-        </button>
+        <span className="ws-project ellipsis" title={project.path}>
+          {project.name}
+        </span>
+        {!chatOpen && (
+          <button className="icon-btn" title="Show chat" onClick={() => setChatOpen(true)}>
+            <MessageSquare size={15} />
+          </button>
+        )}
       </div>
       {/* keep panels mounted so editors/graphs don't lose state when switching tabs */}
       <div className="panel-body" style={{ display: panel === "board" ? "flex" : "none" }}>
@@ -151,7 +128,66 @@ function WorkspacePanel() {
       <div className="panel-body" style={{ display: panel === "git" ? "flex" : "none" }}>
         {panel === "git" && <GitPanel />}
       </div>
-    </div>
+    </main>
+  );
+}
+
+/** The selected agent's conversation, or the new-agent composer — right of the workspace. */
+function ChatColumn() {
+  const { project, sessionId, sessions, chatWidth, setChatWidth } = useApp();
+  const [drag, setDrag] = useState(false);
+  useEffect(() => {
+    if (!drag) return;
+    const move = (e: MouseEvent) => setChatWidth(Math.max(MIN_CHAT, Math.min(window.innerWidth - RAIL_WIDTH - MIN_WORKSPACE, window.innerWidth - RAIL_WIDTH - e.clientX)));
+    const up = () => setDrag(false);
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+    return () => {
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+    };
+  }, [drag, setChatWidth]);
+  if (!project) return null;
+  const current = sessions.find((s) => s.id === sessionId);
+  return (
+    <section className="chatcol" style={{ width: chatWidth }}>
+      <div className={clsx("resizer", drag && "drag")} onMouseDown={() => setDrag(true)} />
+      {sessionId ? (
+        <>
+          <SessionHeader />
+          <ChatView key={sessionId} pid={project.id} sid={sessionId} cwd={current?.cwd ?? project.path} />
+        </>
+      ) : (
+        <>
+          <div className="topbar">
+            <div className="t-name">New agent</div>
+            <div className="actions">
+              <CloseChat />
+            </div>
+          </div>
+          <Home />
+        </>
+      )}
+    </section>
+  );
+}
+
+function NoProject() {
+  const setPickerOpen = useApp((s) => s.setPickerOpen);
+  return (
+    <main className="workspace">
+      <div className="empty-state">
+        <h3>Open a project</h3>
+        <div>Atrium works per directory: its agents, board, files and git.</div>
+        <button className="btn btn-primary" style={{ marginTop: 10 }} onClick={() => setPickerOpen(true)}>
+          <FolderOpen size={14} /> Open…
+        </button>
+      </div>
+    </main>
   );
 }
 
@@ -169,47 +205,26 @@ function Toasts() {
 }
 
 export function App() {
-  const { init, project, sessionId, sessions, pickerOpen, settingsOpen, panel, panelMax, setPanel } = useApp();
+  const { init, project, pickerOpen, settingsOpen, chatOpen, chatWidth, setChatWidth } = useApp();
   useEffect(() => {
     void init();
   }, [init]);
-  const current = sessions.find((s) => s.id === sessionId);
-  const cwd = current?.cwd ?? project?.path ?? "";
+  // keep the workspace usable when the window shrinks
+  useEffect(() => {
+    const fit = () => {
+      const max = window.innerWidth - RAIL_WIDTH - MIN_WORKSPACE;
+      if (chatWidth > max) setChatWidth(Math.max(MIN_CHAT, max));
+    };
+    fit();
+    window.addEventListener("resize", fit);
+    return () => window.removeEventListener("resize", fit);
+  }, [chatWidth, setChatWidth]);
 
   return (
     <div className="app">
-      <Sidebar />
-      <div className={clsx("main", panelMax && panel && "hidden")}>
-        {project && sessionId ? (
-          <>
-            <SessionHeader />
-            <ChatView key={sessionId} pid={project.id} sid={sessionId} cwd={cwd} />
-          </>
-        ) : project ? (
-          <>
-            <div className="topbar">
-              <div className="t-name muted" style={{ fontSize: 14 }}>
-                {project.name} <span className="faint mono" style={{ fontSize: 12 }}>{shortPath(project.path)}</span>
-              </div>
-              <div className="actions">
-                <PanelToggles />
-                {!panel && (
-                  <button className="icon-btn" title="Open board" onClick={() => setPanel("board")}>
-                    <PanelRightOpen size={15} />
-                  </button>
-                )}
-              </div>
-            </div>
-            <Home />
-          </>
-        ) : (
-          <div className="empty-state">
-            <h3>Open a project to begin</h3>
-            <div>Atrium is organised around directories — pick one to see its agents, board, files and git.</div>
-          </div>
-        )}
-      </div>
-      <WorkspacePanel />
+      {project ? <Workspace /> : <NoProject />}
+      {project && chatOpen && <ChatColumn />}
+      <Rail />
       {pickerOpen && <ProjectPicker />}
       {settingsOpen && <SettingsDialog />}
       <Toasts />

@@ -61,6 +61,13 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # Extra MCP servers for Claude Code sessions ({"name": {"command": ..., "args": [...]}}).
     # Codex sessions use the [mcp_servers] table of ~/.codex/config.toml instead.
     "mcp_servers": {},
+    # Language servers behind the editor (semantic highlighting, go to definition, hover, …).
+    # commands: {"python": ["pyright-langserver", "--stdio"]} overrides the auto-detected server.
+    "lsp": {
+        "enabled": True,
+        "commands": {},
+        "python": {"typeCheckingMode": "standard"},  # off | basic | standard | strict | recommended | all
+    },
     "ui": {"theme": "system"},
 }
 

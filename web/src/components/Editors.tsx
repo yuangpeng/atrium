@@ -1,8 +1,9 @@
-import "../monaco-setup";
+import { monaco } from "../monaco-setup";
 import { useEffect, useRef } from "react";
 import Editor, { DiffEditor as MonacoDiff, OnMount, DiffOnMount } from "@monaco-editor/react";
 import type * as Monaco from "monaco-editor";
 import { useApp } from "../store";
+import { trackEditor } from "../lsp/client";
 
 function useMonacoTheme(): string {
   useApp((s) => s.theme); // re-render on theme changes
@@ -21,52 +22,75 @@ const baseOptions: Monaco.editor.IStandaloneEditorConstructionOptions = {
   automaticLayout: true,
   tabSize: 4,
   scrollbar: { verticalScrollbarSize: 10, horizontalScrollbarSize: 10 },
+  "semanticHighlighting.enabled": true,
+  fixedOverflowWidgets: true, // hovers / suggestions may extend past the panel
 };
+
+// files on disk: ⌘-click jumps straight to the definition (peek for several references)
+const fileOptions: Monaco.editor.IStandaloneEditorConstructionOptions = {
+  gotoLocation: { multipleDefinitions: "goto", multipleTypeDefinitions: "goto", multipleDeclarations: "goto", multipleImplementations: "peek", multipleReferences: "peek" },
+  definitionLinkOpensInPeek: false,
+  hover: { delay: 350 },
+};
+
+export interface Reveal {
+  line: number;
+  column?: number;
+  nonce: number;
+}
+
+function revealIn(editor: Monaco.editor.IStandaloneCodeEditor, r: Reveal) {
+  const pos = { lineNumber: r.line, column: r.column ?? 1 };
+  editor.setPosition(pos);
+  editor.revealPositionInCenter(pos);
+  editor.focus();
+}
 
 export function CodeEditor({
   path,
+  filePath,
   value,
   language,
   readOnly,
   onChange,
   onSave,
-  line,
+  reveal,
 }: {
-  path: string;
+  path?: string;
+  /** absolute path of a file on disk: becomes the model's file:// URI and enables language servers */
+  filePath?: string;
   value: string;
   language: string;
   readOnly?: boolean;
   onChange?: (v: string) => void;
   onSave?: () => void;
-  line?: number;
+  reveal?: Reveal;
 }) {
   const theme = useMonacoTheme();
   const saveRef = useRef(onSave);
   saveRef.current = onSave;
   const edRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
-  const onMount: OnMount = (editor, monaco) => {
+  const tracking = useRef<Monaco.IDisposable | null>(null);
+  const onMount: OnMount = (editor, m) => {
     edRef.current = editor;
-    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => saveRef.current?.());
-    if (line) {
-      editor.revealLineInCenter(line);
-      editor.setPosition({ lineNumber: line, column: 1 });
-    }
+    editor.addCommand(m.KeyMod.CtrlCmd | m.KeyCode.KeyS, () => saveRef.current?.());
+    if (filePath) tracking.current = trackEditor(editor);
+    if (reveal) revealIn(editor, reveal);
   };
+  useEffect(() => () => tracking.current?.dispose(), []);
   useEffect(() => {
-    if (line && edRef.current) {
-      edRef.current.revealLineInCenter(line);
-      edRef.current.setPosition({ lineNumber: line, column: 1 });
-    }
-  }, [line]);
+    if (reveal && edRef.current) revealIn(edRef.current, reveal);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reveal?.nonce, filePath]);
   return (
     <Editor
-      path={path}
+      path={filePath ? monaco.Uri.file(filePath).toString() : path}
       value={value}
       language={language}
       theme={theme}
       onChange={(v) => onChange?.(v ?? "")}
       onMount={onMount}
-      options={{ ...baseOptions, readOnly }}
+      options={{ ...baseOptions, ...(filePath ? fileOptions : {}), readOnly }}
     />
   );
 }
