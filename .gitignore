@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+web/node_modules/
+atrium/static/
+.atrium/
+.DS_Store
