@@ -443,20 +443,45 @@ a { color: var(--accent-strong); }
 .editor-host { flex: 1; min-height: 0; }
 
 /* ---------------------------------------------------------------- changes */
-.change-row { display: flex; align-items: center; gap: 7px; padding: 6px 10px; cursor: pointer; font-size: 12.5px; border-radius: 7px; margin: 1px 4px; }
-.change-row:hover { background: var(--hover); }
-.change-row.on { background: var(--active); }
-.change-row .st { font: 700 10.5px var(--font-mono); width: 14px; text-align: center; flex: none; }
-.change-row .st.created { color: var(--ok); } .change-row .st.modified { color: var(--warn); } .change-row .st.deleted { color: var(--err); }
-.change-row .p { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
-.change-row .num { font: 11px var(--font-mono); flex: none; }
-.change-row .num .a { color: var(--ok); } .change-row .num .r { color: var(--err); }
-.change-row.reviewed .p { color: var(--faint); text-decoration: line-through; text-decoration-color: var(--border-strong); }
 .agent-pick { display: flex; align-items: center; gap: 8px; padding: 8px 10px; cursor: pointer; border-radius: 8px; margin: 2px 4px; font-size: 13px; }
 .agent-pick:hover { background: var(--hover); }
 .agent-pick.on { background: var(--active); }
 .section-label { font-size: 11px; font-weight: 600; color: var(--faint); text-transform: uppercase; letter-spacing: 0.05em; padding: 10px 12px 4px; display: flex; align-items: center; gap: 6px; }
 .commit-box { border-top: 1px solid var(--border); padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+
+/* changed files as a tree (Changes, Git) */
+.ftree { padding: 2px 4px 6px; font-size: 12.5px; user-select: none; outline: none; }
+.ftree .tree-row.dir .nm { color: var(--text-2); }
+.ftree .st { font: 700 10.5px var(--font-mono); width: 14px; text-align: center; flex: none; }
+.ftree .st.created { color: var(--ok); } .ftree .st.modified { color: var(--warn); } .ftree .st.deleted { color: var(--err); } .ftree .st.renamed { color: var(--info); }
+.ftree .num { font: 11px var(--font-mono); flex: none; color: var(--faint); }
+.ftree .num .a { color: var(--ok); } .ftree .num .r { color: var(--err); }
+.ftree .cnt { font: 600 10.5px var(--font-mono); color: var(--warn); background: var(--warn-soft); border-radius: 99px; padding: 1px 6px; flex: none; }
+.ftree .done { color: var(--ok); flex: none; margin-right: 4px; }
+.ftree .orig { font-size: 11px; max-width: 40%; flex: 0 1 auto; }
+.ftree .acts { display: none; flex: none; }
+.ftree .tree-row:hover .acts, .ftree .tree-row.on .acts { display: flex; }
+.ftree .tree-row.reviewed .nm { color: var(--faint); text-decoration: line-through; text-decoration-color: var(--border-strong); }
+.ftree:focus-visible .tree-row.on { box-shadow: inset 0 0 0 1px var(--accent); }
+.file-nav { display: inline-flex; align-items: center; gap: 1px; flex: none; font: 11px var(--font-mono); color: var(--faint); white-space: nowrap; }
+.file-head { display: flex; align-items: center; gap: 8px; padding: 5px 10px; border-bottom: 1px solid var(--border); font-size: 12.5px; flex: none; min-width: 0; }
+
+/* diff: column headers over the two sides */
+.diff-wrap { height: 100%; display: flex; flex-direction: column; }
+.diff-body { flex: 1; min-height: 0; }
+.diff-cols { display: flex; flex: none; height: 28px; border-bottom: 1px solid var(--border); background: var(--sidebar); font-size: 12px; color: var(--muted); }
+.diff-cols .col { display: flex; align-items: center; gap: 6px; padding: 0 6px 0 12px; min-width: 0; white-space: nowrap; overflow: hidden; flex: none; }
+.diff-cols .col.grow { flex: 1; }
+.diff-cols .col + .col { border-left: 1px solid var(--border); }
+.diff-cols b { color: var(--text-2); font-weight: 600; flex: none; }
+.diff-cols .pill { height: 18px; font-size: 11px; flex: none; }
+.diff-nav { margin-left: auto; padding-left: 8px; display: inline-flex; align-items: center; gap: 1px; flex: none; }
+.diff-nav .n { font: 11px var(--font-mono); color: var(--faint); margin-right: 4px; }
+.monaco-diff-editor .gutter { outline: none; } /* it carries .monaco-editor, so Monaco's focus-border rule outlines it */
+
+/* browser fullscreen (Changes, a commit) */
+.fs-host:fullscreen { background: var(--bg); container-type: inline-size; }
+.fs-host:fullscreen .hresizer { display: none; }
 
 /* ---------------------------------------------------------------- git */
 .graph-wrap { flex: 1; overflow: auto; position: relative; }
@@ -480,10 +505,13 @@ a { color: var(--accent-strong); }
 .drawer { border-top: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; background: var(--bg); }
 .drawer-head { display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: pointer; font-weight: 600; font-size: 13px; flex: none; }
 .drawer-head:hover { background: var(--hover); }
-.commit-detail { border-top: 1px solid var(--border); max-height: 45%; overflow: auto; flex: none; }
-.commit-detail .hd { padding: 10px 14px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--bg); }
-.patch .l { white-space: pre; font: 12px/1.5 var(--font-mono); padding: 0 14px; }
-.patch .l.add { background: var(--add-bg); } .patch .l.del { background: var(--del-bg); } .patch .l.hunk { color: var(--info); } .patch .l.file { font-weight: 700; padding-top: 8px; color: var(--text); }
+.commit-detail { border-top: 1px solid var(--border); flex: 0 1 auto; min-height: 140px; display: flex; flex-direction: column; position: relative; background: var(--bg); }
+.commit-detail .hd { padding: 6px 8px 8px 14px; border-bottom: 1px solid var(--border); flex: none; }
+.commit-detail .hd .msg-body { margin-top: 6px; max-height: 96px; }
+.commit-detail > .split > .side { width: 260px; }
+@container (max-width: 760px) { .commit-detail > .split > .side { width: 200px; } }
+.hresizer { position: absolute; top: -3px; left: 0; right: 0; height: 6px; cursor: row-resize; z-index: 5; }
+.hresizer:hover { background: color-mix(in srgb, var(--accent) 35%, transparent); }
 
 /* ---------------------------------------------------------------- modal */
 .modal-backdrop { position: fixed; inset: 0; background: rgba(20, 20, 19, 0.38); display: grid; place-items: center; z-index: 50; animation: fade 0.12s; }

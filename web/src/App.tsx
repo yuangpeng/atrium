@@ -1,5 +1,6 @@
 import type { JSX } from "react";
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { Archive, ArchiveRestore, FileDiff, Files, FolderOpen, GitBranch, LayoutDashboard, MessageSquare, PanelRightClose, Plug, Unplug } from "lucide-react";
 import { api } from "./api";
 import { Panel, useApp } from "./store";
@@ -7,6 +8,7 @@ import { clsx, displayName } from "./util";
 import { Rail, liveLabel, statusClass } from "./components/Rail";
 import { Home } from "./components/Home";
 import { ProjectPicker } from "./components/Dialogs";
+import { useFullscreenElement } from "./components/ui";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { ChatView } from "./chat/ChatView";
 import { BoardPanel } from "./panels/BoardPanel";
@@ -205,7 +207,8 @@ function NoProject() {
 
 function Toasts() {
   const toasts = useApp((s) => s.toasts);
-  return (
+  const fullscreen = useFullscreenElement(); // only the fullscreen element is visible: show them in there
+  const list = (
     <div className="toasts">
       {toasts.map((t) => (
         <div key={t.id} className={clsx("toast", t.kind)}>
@@ -214,6 +217,7 @@ function Toasts() {
       ))}
     </div>
   );
+  return fullscreen ? createPortal(list, fullscreen) : list;
 }
 
 export function App() {

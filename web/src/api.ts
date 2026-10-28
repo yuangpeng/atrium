@@ -314,6 +314,15 @@ export interface GitSummary {
   view?: GitView | null;
 }
 
+export interface CommitFile {
+  path: string;
+  orig: string | null; // renames / copies: the path in the parent
+  status: "A" | "M" | "D" | "R" | "C" | "T";
+  added: number;
+  removed: number;
+  binary: boolean;
+}
+
 export interface CommitDetail {
   sha: string;
   parents: string[];
@@ -322,8 +331,7 @@ export interface CommitDetail {
   time: number;
   refs: string;
   message: string;
-  files: { path: string; added: string; removed: string }[];
-  patch: string;
+  files: CommitFile[]; // against the first parent
 }
 
 export class ApiError extends Error {
@@ -449,6 +457,11 @@ export const api = {
       `/api/p/${pid}/git/graph${q({ mode, refs: refs?.join(",") })}`,
     ),
   gitCommit: (pid: string, sha: string) => req<CommitDetail>("GET", `/api/p/${pid}/git/commit/${sha}`),
+  gitCommitFile: (pid: string, sha: string, path: string, orig?: string | null) =>
+    req<{ path: string; parent: string | null; original: string; modified: string }>(
+      "GET",
+      `/api/p/${pid}/git/commit/${sha}/file${q({ path, orig })}`,
+    ),
   gitDiff: (pid: string, path: string, root?: string, staged = false) =>
     req<{ path: string; original: string; current: string; editable: boolean }>(
       "GET",

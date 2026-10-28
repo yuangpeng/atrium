@@ -1,9 +1,12 @@
 import { monaco } from "../monaco-setup";
-import { useEffect, useRef } from "react";
-import Editor, { DiffEditor as MonacoDiff, OnMount, DiffOnMount } from "@monaco-editor/react";
+import type { ReactNode } from "react";
+import { useEffect, useRef, useState } from "react";
+import Editor, { DiffEditor as MonacoDiff, DiffEditorProps, OnMount, DiffOnMount } from "@monaco-editor/react";
 import type * as Monaco from "monaco-editor";
+import { ArrowDown, ArrowUp } from "lucide-react";
 import { useApp } from "../store";
 import { trackEditor } from "../lsp/client";
+import { useDiffPrefs } from "./DiffOptions";
 
 function useMonacoTheme(): string {
   useApp((s) => s.theme); // re-render on theme changes
@@ -37,6 +40,12 @@ export interface Reveal {
   line: number;
   column?: number;
   nonce: number;
+}
+
+// ⌘S as an editor action, not addCommand: addCommand keybindings are global (the editor that
+// registered last wins, even after it is gone); actions belong to their editor.
+function addSave(editor: Monaco.editor.IStandaloneCodeEditor, m: typeof Monaco, save: { current?: () => void }) {
+  editor.addAction({ id: "atrium.save", label: "Save", keybindings: [m.KeyMod.CtrlCmd | m.KeyCode.KeyS], run: () => save.current?.() });
 }
 
 function revealIn(editor: Monaco.editor.IStandaloneCodeEditor, r: Reveal) {
@@ -73,7 +82,7 @@ export function CodeEditor({
   const tracking = useRef<Monaco.IDisposable | null>(null);
   const onMount: OnMount = (editor, m) => {
     edRef.current = editor;
-    editor.addCommand(m.KeyMod.CtrlCmd | m.KeyCode.KeyS, () => saveRef.current?.());
+    addSave(editor, m, saveRef);
     if (filePath) tracking.current = trackEditor(editor);
     if (reveal) revealIn(editor, reveal);
   };
@@ -95,13 +104,31 @@ export function CodeEditor({
   );
 }
 
+// One diff editor per file. On unmount it detaches and disposes its models itself, before
+// @monaco-editor/react's cleanup runs (deletion effects run parent-first): that one disposes the
+// models while still attached, which Monaco reports as "TextModel got disposed before
+// DiffEditorWidget model got reset".
+function DiffHost({ onMount, ...props }: DiffEditorProps) {
+  const ed = useRef<Monaco.editor.IStandaloneDiffEditor | null>(null);
+  useEffect(
+    () => () => {
+      const models = ed.current?.getModel();
+      ed.current?.setModel(null);
+      models?.original.dispose();
+      models?.modified.dispose();
+    },
+    [],
+  );
+  return <MonacoDiff {...props} onMount={(e, m) => ((ed.current = e), onMount?.(e, m))} />;
+}
+
 export function DiffEditor({
   id,
   original,
   modified,
   language,
   editable,
-  sideBySide,
+  labels,
   onChange,
   onSave,
 }: {
@@ -110,40 +137,108 @@ export function DiffEditor({
   modified: string;
   language: string;
   editable?: boolean;
-  sideBySide?: boolean;
+  /** column headers: what the left (before) and right (after) side show */
+  labels?: { original: ReactNode; modified: ReactNode };
   onChange?: (v: string) => void;
   onSave?: () => void;
 }) {
   const theme = useMonacoTheme();
+  const prefs = useDiffPrefs();
   const saveRef = useRef(onSave);
   saveRef.current = onSave;
   const changeRef = useRef(onChange);
   changeRef.current = onChange;
-  const onMount: DiffOnMount = (editor, monaco) => {
+  const edRef = useRef<Monaco.editor.IStandaloneDiffEditor | null>(null);
+  const [split, setSplit] = useState<number | null>(null); // left editor's width: the headers follow the sash
+  const [changes, setChanges] = useState<{ n: number; at: number } | null>(null);
+  useEffect(() => setChanges(null), [id]);
+
+  const onMount: DiffOnMount = (editor, m) => {
+    edRef.current = editor;
+    const orig = editor.getOriginalEditor();
     const mod = editor.getModifiedEditor();
-    mod.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => saveRef.current?.());
+    for (const ed of [orig, mod]) {
+      addSave(ed, m, saveRef);
+      ed.addAction({ id: "atrium.nextChange", label: "Next change", keybindings: [m.KeyMod.Alt | m.KeyCode.F5], run: () => editor.goToDiff("next") });
+      ed.addAction({ id: "atrium.prevChange", label: "Previous change", keybindings: [m.KeyMod.Shift | m.KeyMod.Alt | m.KeyCode.F5], run: () => editor.goToDiff("previous") });
+    }
     mod.onDidChangeModelContent(() => changeRef.current?.(mod.getValue()));
+    // "2 / 5 changes": how many changes start at or above the cursor (goToDiff moves it)
+    const count = () => {
+      const all = editor.getLineChanges() ?? [];
+      const line = mod.getPosition()?.lineNumber ?? 0;
+      setChanges({ n: all.length, at: all.filter((c) => Math.max(1, c.modifiedStartLineNumber) <= line).length });
+    };
+    editor.onDidUpdateDiff(count);
+    mod.onDidChangeCursorPosition(count);
+    orig.onDidLayoutChange((l) => setSplit(l.width));
+    setSplit(orig.getLayoutInfo().width);
   };
+  const go = (target: "next" | "previous") => {
+    edRef.current?.goToDiff(target);
+    edRef.current?.getModifiedEditor().focus();
+  };
+
+  const nav = (
+    <span className="diff-nav">
+      {changes && <span className="n">{changes.n === 0 ? "no changes" : `${changes.at ? `${changes.at} / ` : ""}${changes.n} change${changes.n === 1 ? "" : "s"}`}</span>}
+      <button className="icon-btn sm" title="Previous change (⇧⌥F5)" disabled={!changes?.n} onClick={() => go("previous")}>
+        <ArrowUp size={13} />
+      </button>
+      <button className="icon-btn sm" title="Next change (⌥F5)" disabled={!changes?.n} onClick={() => go("next")}>
+        <ArrowDown size={13} />
+      </button>
+    </span>
+  );
   return (
-    <MonacoDiff
-      key={id}
-      original={original}
-      modified={modified}
-      language={language}
-      theme={theme}
-      onMount={onMount}
-      originalModelPath={`atrium-diff://original/${id}`}
-      modifiedModelPath={`atrium-diff://modified/${id}`}
-      options={{
-        ...baseOptions,
-        readOnly: !editable,
-        originalEditable: false,
-        renderSideBySide: sideBySide ?? true,
-        useInlineViewWhenSpaceIsLimited: true,
-        hideUnchangedRegions: { enabled: true, contextLineCount: 3, minimumLineCount: 5 },
-        renderOverviewRuler: true,
-        ignoreTrimWhitespace: false,
-      }}
-    />
+    <div className="diff-wrap">
+      <div className="diff-cols">
+        {prefs.sideBySide ? (
+          <>
+            <div className="col" style={{ width: split ?? "50%" }}>
+              {labels?.original}
+            </div>
+            <div className="col grow">
+              {labels?.modified}
+              {nav}
+            </div>
+          </>
+        ) : (
+          <div className="col grow">
+            {labels && (
+              <>
+                {labels.original}
+                <span className="faint">→</span>
+                {labels.modified}
+              </>
+            )}
+            {nav}
+          </div>
+        )}
+      </div>
+      <div className="diff-body">
+        <DiffHost
+          key={id}
+          original={original}
+          modified={modified}
+          language={language}
+          theme={theme}
+          onMount={onMount}
+          originalModelPath={`atrium-diff://original/${id}`}
+          modifiedModelPath={`atrium-diff://modified/${id}`}
+          options={{
+            ...baseOptions,
+            readOnly: !editable,
+            originalEditable: false,
+            renderSideBySide: prefs.sideBySide,
+            useInlineViewWhenSpaceIsLimited: false, // side by side means side by side, even in a narrow panel
+            hideUnchangedRegions: { enabled: prefs.hideUnchanged, contextLineCount: 3, minimumLineCount: 5 },
+            ignoreTrimWhitespace: prefs.ignoreWhitespace,
+            wordWrap: prefs.wrap ? "on" : "off",
+            renderOverviewRuler: true,
+          }}
+        />
+      </div>
+    </div>
   );
 }

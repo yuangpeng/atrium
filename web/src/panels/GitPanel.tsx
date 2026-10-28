@@ -1,10 +1,13 @@
-import type { JSX } from "react";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Bot, ChevronDown, ChevronUp, FolderGit2, GitBranch, GitBranchPlus, Lightbulb, RefreshCw, Sparkles, Trash2, X } from "lucide-react";
-import { api, Branch, Commit, CommitDetail, GitSummary, GitView } from "../api";
+import type { JSX, MouseEvent as ReactMouseEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Bot, ChevronDown, ChevronUp, ExternalLink, FolderGit2, GitBranch, GitBranchPlus, Lightbulb, Maximize2, Minimize2, RefreshCw, Sparkles, Trash2, X } from "lucide-react";
+import { api, Branch, Commit, CommitDetail, CommitFile, GitSummary, GitView } from "../api";
 import { useApp } from "../store";
-import { clsx, relTo, throttle, timeAgo } from "../util";
-import { Spinner } from "../components/ui";
+import { clsx, languageFor, relTo, throttle, timeAgo } from "../util";
+import { Spinner, useFullscreen } from "../components/ui";
+import { DiffEditor } from "../components/LazyEditors";
+import { DiffOptions } from "../components/DiffOptions";
+import { FileNav, FileTree, useFileTree } from "../components/FileTree";
 import { ChatView } from "../chat/ChatView";
 
 const SIMPLIFY_PROMPT =
@@ -110,7 +113,7 @@ function RefPills({ refs, branches }: { refs: string[]; branches: Map<string, Br
 
 // ---------------------------------------------------------------- panel
 export function GitPanel() {
-  const { project, gitVersion, toast, refreshProject, openFile } = useApp();
+  const { project, gitVersion, toast, refreshProject } = useApp();
   const pid = project?.id ?? "";
   const [tab, setTab] = useState<"graph" | "worktrees">("graph");
   const [mode, setMode] = useState<"view" | "smart" | "all" | "custom">("view");
@@ -320,36 +323,7 @@ export function GitPanel() {
               </div>
             )}
           </div>
-          {detail && (
-            <div className="commit-detail">
-              <div className="hd">
-                <div className="row">
-                  <b className="grow">{detail.message.split("\n")[0]}</b>
-                  <button className="icon-btn sm" onClick={() => setSel(null)}>
-                    <X size={13} />
-                  </button>
-                </div>
-                <div className="muted" style={{ fontSize: 12 }}>
-                  <span className="mono">{detail.sha.slice(0, 10)}</span> · {detail.author} · {new Date(detail.time * 1000).toLocaleString()}
-                </div>
-                {detail.message.includes("\n") && <pre className="code-block wrap" style={{ marginTop: 6 }}>{detail.message.split("\n").slice(1).join("\n").trim()}</pre>}
-              </div>
-              <div className="patch">
-                {detail.patch.split("\n").map((l, i) => (
-                  <div
-                    key={i}
-                    className={clsx("l", l.startsWith("diff --git") ? "file" : l.startsWith("@@") ? "hunk" : l.startsWith("+") && !l.startsWith("+++") ? "add" : l.startsWith("-") && !l.startsWith("---") ? "del" : "")}
-                    onClick={() => {
-                      const m = l.match(/^diff --git a\/(.+) b\//);
-                      if (m) openFile(m[1]);
-                    }}
-                  >
-                    {l}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+          {detail && <CommitView key={detail.sha} detail={detail} onClose={() => setSel(null)} />}
         </>
       ) : (
         <Worktrees summary={sum} onChanged={() => (void load(), void refreshProject())} />
@@ -384,6 +358,160 @@ export function GitPanel() {
   );
 }
 
+// ---------------------------------------------------------------- commit
+const COMMIT_ST: Record<string, string> = { A: "created", D: "deleted", R: "renamed", C: "renamed" }; // M, T: modified
+const commitPath = (f: CommitFile) => f.path;
+const HEIGHT_KEY = "atrium.commitHeight";
+
+/** The selected commit under the graph: its files as a tree, one file's diff side by side. */
+function CommitView({ detail, onClose }: { detail: CommitDetail; onClose: () => void }) {
+  const { project, toast, openFile } = useApp();
+  const pid = project!.id;
+  const ref = useRef<HTMLDivElement>(null);
+  const [full, toggleFull] = useFullscreen(ref);
+  const [height, setHeight] = useState(() => Number(localStorage.getItem(HEIGHT_KEY)) || 0.55); // share of the panel
+  useEffect(() => localStorage.setItem(HEIGHT_KEY, String(height)), [height]);
+  const tree = useFileTree(detail.files, commitPath);
+  const [sel, setSel] = useState<string | null>(null);
+  const cur = detail.files.find((f) => f.path === sel) ?? tree.order[0] ?? null;
+  const [data, setData] = useState<{ original: string; modified: string } | null>(null);
+  useEffect(() => {
+    setData(null);
+    if (!cur || cur.binary) return;
+    let live = true;
+    api.gitCommitFile(pid, detail.sha, cur.path, cur.orig).then(
+      (d) => live && setData(d),
+      (e) => toast(e.message, "error"),
+    );
+    return () => {
+      live = false;
+    };
+  }, [pid, detail.sha, cur, toast]);
+
+  const drag = (e: ReactMouseEvent) => {
+    e.preventDefault();
+    const el = ref.current;
+    const box = el?.parentElement?.getBoundingClientRect();
+    if (!el || !box) return;
+    const bottom = el.getBoundingClientRect().bottom;
+    const move = (ev: MouseEvent) => setHeight(Math.min(0.85, Math.max(0.2, (bottom - ev.clientY) / box.height)));
+    const up = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    document.body.style.cursor = "row-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  };
+
+  const [subject, ...rest] = detail.message.split("\n");
+  const body = rest.join("\n").trim();
+  const added = detail.files.reduce((n, f) => n + f.added, 0);
+  const removed = detail.files.reduce((n, f) => n + f.removed, 0);
+  const parent = detail.parents[0] ?? null;
+  return (
+    <div ref={ref} className="commit-detail fs-host" style={{ height: `${height * 100}%` }}>
+      <div className="hresizer" onMouseDown={drag} />
+      <div className="hd">
+        <div className="row">
+          <b className="grow ellipsis" title={subject}>
+            {subject}
+          </b>
+          <DiffOptions />
+          <button className="icon-btn" title={full ? "Exit full screen (Esc)" : "Full screen"} onClick={toggleFull}>
+            {full ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+          </button>
+          <button className="icon-btn" title="Close" onClick={onClose}>
+            <X size={15} />
+          </button>
+        </div>
+        <div className="muted" style={{ fontSize: 12 }}>
+          <span className="mono">{detail.sha.slice(0, 10)}</span> · {detail.author} · {new Date(detail.time * 1000).toLocaleString()} · {detail.files.length} file
+          {detail.files.length === 1 ? "" : "s"} <span style={{ color: "var(--ok)" }}>+{added}</span> <span style={{ color: "var(--err)" }}>−{removed}</span>
+          {detail.parents.length > 1 && <span className="faint"> · merge: compared with its first parent</span>}
+        </div>
+        {body && <pre className="code-block wrap msg-body">{body}</pre>}
+      </div>
+      <div className="split">
+        <div className="side">
+          {detail.files.length === 0 && <div className="muted" style={{ padding: "8px 12px", fontSize: 12.5 }}>No file changes.</div>}
+          <FileTree
+            nodes={tree.nodes}
+            selected={cur?.path ?? null}
+            onSelect={(f) => setSel(f.path)}
+            renderFile={(f, name) => (
+              <>
+                <span className={`st ${COMMIT_ST[f.status] ?? "modified"}`}>{f.status}</span>
+                <span className="nm">{name}</span>
+                <span className="num">
+                  {f.binary ? (
+                    "bin"
+                  ) : (
+                    <>
+                      <span className="a">+{f.added}</span> <span className="r">−{f.removed}</span>
+                    </>
+                  )}
+                </span>
+              </>
+            )}
+          />
+        </div>
+        <div className="content">
+          {cur && (
+            <>
+              <div className="file-head">
+                <FileNav index={tree.order.indexOf(cur)} count={tree.order.length} onGo={(i) => setSel(tree.order[i].path)} />
+                <span className="mono ellipsis grow" title={cur.orig ? `${cur.orig} → ${cur.path}` : cur.path}>
+                  {cur.orig ? `${cur.orig} → ${cur.path}` : cur.path}
+                </span>
+                <button className="btn btn-sm" title="Open the file as it is now" disabled={cur.status === "D"} onClick={() => openFile(cur.path, project!.path)}>
+                  <ExternalLink size={12} /> Open
+                </button>
+              </div>
+              <div className="editor-host">
+                {cur.binary ? (
+                  <div className="empty-state">Binary file — not shown.</div>
+                ) : data ? (
+                  <DiffEditor
+                    id={`${detail.sha}:${cur.path}`}
+                    original={data.original}
+                    modified={data.modified}
+                    language={languageFor(cur.path)}
+                    labels={{
+                      original: (
+                        <>
+                          <b>Before</b>
+                          {parent ? <span className="mono">{parent.slice(0, 7)}</span> : <span className="faint">first commit</span>}
+                          {cur.status === "A" && <span className="faint">· new file</span>}
+                          {cur.orig && <span className="faint ellipsis">· {cur.orig}</span>}
+                        </>
+                      ),
+                      modified: (
+                        <>
+                          <b>After</b> <span className="mono">{detail.sha.slice(0, 7)}</span>
+                          {cur.status === "D" && <span className="faint">· deleted</span>}
+                        </>
+                      ),
+                    }}
+                  />
+                ) : (
+                  <div className="empty-state">
+                    <Spinner />
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- worktrees
 function Worktrees({ summary, onChanged }: { summary: GitSummary | null; onChanged: () => void }) {
   const { project, toast, sessions, selectSession, openFile } = useApp();
   const pid = project!.id;

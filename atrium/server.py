@@ -550,6 +550,11 @@ async def git_commit(pid: str, sha: str):
     return await gitops.commit_detail(P(pid).path, sha)
 
 
+@app.get("/api/p/{pid}/git/commit/{sha}/file")
+async def git_commit_file(pid: str, sha: str, path: str, orig: str | None = None):
+    return await gitops.commit_file(P(pid).path, sha, path, orig)
+
+
 @app.get("/api/p/{pid}/git/diff")
 async def git_diff(pid: str, path: str, root: str | None = None, staged: bool = False):
     p = P(pid)

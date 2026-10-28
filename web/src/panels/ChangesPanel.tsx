@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, CheckCircle2, Circle, Columns2, ExternalLink, GitCommitHorizontal, Minus, Plus, RefreshCw, Rows2, Undo2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, CheckCheck, CheckCircle2, Circle, ExternalLink, GitCommitHorizontal, Maximize2, Minimize2, Minus, Plus, RefreshCw, Undo2 } from "lucide-react";
 import { AgentChanges, api, ChangeDetail, ChangeFile, GitStatusFile, GitSummary } from "../api";
 import { useApp } from "../store";
-import { agentColor, basename, clsx, displayName, languageFor, throttle } from "../util";
+import { agentColor, basename, clsx, displayName, languageFor, shortPath, throttle } from "../util";
 import { DiffEditor } from "../components/LazyEditors";
-import { Spinner } from "../components/ui";
+import { DiffOptions } from "../components/DiffOptions";
+import { FileNav, FileTree, useFileTree } from "../components/FileTree";
+import { Spinner, useFullscreen } from "../components/ui";
 
 const ST: Record<string, string> = { created: "A", modified: "M", deleted: "D", "created+deleted": "–" };
 
@@ -16,13 +18,19 @@ const BASELINE_HINT: Record<string, string> = {
   unknown: "The content before this session could not be determined",
 };
 
+// tree paths: relative to the agent's cwd; files outside it keep their (home-shortened) absolute path
+const changePath = (f: ChangeFile) => (f.rel.startsWith("/") ? shortPath(f.rel) : f.rel);
+const gitPath = (f: GitStatusFile) => f.path;
+const toReview = (f: ChangeFile) => !f.reviewed && !f.unchanged;
+
 export function ChangesPanel() {
   const [mode, setMode] = useState<"agents" | "tree">("agents");
-  const [sideBySide, setSideBySide] = useState(true);
   const { project } = useApp();
+  const ref = useRef<HTMLDivElement>(null);
+  const [full, toggleFull] = useFullscreen(ref);
   if (!project) return null;
   return (
-    <div className="panel-body">
+    <div ref={ref} className="panel-body fs-host">
       <div className="toolbar">
         <div className="seg">
           <button className={clsx(mode === "agents" && "on")} onClick={() => setMode("agents")}>
@@ -35,17 +43,18 @@ export function ChangesPanel() {
           )}
         </div>
         <span className="grow" />
-        <button className="icon-btn" title={sideBySide ? "Inline diff" : "Side-by-side diff"} onClick={() => setSideBySide((v) => !v)}>
-          {sideBySide ? <Rows2 size={15} /> : <Columns2 size={15} />}
+        <DiffOptions />
+        <button className="icon-btn" title={full ? "Exit full screen (Esc)" : "Full-screen review"} onClick={toggleFull}>
+          {full ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
         </button>
       </div>
-      {mode === "agents" ? <AgentChangesView sideBySide={sideBySide} /> : <WorkingTreeView sideBySide={sideBySide} />}
+      {mode === "agents" ? <AgentChangesView /> : <WorkingTreeView />}
     </div>
   );
 }
 
 // ---------------------------------------------------------------- per agent
-function AgentChangesView({ sideBySide }: { sideBySide: boolean }) {
+function AgentChangesView() {
   const { project, sessions, sessionId, changesSession, fsVersion, toast, openFile } = useApp();
   const pid = project!.id;
   const [agents, setAgents] = useState<AgentChanges[] | null>(null);
@@ -55,6 +64,7 @@ function AgentChangesView({ sideBySide }: { sideBySide: boolean }) {
   const [sel, setSel] = useState<string | null>(null);
   const [detail, setDetail] = useState<ChangeDetail | null>(null);
   const [edited, setEdited] = useState<string | null>(null);
+  const tree = useFileTree(files, changePath);
 
   useEffect(() => {
     if (changesSession) setSid(changesSession);
@@ -85,8 +95,13 @@ function AgentChangesView({ sideBySide }: { sideBySide: boolean }) {
   }, [pid, sid, sel]);
 
   useEffect(() => void loadAgents(), [loadAgents]);
+  // nothing picked yet: start with the first agent that still has something to review
+  useEffect(() => {
+    if (!sid && agents?.length) setSid((agents.find((a) => a.unreviewed > 0) ?? agents[0]).session.id);
+  }, [agents, sid]);
   useEffect(() => {
     setSel(null);
+    setFiles(null); // not the previous agent's list: the first file would get selected from it
     void loadFiles();
   }, [loadFiles]);
   useEffect(() => void loadDetail(), [loadDetail]);
@@ -102,20 +117,25 @@ function AgentChangesView({ sideBySide }: { sideBySide: boolean }) {
     if (fsVersion) refreshAll();
   }, [fsVersion, refreshAll]);
   useEffect(() => {
-    if (files && !sel && files.length) setSel(files.find((f) => !f.reviewed && !f.unchanged)?.path ?? files[0].path);
-  }, [files, sel]);
+    if (!sel && tree.order.length) setSel((tree.order.find(toReview) ?? tree.order[0]).path);
+  }, [tree, sel]);
 
   const cur = files?.find((f) => f.path === sel) ?? null;
   const row = sessions.find((s) => s.id === sid);
 
-  const review = async (f: ChangeFile, reviewed: boolean) => {
-    await api.reviewChange(pid, sid!, f.path, reviewed);
+  const review = async (fs: ChangeFile[], reviewed: boolean) => {
+    // once the selected file is done, move on to the next one still to review (in tree order)
+    const done = new Set(fs.map((f) => f.path));
+    const i = tree.order.findIndex((f) => f.path === sel);
+    const next = reviewed && sel && done.has(sel) ? [...tree.order.slice(i + 1), ...tree.order.slice(0, i)].find((f) => !done.has(f.path) && toReview(f)) : undefined;
+    try {
+      await Promise.all(fs.map((f) => api.reviewChange(pid, sid!, f.path, reviewed)));
+    } catch (e: any) {
+      toast(e.message, "error");
+    }
     await loadFiles();
     void loadAgents();
-    if (reviewed && files) {
-      const next = files.find((x) => x.path !== f.path && !x.reviewed && !x.unchanged);
-      if (next) setSel(next.path);
-    }
+    if (next) setSel(next.path);
   };
   const revert = async (f: ChangeFile) => {
     const what = f.status === "created" ? "delete this new file (moved to .atrium/trash)" : "restore the file to how it was before this agent touched it";
@@ -176,20 +196,42 @@ function AgentChangesView({ sideBySide }: { sideBySide: boolean }) {
               </div>
             )}
             {files?.length === 0 && <div className="muted" style={{ padding: "4px 12px", fontSize: 12.5 }}>This agent hasn't changed any files.</div>}
-            {files?.map((f) => (
-              <div key={f.path} className={clsx("change-row", f.path === sel && "on", (f.reviewed || f.unchanged) && "reviewed")} onClick={() => setSel(f.path)} title={f.path}>
-                <span className={`st ${f.status}`}>{ST[f.status]}</span>
-                <span className="p">{f.rel}</span>
-                {f.detected && <span className="pill" title="Changed during the agent's turn outside its edit tools (shell commands, generators…) — found by comparing git snapshots">shell</span>}
-                {f.drift && <AlertTriangle size={12} style={{ color: "var(--warn)", flex: "none" }} />}
-                <span className="num">
-                  <span className="a">+{f.added}</span> <span className="r">−{f.removed}</span>
-                </span>
-                <button className="icon-btn sm" title={f.reviewed ? "Mark as not reviewed" : "Mark reviewed"} onClick={(e) => (e.stopPropagation(), void review(f, !f.reviewed))}>
-                  {f.reviewed ? <CheckCircle2 size={14} style={{ color: "var(--ok)" }} /> : <Circle size={14} />}
-                </button>
-              </div>
-            ))}
+            <FileTree
+              nodes={tree.nodes}
+              selected={cur ? changePath(cur) : null}
+              onSelect={(f) => setSel(f.path)}
+              rowClass={(f) => !toReview(f) && "reviewed"}
+              renderFile={(f, name) => (
+                <>
+                  <span className={`st ${f.status}`}>{ST[f.status]}</span>
+                  <span className="nm">{name}</span>
+                  {f.detected && <span className="pill" title="Changed during the agent's turn outside its edit tools (shell commands, generators…) — found by comparing git snapshots">shell</span>}
+                  {f.drift && <AlertTriangle size={12} style={{ color: "var(--warn)", flex: "none" }} />}
+                  <span className="num">
+                    <span className="a">+{f.added}</span> <span className="r">−{f.removed}</span>
+                  </span>
+                  <button className="icon-btn sm" title={f.reviewed ? "Mark as not reviewed" : "Mark reviewed"} onClick={(e) => (e.stopPropagation(), void review([f], !f.reviewed))}>
+                    {f.reviewed ? <CheckCircle2 size={14} style={{ color: "var(--ok)" }} /> : <Circle size={14} />}
+                  </button>
+                </>
+              )}
+              renderDir={(d) => {
+                const open = d.files.filter(toReview);
+                if (!open.length) return <CheckCircle2 size={13} className="done" />;
+                return (
+                  <>
+                    <span className="acts">
+                      <button className="icon-btn sm" title={`Mark all ${open.length} in ${d.name}/ reviewed`} onClick={(e) => (e.stopPropagation(), void review(open, true))}>
+                        <CheckCheck size={13} />
+                      </button>
+                    </span>
+                    <span className="cnt" title={`${open.length} to review`}>
+                      {open.length}
+                    </span>
+                  </>
+                );
+              }}
+            />
           </>
         )}
       </div>
@@ -207,20 +249,22 @@ function AgentChangesView({ sideBySide }: { sideBySide: boolean }) {
                 </span>
               </div>
               <div className="r2">
-              {edited != null && (
-                <button className="btn btn-sm btn-primary" onClick={() => void saveEdit()}>
-                  Save
+                <FileNav index={tree.order.indexOf(cur)} count={tree.order.length} onGo={(i) => setSel(tree.order[i].path)} />
+                <span className="grow" />
+                {edited != null && (
+                  <button className="btn btn-sm btn-primary" onClick={() => void saveEdit()}>
+                    Save
+                  </button>
+                )}
+                <button className="btn btn-sm" title="Open in editor" onClick={() => openFile(cur.path, cwd)} disabled={!detail.exists}>
+                  <ExternalLink size={12} /> Edit
                 </button>
-              )}
-              <button className="btn btn-sm" title="Open in editor" onClick={() => openFile(cur.path, cwd)} disabled={!detail.exists}>
-                <ExternalLink size={12} /> Edit
-              </button>
-              <button className="btn btn-sm btn-danger" onClick={() => void revert(cur)} title="Restore pre-agent content" disabled={detail.baseline_source === "unknown"}>
-                <Undo2 size={12} /> Revert
-              </button>
-              <button className={clsx("btn btn-sm", cur.reviewed ? "" : "btn-primary")} onClick={() => void review(cur, !cur.reviewed)}>
-                <CheckCircle2 size={12} /> {cur.reviewed ? "Reviewed" : "Mark reviewed"}
-              </button>
+                <button className="btn btn-sm btn-danger" onClick={() => void revert(cur)} title="Restore pre-agent content" disabled={detail.baseline_source === "unknown"}>
+                  <Undo2 size={12} /> Revert
+                </button>
+                <button className={clsx("btn btn-sm", cur.reviewed ? "" : "btn-primary")} onClick={() => void review([cur], !cur.reviewed)}>
+                  <CheckCircle2 size={12} /> {cur.reviewed ? "Reviewed" : "Mark reviewed"}
+                </button>
               </div>
             </div>
             {cur.drift && (
@@ -228,9 +272,6 @@ function AgentChangesView({ sideBySide }: { sideBySide: boolean }) {
                 <AlertTriangle size={13} /> The file has changed since this agent's last edit (you or another agent edited it). The diff shows everything since before the agent started.
               </div>
             )}
-            <div className="banner info" style={{ fontSize: 12 }}>
-              Left: before {row ? displayName(row) : "the agent"} touched it <span className="pill" title={BASELINE_HINT[detail.baseline_source]}>{BASELINE_LABEL[detail.baseline_source]}</span> · Right: on disk now (editable, ⌘S to save)
-            </div>
             <div className="editor-host">
               <DiffEditor
                 id={`${sid}:${cur.path}:${detail.sha}`}
@@ -238,7 +279,25 @@ function AgentChangesView({ sideBySide }: { sideBySide: boolean }) {
                 modified={detail.current ?? ""}
                 language={languageFor(cur.path)}
                 editable={detail.exists}
-                sideBySide={sideBySide}
+                labels={{
+                  original: (
+                    <>
+                      <b>Before</b> the agent
+                      <span className="pill" title={BASELINE_HINT[detail.baseline_source]}>
+                        {BASELINE_LABEL[detail.baseline_source]}
+                      </span>
+                    </>
+                  ),
+                  modified: detail.exists ? (
+                    <>
+                      <b>Now</b> on disk <span className="faint ellipsis">· editable, ⌘S saves</span>
+                    </>
+                  ) : (
+                    <>
+                      <b>Now</b> deleted
+                    </>
+                  ),
+                }}
                 onChange={(v) => setEdited(v === (detail.current ?? "") ? null : v)}
                 onSave={() => void saveEdit()}
               />
@@ -257,7 +316,7 @@ function AgentChangesView({ sideBySide }: { sideBySide: boolean }) {
 }
 
 // ---------------------------------------------------------------- git working tree
-function WorkingTreeView({ sideBySide }: { sideBySide: boolean }) {
+function WorkingTreeView() {
   const { project, gitVersion, toast, openFile } = useApp();
   const pid = project!.id;
   const [root, setRoot] = useState(project!.path);
@@ -286,9 +345,22 @@ function WorkingTreeView({ sideBySide }: { sideBySide: boolean }) {
   }, [pid, root, sel, toast]);
   useEffect(() => void loadDiff(), [loadDiff, gitVersion]);
 
-  const files = sum?.status?.files ?? [];
-  const staged = files.filter((f) => f.index !== "." && f.index !== "?");
-  const unstaged = files.filter((f) => f.worktree !== "." || f.index === "?");
+  const files = sum?.status?.files;
+  const staged = useMemo(() => (files ?? []).filter((f) => f.index !== "." && f.index !== "?"), [files]);
+  const unstaged = useMemo(() => (files ?? []).filter((f) => f.worktree !== "." || f.index === "?"), [files]);
+  const stagedTree = useFileTree(staged, gitPath);
+  const changesTree = useFileTree(unstaged, gitPath);
+  // previous / next walks both lists, staged first
+  const order = useMemo(
+    () => [...stagedTree.order.map((f) => ({ path: f.path, staged: true })), ...changesTree.order.map((f) => ({ path: f.path, staged: false }))],
+    [stagedTree, changesTree],
+  );
+  const index = sel ? order.findIndex((x) => x.path === sel.path && x.staged === sel.staged) : -1;
+  // a file that was just staged / unstaged stays selected on its new side
+  useEffect(() => {
+    if (sum && sel && index < 0) setSel(order.find((x) => x.path === sel.path) ?? null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [order]);
 
   const act = async (fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -302,38 +374,61 @@ function WorkingTreeView({ sideBySide }: { sideBySide: boolean }) {
     }
   };
 
-  const fileRow = (f: GitStatusFile, isStaged: boolean) => {
-    const code = isStaged ? f.index : f.index === "?" ? "?" : f.worktree;
+  // stage / unstage / discard one file, or every file in a folder
+  const actions = (fs: GitStatusFile[], isStaged: boolean, dir?: string) => {
+    const paths = fs.map((f) => f.path);
+    if (isStaged)
+      return (
+        <button className="icon-btn sm" title={dir ? `Unstage everything in ${dir}/` : "Unstage"} onClick={(e) => (e.stopPropagation(), void act(() => api.gitUnstage(pid, paths, root)))}>
+          <Minus size={13} />
+        </button>
+      );
+    const tracked = fs.filter((f) => f.index !== "?").map((f) => f.path);
     return (
-      <div key={(isStaged ? "s:" : "u:") + f.path} className={clsx("change-row", sel?.path === f.path && sel.staged === isStaged && "on")} onClick={() => setSel({ path: f.path, staged: isStaged })}>
-        <span className={`st ${code === "A" || code === "?" ? "created" : code === "D" ? "deleted" : "modified"}`}>{code === "?" ? "U" : code}</span>
-        <span className="p">{f.path}</span>
-        {isStaged ? (
-          <button className="icon-btn sm" title="Unstage" onClick={(e) => (e.stopPropagation(), void act(() => api.gitUnstage(pid, [f.path], root)))}>
-            <Minus size={13} />
+      <>
+        {tracked.length > 0 && (
+          <button
+            className="icon-btn sm"
+            title={dir ? `Discard changes in ${dir}/` : "Discard changes"}
+            onClick={(e) => {
+              e.stopPropagation();
+              const what = dir ? `${tracked.length} file${tracked.length === 1 ? "" : "s"} in ${dir}/` : tracked[0];
+              if (confirm(`Discard working-tree changes to ${what}?`)) void act(() => api.gitDiscard(pid, tracked, root));
+            }}
+          >
+            <Undo2 size={12} />
           </button>
-        ) : (
-          <>
-            {f.index !== "?" && (
-              <button
-                className="icon-btn sm"
-                title="Discard changes"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (confirm(`Discard working-tree changes to ${f.path}?`)) void act(() => api.gitDiscard(pid, [f.path], root));
-                }}
-              >
-                <Undo2 size={12} />
-              </button>
-            )}
-            <button className="icon-btn sm" title="Stage" onClick={(e) => (e.stopPropagation(), void act(() => api.gitStage(pid, [f.path], root)))}>
-              <Plus size={13} />
-            </button>
-          </>
         )}
-      </div>
+        <button className="icon-btn sm" title={dir ? `Stage everything in ${dir}/` : "Stage"} onClick={(e) => (e.stopPropagation(), void act(() => api.gitStage(pid, paths, root)))}>
+          <Plus size={13} />
+        </button>
+      </>
     );
   };
+
+  const fileTree = (tree: ReturnType<typeof useFileTree<GitStatusFile>>, isStaged: boolean) => (
+    <FileTree
+      nodes={tree.nodes}
+      selected={sel?.staged === isStaged ? sel.path : null}
+      onSelect={(f) => setSel({ path: f.path, staged: isStaged })}
+      renderFile={(f, name) => {
+        const code = isStaged ? f.index : f.index === "?" ? "?" : f.worktree;
+        return (
+          <>
+            <span className={`st ${code === "A" || code === "?" ? "created" : code === "D" ? "deleted" : code === "R" ? "renamed" : "modified"}`}>{code === "?" ? "U" : code}</span>
+            <span className="nm">{name}</span>
+            {f.orig && (
+              <span className="orig faint ellipsis" title={`renamed from ${f.orig}`}>
+                ← {basename(f.orig)}
+              </span>
+            )}
+            <span className="acts">{actions([f], isStaged)}</span>
+          </>
+        );
+      }}
+      renderDir={(d) => <span className="acts">{actions(d.files, isStaged, d.path)}</span>}
+    />
+  );
 
   const commit = () =>
     act(async () => {
@@ -385,7 +480,7 @@ function WorkingTreeView({ sideBySide }: { sideBySide: boolean }) {
               </button>
             )}
           </div>
-          {staged.map((f) => fileRow(f, true))}
+          {fileTree(stagedTree, true)}
           <div className="section-label">
             <span className="grow">Changes ({unstaged.length})</span>
             {unstaged.length > 0 && (
@@ -394,8 +489,8 @@ function WorkingTreeView({ sideBySide }: { sideBySide: boolean }) {
               </button>
             )}
           </div>
-          {unstaged.map((f) => fileRow(f, false))}
-          {files.length === 0 && <div className="muted" style={{ padding: "4px 12px", fontSize: 12.5 }}>Working tree clean.</div>}
+          {fileTree(changesTree, false)}
+          {files?.length === 0 && <div className="muted" style={{ padding: "4px 12px", fontSize: 12.5 }}>Working tree clean.</div>}
         </div>
         <div className="commit-box">
           <textarea className="textarea" rows={3} placeholder="Commit message" value={msg} onChange={(e) => setMsg(e.target.value)} onKeyDown={(e) => e.key === "Enter" && (e.metaKey || e.ctrlKey) && msg.trim() && void commit()} />
@@ -414,8 +509,9 @@ function WorkingTreeView({ sideBySide }: { sideBySide: boolean }) {
         {sel && diff ? (
           <>
             <div className="toolbar">
-              <span className="mono ellipsis grow" style={{ fontSize: 12.5 }}>
-                {sel.path} <span className="faint">{sel.staged ? "· HEAD → index" : "· HEAD → working tree"}</span>
+              <FileNav index={index} count={order.length} onGo={(i) => setSel(order[i])} />
+              <span className="mono ellipsis grow" style={{ fontSize: 12.5 }} title={sel.path}>
+                {sel.path}
               </span>
               {edited != null && (
                 <button className="btn btn-sm btn-primary" onClick={() => void saveEdit()}>
@@ -433,7 +529,18 @@ function WorkingTreeView({ sideBySide }: { sideBySide: boolean }) {
                 modified={diff.current}
                 language={languageFor(sel.path)}
                 editable={diff.editable}
-                sideBySide={sideBySide}
+                labels={{
+                  original: <b>HEAD</b>,
+                  modified: sel.staged ? (
+                    <>
+                      <b>Index</b> <span className="faint">· staged</span>
+                    </>
+                  ) : (
+                    <>
+                      <b>Working tree</b> <span className="faint ellipsis">· editable, ⌘S saves</span>
+                    </>
+                  ),
+                }}
                 onChange={(v) => setEdited(v === diff.current ? null : v)}
                 onSave={() => void saveEdit()}
               />

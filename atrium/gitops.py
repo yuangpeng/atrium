@@ -295,25 +295,81 @@ async def create_branch(path: str, name: str, base: str | None = None) -> None:
     await run_git(path, "branch", name, *([base] if base else []))
 
 
+def _rev(rev: str) -> str:
+    """A revision that came from the client: never let it pass as an option."""
+    if not rev or rev.startswith("-"):
+        raise GitError(f"bad revision: {rev!r}")
+    return rev
+
+
 async def commit_detail(path: str, sha: str) -> dict[str, Any]:
     fmt = SEP.join(["%H", "%P", "%an", "%ae", "%at", "%D", "%B"])
-    head = await run_git(path, "show", "-s", f"--format={fmt}", sha)
+    head = await run_git(path, "show", "-s", f"--format={fmt}", _rev(sha))
     parts = head.split(SEP)
-    numstat = await run_git(path, "show", "--format=", "--numstat", "-M", sha)
-    files = []
-    for line in numstat.splitlines():
-        cols = line.split("\t")
-        if len(cols) == 3:
-            files.append({"path": cols[2], "added": cols[0], "removed": cols[1]})
-    patch = await run_git(path, "show", "--format=", "--patch", "-M", "--no-color", sha, max_bytes=400_000)
+    parents = parts[1].split() if len(parts) > 1 and parts[1] else []
     return {
         "sha": parts[0],
-        "parents": parts[1].split() if len(parts) > 1 and parts[1] else [],
+        "parents": parents,
         "author": parts[2] if len(parts) > 2 else "",
         "email": parts[3] if len(parts) > 3 else "",
         "time": int(parts[4]) if len(parts) > 4 and parts[4] else 0,
         "refs": parts[5] if len(parts) > 5 else "",
         "message": parts[6].strip() if len(parts) > 6 else "",
-        "files": files,
-        "patch": patch,
+        "files": await commit_files(path, parts[0], parents[0] if parents else None),
     }
+
+
+async def commit_files(path: str, sha: str, parent: str | None) -> list[dict[str, Any]]:
+    """Files a commit changed, against its first parent: status (A M D R C T), the old path of
+    renames / copies, line counts (binary files have none)."""
+    span = [parent, sha] if parent else ["--root", sha]
+    base = ["diff-tree", "-r", "-z", "-M", "--no-commit-id"]
+    names, nums = await asyncio.gather(run_git(path, *base, "--name-status", *span), run_git(path, *base, "--numstat", *span))
+    counts: dict[str, tuple[str, str]] = {}
+    f = nums.split("\0")
+    i = 0
+    while i < len(f):
+        cols = f[i].split("\t")
+        i += 1
+        if len(cols) != 3:
+            continue
+        if cols[2]:
+            counts[cols[2]] = (cols[0], cols[1])
+        else:  # rename / copy: "added<TAB>removed<TAB>" NUL old NUL new
+            if i + 1 < len(f):
+                counts[f[i + 1]] = (cols[0], cols[1])
+            i += 2
+    files: list[dict[str, Any]] = []
+    f = names.split("\0")
+    i = 0
+    while i < len(f):
+        st = f[i]
+        i += 1
+        if not st or i >= len(f):
+            continue
+        orig = None
+        if st[0] in "RC" and i + 1 < len(f):
+            orig = f[i]
+            i += 1
+        rel = f[i]
+        i += 1
+        added, removed = counts.get(rel, ("0", "0"))
+        files.append(
+            {
+                "path": rel,
+                "orig": orig,
+                "status": st[0],
+                "added": int(added) if added.isdigit() else 0,
+                "removed": int(removed) if removed.isdigit() else 0,
+                "binary": added == "-",
+            }
+        )
+    return files
+
+
+async def commit_file(path: str, sha: str, rel: str, orig: str | None = None) -> dict[str, Any]:
+    """One file before (first parent) and after a commit, for the side-by-side diff."""
+    parents = (await run_git(path, "show", "-s", "--format=%P", _rev(sha))).split()
+    before = await show_file_at(path, parents[0], orig or rel) if parents else None
+    after = await show_file_at(path, sha, rel)
+    return {"path": rel, "parent": parents[0] if parents else None, "original": before or "", "modified": after or ""}

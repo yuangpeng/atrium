@@ -1,4 +1,4 @@
-import { ReactNode, useEffect, useRef, useState } from "react";
+import { ReactNode, RefObject, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -105,4 +105,25 @@ export function useInterval(fn: () => void, ms: number | null) {
 export function useTick(ms = 30000) {
   const [, set] = useState(0);
   useInterval(() => set((x) => x + 1), ms);
+}
+
+/** The element currently shown fullscreen, if any. */
+export function useFullscreenElement(): Element | null {
+  const [el, setEl] = useState<Element | null>(() => document.fullscreenElement);
+  useEffect(() => {
+    const on = () => setEl(document.fullscreenElement);
+    document.addEventListener("fullscreenchange", on);
+    return () => document.removeEventListener("fullscreenchange", on);
+  }, []);
+  return el;
+}
+
+/** Browser fullscreen for one element (Esc leaves it). Give the element the `fs-host` class. */
+export function useFullscreen(ref: RefObject<HTMLElement | null>): [boolean, () => void] {
+  const el = useFullscreenElement();
+  const toggle = () => {
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else void ref.current?.requestFullscreen?.().catch(() => undefined);
+  };
+  return [!!el && el === ref.current, toggle];
 }

@@ -46,7 +46,13 @@ A project-centric workbench for coding agents — Claude Code and Codex side by 
      shows where its baseline came from. Edit in the diff, mark reviewed, revert a file to its
      pre-agent state (refused when the baseline is unknown). Plus a classic *working tree* view: stage / unstage /
      discard / commit.
-   * **Git** — commit graph with lanes; *Smart* / *All* / *Custom* branch sets, and an
+     Changed files are listed as a **directory tree** (single-child folders compacted, folder-wide
+     "mark reviewed" / stage / unstage / discard); diffs are **side by side** (or inline) with
+     before / after headers, previous / next change (⌥F5) and file (↑ / ↓ in the tree), and toggles
+     for collapsing unchanged lines, ignoring whitespace and wrapping — remembered across reloads.
+     The review can go full screen.
+   * **Git** — commit graph with lanes (pick a commit: its files as a tree, each one diffed side by
+     side against the first parent, renames followed); *Smart* / *All* / *Custom* branch sets, and an
      **Agent view**: the **Git Agent** (a chat drawer) investigates with read-only git and drives
      the graph through a `graph.set_view` tool — "simplify the graph to what matters". Worktrees:
      create / remove, start an agent directly in a new worktree. A repository created later
