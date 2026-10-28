@@ -92,7 +92,18 @@ a { color: var(--accent-strong); }
 .app { display: flex; height: 100vh; width: 100vw; }
 .workspace { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg); position: relative; container-type: inline-size; }
 .ws-tabs { height: 48px; display: flex; align-items: center; gap: 2px; padding: 0 8px 0 10px; flex: none; border-bottom: 1px solid var(--border); }
-.ws-project { font-size: 12.5px; color: var(--faint); max-width: 30%; padding: 0 6px; }
+.ws-project {
+  position: relative; display: inline-flex; align-items: center; height: 28px; max-width: 30%; padding: 0 8px; border: 0; border-radius: 7px;
+  background: transparent; color: var(--faint); font-size: 12.5px; cursor: copy;
+}
+.ws-project:hover { background: var(--hover); color: var(--text-2); }
+/* full path on hover (click copies it) */
+.ws-project:hover::after {
+  content: attr(data-path); position: absolute; top: calc(100% + 6px); right: 0; z-index: 40; white-space: nowrap; pointer-events: none;
+  padding: 5px 9px; border-radius: 7px; background: var(--surface); border: 1px solid var(--border); box-shadow: var(--shadow);
+  font: 12px var(--font-mono); color: var(--text-2);
+}
+.panel-tab.icon-only { width: 34px; padding: 0; justify-content: center; }
 .chatcol { flex: none; display: flex; flex-direction: column; min-width: 0; background: var(--bg); border-left: 1px solid var(--border); position: relative; container: main / inline-size; }
 
 /* ---------------------------------------------------------------- primitives */
@@ -118,6 +129,7 @@ a { color: var(--accent-strong); }
 .icon-btn:hover { background: var(--hover); color: var(--text); }
 .icon-btn.active { background: var(--active); color: var(--text); }
 .icon-btn.sm { width: 24px; height: 24px; border-radius: 6px; }
+.icon-btn.danger:hover { background: var(--err-soft); color: var(--err); }
 .icon-btn:disabled { opacity: 0.4; cursor: default; }
 .pill {
   display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 8px; border-radius: 99px;
@@ -170,31 +182,36 @@ a { color: var(--accent-strong); }
 
 /* ---------------------------------------------------------------- rail */
 .rail { width: 52px; flex: none; background: var(--sidebar); border-left: 1px solid var(--border); display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 9px 0 10px; min-height: 0; }
-.rail-project {
-  width: 34px; height: 34px; border-radius: 9px; border: 0; background: var(--accent); color: #fff; font: 600 12px var(--font-ui);
-  letter-spacing: 0.03em; cursor: pointer; display: grid; place-items: center; flex: none; margin-bottom: 2px;
-}
-.rail-project:hover { background: var(--accent-strong); }
 .rail-btn { width: 34px; height: 34px; border-radius: 9px; border: 0; background: transparent; color: var(--muted); cursor: pointer; display: grid; place-items: center; flex: none; }
 .rail-btn:hover { background: var(--hover); color: var(--text); }
 .rail-btn.on { background: var(--active); color: var(--text); }
 .rail-new { color: var(--accent-strong); }
 .rail-sep { width: 20px; height: 1px; background: var(--border); margin: 4px 0; flex: none; }
-.rail-agents { flex: 0 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 4px 0; scrollbar-width: none; }
+/* full rail width + vertical padding: the scroll box clips, and the selection ring / badges sit outside the avatar */
+.rail-agents { flex: 0 1 auto; min-height: 0; align-self: stretch; overflow-y: auto; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 7px 0; scrollbar-width: none; }
 .rail-agents::-webkit-scrollbar { display: none; }
-.rail-agent {
-  position: relative; width: 32px; height: 32px; border-radius: 50%; border: 0; padding: 0; flex: none; cursor: pointer;
-  background: hsl(var(--h) 42% 88%); color: hsl(var(--h) 38% 30%); font: 600 11.5px var(--font-ui);
+/* agent emblem: a glyph on a circle tinted by the harness */
+.agent-av {
+  --hc: #5b7fbf; display: inline-grid; place-items: center; border-radius: 50%; flex: none;
+  background: radial-gradient(circle at 32% 28%, color-mix(in srgb, var(--hc) 9%, var(--surface)), color-mix(in srgb, var(--hc) 22%, var(--surface)));
+  color: color-mix(in srgb, var(--hc) 82%, #000); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--hc) 22%, transparent);
 }
-[data-theme="dark"] .rail-agent { background: hsl(var(--h) 22% 30%); color: hsl(var(--h) 45% 84%); }
-.rail-agent:hover { filter: brightness(0.96); }
-.rail-agent.on { box-shadow: 0 0 0 2px var(--sidebar), 0 0 0 3.5px var(--accent); }
+.agent-av.h-claude-code { --hc: #d97757; }
+.agent-av.h-codex { --hc: #10a37f; }
+[data-theme="dark"] .agent-av {
+  background: radial-gradient(circle at 32% 28%, color-mix(in srgb, var(--hc) 30%, var(--surface)), color-mix(in srgb, var(--hc) 16%, var(--surface)));
+  color: color-mix(in srgb, var(--hc) 70%, #fff);
+}
+.rail-agent { position: relative; width: 32px; height: 32px; border-radius: 50%; border: 0; padding: 0; flex: none; cursor: pointer; background: transparent; display: grid; place-items: center; }
+.rail-agent:hover .agent-av { filter: brightness(0.97) saturate(1.15); }
+.rail-agent.on .agent-av { box-shadow: 0 0 0 2px var(--sidebar), 0 0 0 3.5px var(--hc); }
+.fly-av { position: relative; display: inline-flex; flex: none; margin-top: 1px; }
+.fly-av .st { margin: 0; position: absolute; right: -2px; bottom: -2px; width: 10px; height: 10px; border: 2px solid var(--surface); }
 .rail-agent .st { position: absolute; right: -2px; bottom: -2px; width: 11px; height: 11px; border: 2px solid var(--sidebar); }
 .rail-agent .pend {
   position: absolute; top: -5px; right: -6px; min-width: 16px; height: 16px; border-radius: 8px; padding: 0 4px; background: var(--warn);
   color: #fff; font-size: 10px; font-weight: 700; display: grid; place-items: center; border: 1.5px solid var(--sidebar);
 }
-.rail-agent.alt { border-radius: 9px; } /* another harness (Codex): a rounded square instead of a circle */
 .rail-live { font-size: 10.5px; color: var(--faint); padding-top: 2px; cursor: default; font-variant-numeric: tabular-nums; }
 .rail-live.on { color: var(--ok); font-weight: 600; }
 .rail-tip {
@@ -208,7 +225,7 @@ a { color: var(--accent-strong); }
 .rail-tip .tip-foot { display: flex; gap: 6px; color: var(--faint); font-size: 11px; margin-top: 7px; }
 .rail-tip .tip-alert { margin-top: 7px; color: var(--warn); font-weight: 600; font-size: 11.5px; }
 .rail-flyout {
-  position: fixed; right: 60px; top: 10px; bottom: 10px; width: 320px; z-index: 70; display: flex; flex-direction: column;
+  position: fixed; right: 60px; top: 10px; bottom: 10px; width: 350px; z-index: 70; display: flex; flex-direction: column;
   background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow-lg);
 }
 .fly-head { display: flex; align-items: center; gap: 4px; padding: 10px 8px 8px 14px; font-size: 13.5px; }
@@ -219,8 +236,17 @@ a { color: var(--accent-strong); }
   display: flex; gap: 9px; align-items: flex-start; padding: 7px 9px; border-radius: 9px; cursor: pointer; border: 0; background: transparent;
   width: 100%; text-align: left; position: relative;
 }
-.sb-item:hover { background: var(--hover); }
-.sb-item.active { background: var(--active); }
+.sb-item.archived { opacity: 0.6; }
+/* agent list row: the entry + its archive / unarchive / delete buttons, always shown */
+.sb-row { display: flex; align-items: center; border-radius: 9px; }
+.sb-row:hover { background: var(--hover); }
+.sb-row.active { background: var(--active); }
+.sb-row > .sb-item { flex: 1; min-width: 0; }
+.sb-actions { display: flex; flex: none; padding-right: 4px; }
+.sb-actions .icon-btn { color: var(--faint); }
+.sb-actions .icon-btn:hover { color: var(--text); }
+.sb-actions .icon-btn.danger:hover { color: var(--err); }
+.sb-item.archived:hover, .sb-item.archived.active { opacity: 0.9; }
 .sb-item .dot { margin-top: 6px; }
 .sb-item .body { flex: 1; min-width: 0; }
 .sb-item .name { font-size: 13.5px; font-weight: 500; display: flex; align-items: center; gap: 6px; }

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -421,6 +422,30 @@ class SessionManager:
         if h.role == "worker":
             h.project.board.update_agent(sid, stats={"live": None})
         hub.publish(f"project:{h.project.id}", {"type": "session_state", "session_id": sid, "state": "closed", "pending": 0})
+
+    async def delete(self, project: Project, sid: str) -> str | None:
+        """Delete a session everywhere: stop it, back up its transcript into
+        ``.atrium/trash/sessions/``, remove it from the harness's store, forget Atrium's state.
+        Returns the backup directory (None when there was no transcript yet)."""
+        cwd, harness_id = await self.session_info(project, sid)
+        harness = get_harness(harness_id)
+        await self.close(sid)
+        backup = None
+        transcript = harness.transcript_path(sid, cwd)
+        if transcript and transcript.exists():
+            dest = project.state_dir / "trash" / "sessions" / f"{time.strftime('%Y%m%d-%H%M%S')}-{harness_id}-{sid}"
+            dest.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(transcript, dest / transcript.name)
+            sidecar = transcript.with_suffix("")  # Claude keeps subagent transcripts in <sid>/
+            if sidecar.is_dir():
+                shutil.copytree(sidecar, dest / sidecar.name, dirs_exist_ok=True)
+            backup = str(dest)
+        await harness.delete_session(sid, cwd)
+        project.forget_session(sid)
+        project.board.remove_agent(sid, timeline=True)
+        self.invalidate(project)
+        hub.publish(f"project:{project.id}", {"type": "sessions_changed"})
+        return backup
 
     async def snapshot(self, project: Project, sid: str) -> dict[str, Any]:
         meta = project.session_meta(sid)

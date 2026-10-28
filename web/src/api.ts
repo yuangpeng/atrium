@@ -406,6 +406,7 @@ export const api = {
   session: (pid: string, sid: string) => req<Snapshot>("GET", `/api/p/${pid}/sessions/${sid}`),
   patchSession: (pid: string, sid: string, body: { name?: string; archived?: boolean }) =>
     req("PATCH", `/api/p/${pid}/sessions/${sid}`, body),
+  deleteSession: (pid: string, sid: string) => req<{ ok: boolean; backup: string | null }>("DELETE", `/api/p/${pid}/sessions/${sid}`),
   send: (pid: string, sid: string, text: string, attachments: string[] = []) =>
     req("POST", `/api/p/${pid}/sessions/${sid}/send`, { text, attachments }),
   attach: (pid: string, sid: string) => req("POST", `/api/p/${pid}/sessions/${sid}/attach`, {}),

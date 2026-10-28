@@ -293,6 +293,15 @@ async def get_session(pid: str, sid: str):
     return snap
 
 
+@app.delete("/api/p/{pid}/sessions/{sid}")
+async def delete_session(pid: str, sid: str):
+    try:
+        backup = await sessions.delete(P(pid), sid)
+    except NotImplementedError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True, "backup": backup}
+
+
 @app.patch("/api/p/{pid}/sessions/{sid}")
 async def patch_session(pid: str, sid: str, body: dict[str, Any] = Body(...)):
     p = P(pid)

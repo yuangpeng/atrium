@@ -33,7 +33,7 @@ from claude_agent_sdk import (
     ToolUseBlock,
     UserMessage,
     create_sdk_mcp_server,
-    delete_session,
+    delete_session as sdk_delete_session,
     get_session_messages,
     list_sessions,
     project_key_for_directory,
@@ -642,6 +642,15 @@ class ClaudeCodeHarness(Harness):
         roots = [project_dir] + [w for w in gitops.worktree_paths_sync(project_dir) if w != project_dir]
         return [_claude_projects_dir() / project_key_for_directory(r) for r in roots]
 
+    async def delete_session(self, session_id: str, cwd: str) -> None:
+        # the transcript normally sits under the cwd's project key; otherwise search them all
+        for directory in (cwd, None):
+            try:
+                await asyncio.to_thread(sdk_delete_session, session_id, directory=directory)
+                return
+            except FileNotFoundError:
+                continue  # never written (or already gone) — nothing to delete
+
     async def rename_session(self, session_id: str, title: str, cwd: str) -> None:
         try:
             await asyncio.to_thread(rename_session, session_id, title, directory=cwd)
@@ -759,7 +768,7 @@ class ClaudeCodeHarness(Harness):
         if result is None:
             raise RuntimeError("no result from model")
         try:  # one-shot calls should not pile up as sessions
-            delete_session(result.session_id, directory=cwd)
+            sdk_delete_session(result.session_id, directory=cwd)
         except Exception:
             pass
         if result.is_error:

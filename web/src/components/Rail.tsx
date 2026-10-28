@@ -3,10 +3,15 @@
 import type { ReactNode } from "react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Archive, GitBranch, LayoutList, Monitor, Moon, Plus, Search, Settings, Sun, Workflow, X } from "lucide-react";
-import { SessionRow } from "../api";
+import type { LucideIcon } from "lucide-react";
+import {
+  Anchor, Archive, ArchiveRestore, Atom, Bird, Bug, Cat, Cherry, Citrus, Clover, Compass, Cookie, Dog, Feather, Fish, Flame, Flower2, FolderOpen, Gem,
+  Ghost, GitBranch, LayoutList, Leaf, Monitor, Moon, Mountain, Orbit, Origami, Rabbit, Rocket, Sailboat, Search, Settings, Shell,
+  Snail, Snowflake, Sprout, SquarePen, Squirrel, Star, Sun, Telescope, Trash2, Turtle, Workflow, X,
+} from "lucide-react";
+import { api, SessionRow } from "../api";
 import { useApp } from "../store";
-import { clsx, displayName, shortPath, timeAgo } from "../util";
+import { clsx, displayName, timeAgo } from "../util";
 import { Popover, useTick } from "./ui";
 
 export function statusClass(s: SessionRow): string {
@@ -29,18 +34,43 @@ export function liveLabel(s: SessionRow): string {
 
 const isActive = (s: SessionRow) => s.live === "running" || s.live === "waiting" || s.live === "starting" || s.pending > 0;
 
-function initials(s: SessionRow): string {
-  const words = displayName(s).replace(/\bagent\b/gi, "").match(/[\p{L}\p{N}]+/gu) ?? [];
-  const [a, b] = words;
-  if (a && b) return (a.slice(0, 1) + b.slice(0, 1)).toUpperCase();
-  const w = a ?? "?";
-  return /^\p{Script=Han}/u.test(w) ? w.slice(0, 1) : w.slice(0, 2).replace(/^./, (c) => c.toUpperCase());
+// ---------------------------------------------------------------- avatars
+// Every agent gets a little emblem: a glyph picked per agent on a circle coloured by its harness.
+const GLYPHS: LucideIcon[] = [
+  Cat, Dog, Bird, Fish, Rabbit, Squirrel, Turtle, Snail, Bug, Shell, Feather, Leaf, Flower2, Sprout, Clover, Cherry,
+  Citrus, Star, Orbit, Rocket, Ghost, Origami, Gem, Anchor, Compass, Mountain, Snowflake, Flame, Cookie, Sailboat, Telescope, Atom,
+];
+
+function hash(key: string): number {
+  let h = 2166136261;
+  for (const ch of key) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
+  return h >>> 0;
 }
 
-function hue(key: string): number {
-  let h = 0;
-  for (const ch of key) h = (h * 31 + ch.charCodeAt(0)) % 360;
-  return h;
+/** Glyph per session: preferred by id, else the next free one, assigned in creation order so agents keep theirs. */
+export function useGlyphs(): Map<string, LucideIcon> {
+  const sessions = useApp((s) => s.sessions);
+  return useMemo(() => {
+    const out = new Map<string, LucideIcon>();
+    const used = new Set<number>();
+    const ordered = sessions.filter((s) => s.role === "worker").sort((a, b) => (a.created_at ?? a.updated_at) - (b.created_at ?? b.updated_at) || a.id.localeCompare(b.id));
+    for (const s of ordered) {
+      let i = hash(s.id) % GLYPHS.length;
+      for (let n = 0; n < GLYPHS.length && used.has(i); n++) i = (i + 1) % GLYPHS.length;
+      used.add(i);
+      out.set(s.id, GLYPHS[i]!);
+    }
+    return out;
+  }, [sessions]);
+}
+
+export function AgentAvatar({ s, glyph, size = 32 }: { s: SessionRow; glyph?: LucideIcon; size?: number }) {
+  const Glyph = glyph ?? GLYPHS[hash(s.id) % GLYPHS.length]!;
+  return (
+    <span className={clsx("agent-av", `h-${s.harness}`)} style={{ width: size, height: size }}>
+      <Glyph size={Math.round(size * 0.5)} strokeWidth={1.9} />
+    </span>
+  );
 }
 
 // ---------------------------------------------------------------- hover card
@@ -63,13 +93,13 @@ function HoverCard({ anchor, children }: { anchor: HTMLElement; children: ReactN
   );
 }
 
-function AgentTip({ s }: { s: SessionRow }) {
+function AgentTip({ s, glyph }: { s: SessionRow; glyph?: LucideIcon }) {
   const live = liveLabel(s);
   const text = s.doing || s.first_prompt;
   return (
     <>
       <div className="tip-title">
-        <span className={clsx("dot", statusClass(s))} />
+        <AgentAvatar s={s} glyph={glyph} size={22} />
         <span className={clsx("grow", !s.name && "unnamed")}>{displayName(s)}</span>
         <span className={clsx("harness-badge", s.harness)}>{s.harness === "claude-code" ? "Claude" : s.harness}</span>
       </div>
@@ -111,7 +141,28 @@ function Tip({ title, sub, hint }: { title: ReactNode; sub?: ReactNode; hint?: s
 
 // ---------------------------------------------------------------- flyout with the full list
 function AgentsFlyout({ onClose }: { onClose: () => void }) {
-  const { sessions, sessionId, selectSession, showArchived, setShowArchived } = useApp();
+  const { project, meta, sessions, sessionId, selectSession, showArchived, setShowArchived, refreshSessions, toast } = useApp();
+  const glyphs = useGlyphs();
+  const setArchived = async (s: SessionRow, archived: boolean) => {
+    if (!project) return;
+    await api.patchSession(project.id, s.id, { archived }).catch((e) => toast(e.message, "error"));
+    if (archived && s.id === sessionId) selectSession(null);
+    void refreshSessions();
+  };
+  const remove = async (s: SessionRow) => {
+    if (!project) return;
+    const harness = meta?.harnesses.find((h) => h.id === s.harness)?.label ?? s.harness;
+    const live = s.live ? " The running agent is stopped first." : "";
+    if (!confirm(`Delete “${displayName(s)}”?\n\nThe conversation is removed from ${harness} as well.${live} A copy of the transcript is kept in .atrium/trash/sessions.`)) return;
+    try {
+      await api.deleteSession(project.id, s.id);
+      if (s.id === sessionId) selectSession(null);
+      toast(`Deleted ${displayName(s)}`, "ok");
+    } catch (e: any) {
+      toast(e.message || String(e), "error");
+    }
+    void refreshSessions();
+  };
   const [filter, setFilter] = useState("");
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -133,28 +184,42 @@ function AgentsFlyout({ onClose }: { onClose: () => void }) {
       (s) => s.role === "worker" && (!f || displayName(s).toLowerCase().includes(f) || (s.first_prompt || "").toLowerCase().includes(f) || (s.branch || "").toLowerCase().includes(f)),
     );
   }, [sessions, filter]);
-  const active = workers.filter(isActive);
-  const rest = workers.filter((s) => !isActive(s));
+  const active = workers.filter((s) => !s.archived && isActive(s));
+  const rest = workers.filter((s) => !s.archived && !isActive(s));
+  const archived = workers.filter((s) => s.archived);
   const item = (s: SessionRow) => (
-    <button key={s.id} className={clsx("sb-item", s.id === sessionId && "active")} onClick={() => (selectSession(s.id), onClose())} title={s.cwd}>
-      <span className={clsx("dot", statusClass(s))} />
-      <div className="body">
-        <div className="name">
-          <span className={clsx("ellipsis", !s.name && "unnamed")} style={{ flex: 1 }}>
-            {displayName(s)}
-          </span>
-          {s.harness !== "claude-code" && <span className={clsx("harness-badge", s.harness)}>{s.harness}</span>}
-          {s.pending > 0 && <span className="badge-n">{s.pending}</span>}
-          <span className="faint" style={{ fontSize: 11, fontWeight: 400 }}>
-            {timeAgo(s.updated_at)}
-          </span>
+    <div key={s.id} className={clsx("sb-row", s.id === sessionId && "active")}>
+      <button className={clsx("sb-item", s.id === sessionId && "active", s.archived && "archived")} onClick={() => (selectSession(s.id), onClose())} title={s.cwd}>
+        <span className="fly-av">
+          <AgentAvatar s={s} glyph={glyphs.get(s.id)} size={26} />
+          {statusClass(s) && <span className={clsx("st dot", statusClass(s))} />}
+        </span>
+        <div className="body">
+          <div className="name">
+            <span className={clsx("ellipsis", !s.name && "unnamed")} style={{ flex: 1 }}>
+              {displayName(s)}
+            </span>
+            {s.harness !== "claude-code" && <span className={clsx("harness-badge", s.harness)}>{s.harness}</span>}
+            {s.pending > 0 && <span className="badge-n">{s.pending}</span>}
+            <span className="faint" style={{ fontSize: 11, fontWeight: 400 }}>
+              {timeAgo(s.updated_at)}
+            </span>
+          </div>
+          <div className="sub ellipsis">
+            {s.worktree && s.branch && <span className="mono" style={{ color: "var(--accent-strong)", marginRight: 5 }}>⎇ {s.branch}</span>}
+            {s.doing || s.first_prompt || <span className="faint">—</span>}
+          </div>
         </div>
-        <div className="sub ellipsis">
-          {s.worktree && s.branch && <span className="mono" style={{ color: "var(--accent-strong)", marginRight: 5 }}>⎇ {s.branch}</span>}
-          {s.doing || s.first_prompt || <span className="faint">—</span>}
-        </div>
+      </button>
+      <div className="sb-actions">
+        <button className="icon-btn sm" title={s.archived ? "Unarchive" : "Archive"} onClick={() => void setArchived(s, !s.archived)}>
+          {s.archived ? <ArchiveRestore size={14} /> : <Archive size={14} />}
+        </button>
+        <button className="icon-btn sm danger" title="Delete" onClick={() => void remove(s)}>
+          <Trash2 size={14} />
+        </button>
       </div>
-    </button>
+    </div>
   );
   return (
     <div ref={ref} className="rail-flyout">
@@ -176,6 +241,8 @@ function AgentsFlyout({ onClose }: { onClose: () => void }) {
         {active.map(item)}
         {rest.length > 0 && <div className="sb-title">{active.length ? "Others" : "All"}</div>}
         {rest.map(item)}
+        {archived.length > 0 && <div className="sb-title">Archived</div>}
+        {archived.map(item)}
         {workers.length === 0 && <div className="faint" style={{ padding: "8px 12px", fontSize: 12.5 }}>{filter ? "No match." : "No sessions in this directory yet."}</div>}
       </div>
     </div>
@@ -188,6 +255,7 @@ export function Rail() {
   const { project, sessions, sessionId, selectSession, setPickerOpen, setSettingsOpen, theme, setTheme, setPanel } = useApp();
   const [tip, setTip] = useState<{ el: HTMLElement; content: ReactNode } | null>(null);
   const [flyout, setFlyout] = useState(false);
+  const glyphs = useGlyphs();
   const workers = useMemo(() => {
     const w = sessions.filter((s) => s.role === "worker" && !s.archived);
     return [...w.filter(isActive), ...w.filter((s) => !isActive(s))];
@@ -203,16 +271,16 @@ export function Rail() {
   return (
     <nav className="rail">
       <button
-        className="rail-project"
-        onClick={click(() => setPickerOpen(true))}
-        {...hoverProps(<Tip title={project?.name ?? "No project open"} sub={project ? <span className="mono">{shortPath(project.path)}</span> : undefined} hint="Click to switch project" />)}
+        className="rail-btn"
+        onClick={() => setPickerOpen(true)}
+        aria-label="Open project"
       >
-        {project ? project.name.replace(/[^\p{L}\p{N}]/gu, "").slice(0, 2).toUpperCase() || "·" : <Plus size={16} />}
+        <FolderOpen size={17} />
       </button>
       {project && (
         <>
-          <button className={clsx("rail-btn rail-new", !sessionId && "on")} onClick={click(() => selectSession(null))} {...hoverProps(<Tip title="New agent" sub="Start an agent in this project" />)}>
-            <Plus size={18} strokeWidth={2.2} />
+          <button className={clsx("rail-btn rail-new", !sessionId && "on")} onClick={() => selectSession(null)} aria-label="New agent">
+            <SquarePen size={17} />
           </button>
           <div className="rail-sep" />
           <div className="rail-agents">
@@ -221,39 +289,38 @@ export function Rail() {
               return (
                 <button
                   key={s.id}
-                  className={clsx("rail-agent", s.harness !== "claude-code" && "alt", s.id === sessionId && "on")}
-                  style={{ ["--h" as string]: hue(s.name || s.id) }}
+                  className={clsx("rail-agent", s.id === sessionId && "on")}
                   onClick={click(() => selectSession(s.id))}
-                  {...hoverProps(<AgentTip s={s} />)}
+                  {...hoverProps(<AgentTip s={s} glyph={glyphs.get(s.id)} />)}
                 >
-                  <span className="av">{initials(s)}</span>
+                  <AgentAvatar s={s} glyph={glyphs.get(s.id)} />
                   {sc && <span className={clsx("st dot", sc)} />}
                   {s.pending > 0 && <span className="pend">{s.pending}</span>}
                 </button>
               );
             })}
           </div>
-          <button className={clsx("rail-btn rail-flyout-toggle", flyout && "on")} onClick={click(() => setFlyout((o) => !o))} {...hoverProps(<Tip title="All agents" sub={`${workers.length} agent${workers.length === 1 ? "" : "s"} · search, archived`} />)}>
+          <button className={clsx("rail-btn rail-flyout-toggle", flyout && "on")} onClick={() => setFlyout((o) => !o)} aria-label="All agents">
             <LayoutList size={16} />
           </button>
           <div className="rail-sep" />
-          <button className="rail-btn" onClick={click(() => setPanel("board"))} {...hoverProps(<Tip title="Tracker Agent" sub="Keeps the board up to date from every session's transcript" hint="Click to open the board" />)}>
+          <button className="rail-btn" onClick={() => setPanel("board")} aria-label="Tracker Agent">
             <Workflow size={16} />
           </button>
-          <button className="rail-btn" onClick={click(() => setPanel("git"))} {...hoverProps(<Tip title="Git Agent" sub="Graph, branches & worktrees" hint="Click to open Git" />)}>
+          <button className="rail-btn" onClick={() => setPanel("git")} aria-label="Git Agent">
             <GitBranch size={16} />
           </button>
         </>
       )}
       <span className="grow" />
-      <button className="rail-btn" onClick={click(() => setSettingsOpen(true))} {...hoverProps(<Tip title="Settings" sub="Atrium, Claude Code and Codex config files" />)}>
+      <button className="rail-btn" onClick={() => setSettingsOpen(true)} aria-label="Settings">
         <Settings size={16} />
       </button>
       <Popover
         up
         align="right"
         trigger={(_o, toggle) => (
-          <button className="rail-btn" onClick={click(toggle)} {...hoverProps(<Tip title="Theme" sub={theme[0].toUpperCase() + theme.slice(1)} />)}>
+          <button className="rail-btn" onClick={toggle} aria-label="Theme">
             <ThemeIcon size={16} />
           </button>
         )}

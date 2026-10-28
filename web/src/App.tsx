@@ -15,10 +15,10 @@ import { ChangesPanel } from "./panels/ChangesPanel";
 import { GitPanel } from "./panels/GitPanel";
 
 const TABS: { id: Panel; label: string; icon: JSX.Element }[] = [
-  { id: "board", label: "Board", icon: <LayoutDashboard size={14} /> },
-  { id: "files", label: "Files", icon: <Files size={14} /> },
-  { id: "changes", label: "Changes", icon: <FileDiff size={14} /> },
-  { id: "git", label: "Git", icon: <GitBranch size={14} /> },
+  { id: "board", label: "Board", icon: <LayoutDashboard size={16} /> },
+  { id: "files", label: "Files", icon: <Files size={16} /> },
+  { id: "changes", label: "Changes", icon: <FileDiff size={16} /> },
+  { id: "git", label: "Git", icon: <GitBranch size={16} /> },
 ];
 const RAIL_WIDTH = 52;
 const MIN_CHAT = 340;
@@ -93,6 +93,20 @@ function SessionHeader() {
   );
 }
 
+/** The project's name; hover shows the full path, click copies it. */
+function ProjectPath({ path, name }: { path: string; name: string }) {
+  const toast = useApp((s) => s.toast);
+  return (
+    <button
+      className="ws-project"
+      data-path={path}
+      onClick={() => void navigator.clipboard.writeText(path).then(() => toast("Path copied", "ok"), () => toast("Couldn't copy the path", "error"))}
+    >
+      <span className="ellipsis">{name}</span>
+    </button>
+  );
+}
+
 /** Board / Files / Changes / Git — the large area on the left. */
 function Workspace() {
   const { panel, setPanel, project, chatOpen, setChatOpen } = useApp();
@@ -101,14 +115,12 @@ function Workspace() {
     <main className="workspace">
       <div className="ws-tabs">
         {TABS.map((t) => (
-          <button key={t.id} className={clsx("panel-tab", panel === t.id && "on")} onClick={() => setPanel(t.id)}>
-            {t.icon} {t.label}
+          <button key={t.id} className={clsx("panel-tab icon-only", panel === t.id && "on")} onClick={() => setPanel(t.id)} aria-label={t.label}>
+            {t.icon}
           </button>
         ))}
         <span className="grow" />
-        <span className="ws-project ellipsis" title={project.path}>
-          {project.name}
-        </span>
+        <ProjectPath path={project.path} name={project.name} />
         {!chatOpen && (
           <button className="icon-btn" title="Show chat" onClick={() => setChatOpen(true)}>
             <MessageSquare size={15} />

@@ -202,6 +202,10 @@ class Harness(ABC):
     async def rename_session(self, session_id: str, title: str, cwd: str) -> None:  # optional
         return None
 
+    async def delete_session(self, session_id: str, cwd: str) -> None:
+        """Remove the session from the harness's own store (so its CLI no longer lists it either)."""
+        raise NotImplementedError(f"{self.label} sessions can't be deleted from Atrium")
+
     def config_files(self, project_dir: str | None) -> list[Any]:
         """The harness's own settings files (``configfiles.ConfigFile``), edited raw in the UI."""
         return []

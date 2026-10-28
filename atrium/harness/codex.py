@@ -678,6 +678,10 @@ class CodexHarness(Harness):
         self._cwd_cache[path] = cwd
         return cwd
 
+    async def delete_session(self, session_id: str, cwd: str) -> None:
+        await self.client.request("thread/delete", {"threadId": session_id}, timeout=30)
+        self._paths.pop(session_id, None)
+
     async def rename_session(self, session_id: str, title: str, cwd: str) -> None:
         try:
             await self.client.request("thread/name/set", {"threadId": session_id, "name": title}, timeout=15)

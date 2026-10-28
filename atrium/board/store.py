@@ -96,6 +96,8 @@ class BoardStore:
         stats: dict[str, Any] | None = None,
         quiet: bool = False,
     ) -> dict[str, Any]:
+        if sid in self.project.deleted:  # e.g. a tracker run that started before the delete
+            return {}
         with self._lock:
             a = self._ensure(sid)
             if name:
@@ -134,6 +136,8 @@ class BoardStore:
             return True
 
     def log(self, sid: str | None, text: str, kind: str = "note", source: str = "self", quiet: bool = False) -> None:
+        if sid and sid in self.project.deleted:
+            return
         with self._lock:
             name = (self.state["agents"].get(sid) or {}).get("name") if sid else None
             self.state["timeline"].append({"ts": time.time(), "session_id": sid, "agent": name or "", "text": text[:400], "kind": kind, "source": source})
@@ -158,9 +162,15 @@ class BoardStore:
                 self.state["agents"][sid]["name"] = name
                 self._commit("agent", sid)
 
-    def remove_agent(self, sid: str) -> None:
+    def remove_agent(self, sid: str, timeline: bool = False) -> None:
+        """Remove an agent's tile (and with ``timeline``, its timeline entries too)."""
         with self._lock:
-            if self.state["agents"].pop(sid, None) is not None:
+            removed = self.state["agents"].pop(sid, None) is not None
+            if timeline:
+                before = len(self.state["timeline"])
+                self.state["timeline"] = [t for t in self.state["timeline"] if t.get("session_id") != sid]
+                removed = removed or len(self.state["timeline"]) != before
+            if removed:
                 self._commit("agent", sid)
 
     def rerender(self) -> None:

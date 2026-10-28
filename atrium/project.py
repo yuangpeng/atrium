@@ -53,6 +53,7 @@ class Project:
 
         self.board = BoardStore(self)
         self.tracker: Any = None  # set by ProjectManager
+        self.deleted: set[str] = set()  # sessions deleted while running: late board writes are dropped
 
     def _ensure_state_dir(self) -> None:
         self.state_dir.mkdir(exist_ok=True)
@@ -80,6 +81,17 @@ class Project:
             entry.update({k: v for k, v in fields.items() if v is not None})
             _write_json(self.state_dir / "agents.json", data)
             return entry
+
+    def forget_session(self, sid: str) -> None:
+        """Drop everything Atrium kept about a deleted session (name, snapshots, review marks)."""
+        self.deleted.add(sid)
+        with self._lock:
+            data = self._meta()
+            if data["sessions"].pop(sid, None) is not None:
+                _write_json(self.state_dir / "agents.json", data)
+            reviews = _read_json(self.state_dir / "reviews.json", {})
+            if reviews.pop(sid, None) is not None:
+                _write_json(self.state_dir / "reviews.json", reviews)
 
     def agent_name(self, sid: str) -> str | None:
         return self.session_meta(sid).get("name")
