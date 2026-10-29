@@ -36,10 +36,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "harness": "claude-code",  # harness preselected for new agents
     },
     # Per-harness defaults for new sessions. model/effort "" = the harness's own default
-    # (i.e. whatever ~/.claude/settings.json or ~/.codex/config.toml says).
+    # (i.e. whatever ~/.claude/settings.json or ~/.codex/config.toml says). Agents start with full access.
     "harnesses": {
-        "claude-code": {"permission_mode": "acceptEdits", "model": "", "effort": ""},
-        "codex": {"enabled": True, "binary": "codex", "permission_mode": "auto", "model": "", "effort": ""},
+        "claude-code": {"permission_mode": "bypassPermissions", "model": "", "effort": ""},
+        "codex": {"enabled": True, "binary": "codex", "permission_mode": "full-access", "model": "", "effort": ""},
     },
     "sessions": {"idle_close_minutes": 30},
     # Desktop notifications when an agent asks for approval or finishes a turn — skipped while its

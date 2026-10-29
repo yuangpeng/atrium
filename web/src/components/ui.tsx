@@ -1,4 +1,5 @@
-import { ReactNode, RefObject, useEffect, useRef, useState } from "react";
+import { ReactNode, RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -27,22 +28,37 @@ export function Modal({ title, onClose, children, footer, wide, xl, bodyClass }:
   );
 }
 
-/** Anchored popover menu; closes on outside click / Escape. */
+/** Anchored popover menu; closes on outside click / Escape. `within` (an ancestor selector) keeps the menu inside that box. */
 export function Popover({
   trigger,
   children,
   align = "left",
   up = false,
   width,
+  within,
 }: {
   trigger: (open: boolean, toggle: () => void) => ReactNode;
   children: (close: () => void) => ReactNode;
   align?: "left" | "right";
   up?: boolean;
-  width?: number;
+  width?: number | "max-content";
+  within?: string;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  // narrow and slide the menu sideways until it fits inside `within` and the window
+  useLayoutEffect(() => {
+    const menu = menuRef.current;
+    if (!open || !menu || !within) return;
+    const box = ref.current?.closest(within)?.getBoundingClientRect();
+    const lo = Math.max(8, box?.left ?? 0);
+    const hi = Math.min(window.innerWidth - 8, box?.right ?? Infinity);
+    if (menu.offsetWidth > hi - lo) menu.style.width = `${hi - lo}px`;
+    const r = menu.getBoundingClientRect();
+    const dx = r.right > hi ? hi - r.right : r.left < lo ? lo - r.left : 0;
+    menu.style.transform = dx ? `translateX(${dx}px)` : "";
+  }, [open, within]);
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => ref.current && !ref.current.contains(e.target as Node) && setOpen(false);
@@ -59,6 +75,7 @@ export function Popover({
       {trigger(open, () => setOpen((o) => !o))}
       {open && (
         <div
+          ref={menuRef}
           className="menu"
           style={{
             [align]: 0,
@@ -89,6 +106,47 @@ export function Markdown({ text }: { text: string }) {
 
 export function Spinner() {
   return <span className="spinner" />;
+}
+
+type TipProps = { onMouseEnter: (e: React.MouseEvent<HTMLElement>) => void; onMouseLeave: () => void; onMouseDown: () => void };
+
+/** Hover tooltip, a dark bubble over the element (after Codex's): spread `props` on the element, render `tip`. */
+export function useTip(content: ReactNode): [TipProps, ReactNode] {
+  const [anchor, setAnchor] = useState<HTMLElement | null>(null);
+  const timer = useRef(0);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  const hide = () => {
+    window.clearTimeout(timer.current);
+    setAnchor(null);
+  };
+  const props: TipProps = {
+    onMouseEnter: (e) => {
+      const el = e.currentTarget;
+      window.clearTimeout(timer.current);
+      timer.current = window.setTimeout(() => setAnchor(el), 250);
+    },
+    onMouseLeave: hide,
+    onMouseDown: hide, // a click opens the element's menu instead
+  };
+  return [props, anchor && content ? createPortal(<TipBubble anchor={anchor}>{content}</TipBubble>, document.body) : null];
+}
+
+function TipBubble({ anchor, children }: { anchor: HTMLElement; children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const r = anchor.getBoundingClientRect();
+    const above = r.top - el.offsetHeight - 8;
+    el.style.left = `${Math.max(8, Math.min(window.innerWidth - el.offsetWidth - 8, r.left + r.width / 2 - el.offsetWidth / 2))}px`;
+    el.style.top = `${above >= 8 ? above : r.bottom + 8}px`;
+    el.style.opacity = "1";
+  });
+  return (
+    <div ref={ref} className="hover-tip" role="tooltip">
+      {children}
+    </div>
+  );
 }
 
 export function useInterval(fn: () => void, ms: number | null) {

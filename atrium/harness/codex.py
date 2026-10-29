@@ -30,19 +30,20 @@ from .util import attachment_note, clip, hhmm, parse_json_loose, short, split_at
 
 log = logging.getLogger("atrium.codex")
 
+# The Codex app's three choices. "auto" and "full-access" are Codex's own approval presets;
+# "auto-review" is "auto" with approval requests routed to Codex's auto-reviewer instead of the user.
 PERMISSION_MODES = [
-    {"id": "untrusted", "label": "Ask permissions"},
-    {"id": "auto", "label": "Auto (workspace write)"},
-    {"id": "read-only", "label": "Read only"},
+    {"id": "auto", "label": "Ask for approval"},
+    {"id": "auto-review", "label": "Approve for me"},
     {"id": "full-access", "label": "Full access"},
-    {"id": "config", "label": "From config.toml"},
 ]
-# mode -> (approvalPolicy, sandbox mode); "config" sends nothing and lets config.toml decide
+# mode -> (approvalPolicy, sandbox mode, approvalsReviewer); any other mode sends nothing and lets
+# config.toml decide. "read-only" isn't offered in the picker: it's the Git agent's mode.
 MODE_POLICY = {
-    "untrusted": ("untrusted", "workspace-write"),
-    "auto": ("on-request", "workspace-write"),
-    "read-only": ("on-request", "read-only"),
-    "full-access": ("never", "danger-full-access"),
+    "auto": ("on-request", "workspace-write", "user"),
+    "auto-review": ("on-request", "workspace-write", "auto_review"),
+    "full-access": ("never", "danger-full-access", "user"),
+    "read-only": ("on-request", "read-only", "user"),
 }
 SANDBOX_POLICY = {
     "workspace-write": {"type": "workspaceWrite"},
@@ -289,13 +290,13 @@ class CodexLiveSession(LiveSession):
         self.state = "starting"
         self.model = spec.model or None
         self.effort = spec.effort or None
-        self.mode = spec.permission_mode or "auto"
+        self._config_effort: str | None = None  # the thread's effort from config.toml, reported when it starts
+        self.mode = spec.permission_mode or "full-access"
         self._mode_dirty = False
         self.turn_id: str | None = None
         self._turn_started = 0.0
         self._pending: dict[str, asyncio.Future] = {}
         self._file_changes: dict[str, Any] = {}
-        self._usage: dict[str, Any] | None = None
         self._tools: dict[tuple[str, str], ToolSpec] = {(ns, t.name): t for ns, specs in spec.toolsets.items() for t in specs}
         self._closed = False
 
@@ -306,7 +307,7 @@ class CodexLiveSession(LiveSession):
         if self.model:
             params["model"] = self.model
         if self.mode in MODE_POLICY:
-            params["approvalPolicy"], params["sandbox"] = MODE_POLICY[self.mode]
+            params["approvalPolicy"], params["sandbox"], params["approvalsReviewer"] = MODE_POLICY[self.mode]
         try:
             if spec.resume:
                 res = await self.client.request("thread/resume", {"threadId": self.session_id, "excludeTurns": True, **params})
@@ -320,12 +321,12 @@ class CodexLiveSession(LiveSession):
         self.client.add_thread(self.session_id, self._on_event, self._on_request)
         self.harness.live_threads.add(self.session_id)
         model = res.get("model") or thread.get("model") or "?"
-        effort = res.get("reasoningEffort") or thread.get("reasoningEffort")
+        effort = self._config_effort = res.get("reasoningEffort") or thread.get("reasoningEffort")
         mode = next((m["label"] for m in PERMISSION_MODES if m["id"] == self.mode), self.mode)
         self.emit({
             "kind": "system", "id": f"init-{self.session_id}-{int(time.time())}", "subtype": "init",
             "text": f"Connected · Codex · model {model}" + (f" · effort {effort}" if effort else "") + f" · {mode}",
-            "model": self.model or "", "permission_mode": self.mode,
+            "model": self.model or (model if model != "?" else ""), "effort": effort, "permission_mode": self.mode,
         })
         self._set_state("idle")
 
@@ -343,11 +344,12 @@ class CodexLiveSession(LiveSession):
         params: dict[str, Any] = {"threadId": self.session_id, "input": inp}
         if self.model:
             params["model"] = self.model
-        if self.effort:
-            params["effort"] = self.effort
+        # a turn's effort sticks to the turns after it, so going back to the config's level must be said too
+        if self.effort or self._config_effort:
+            params["effort"] = self.effort or self._config_effort
         if self._mode_dirty and self.mode in MODE_POLICY:
-            approval, sandbox = MODE_POLICY[self.mode]
-            params["approvalPolicy"], params["sandboxPolicy"] = approval, SANDBOX_POLICY[sandbox]
+            approval, sandbox, reviewer = MODE_POLICY[self.mode]
+            params["approvalPolicy"], params["sandboxPolicy"], params["approvalsReviewer"] = approval, SANDBOX_POLICY[sandbox], reviewer
             self._mode_dirty = False
         self._set_state("running")
         try:
@@ -451,7 +453,8 @@ class CodexLiveSession(LiveSession):
             for it in plan_items(params.get("turnId") or "turn", params.get("plan") or []):
                 self.emit(it)
         elif method == "thread/tokenUsage/updated":
-            self._usage = params.get("tokenUsage")
+            u = params.get("tokenUsage") or {}
+            self.emit({"kind": "usage", "id": "usage", "used": (u.get("last") or {}).get("totalTokens"), "max": u.get("modelContextWindow")})
         elif method == "turn/completed":
             turn = params.get("turn") or {}
             st = turn.get("status")
@@ -560,6 +563,7 @@ class CodexHarness(Harness):
     id = "codex"
     label = "Codex"
     permission_modes = PERMISSION_MODES
+    git_agent_mode = "read-only"
     models = [{"id": "", "label": "Default"}]
     efforts = DEFAULT_EFFORTS
 
@@ -618,6 +622,11 @@ class CodexHarness(Harness):
         if d["available"]:
             try:
                 d["models"] = await self._model_list()
+                # what a thread gets when Atrium doesn't pick: config.toml, else the default model and its effort
+                cfg = (await self.client.request("config/read", {}, timeout=30)).get("config") or {}
+                model = cfg.get("model") or d["models"][0].get("resolves_to")
+                entry = next((m for m in d["models"][1:] if m["id"] in (model, (model or "").split(":")[0])), {})  # "id:routing-tag"
+                d["config_model"], d["config_effort"] = model, cfg.get("model_reasoning_effort") or entry.get("default_effort")
             except Exception as e:
                 d["catalog_error"] = str(e)
         return d
@@ -641,7 +650,7 @@ class CodexHarness(Harness):
             if m.get("isDefault"):
                 default = entry
             models.append(entry)
-        head = {"id": "", "label": f"Default ({default['label']})" if default else "Default",
+        head = {"id": "", "label": f"Default ({default['label']})" if default else "Default", "resolves_to": (default or {}).get("id"),
                 "efforts": (default or {}).get("efforts") or DEFAULT_EFFORTS, "default_effort": (default or {}).get("default_effort")}
         self._models = (time.time(), [head] + models)
         return self._models[1]

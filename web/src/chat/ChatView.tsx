@@ -7,7 +7,7 @@ import { useApp } from "../store";
 import { clsx, fmtDuration } from "../util";
 import { Markdown, Spinner } from "../components/ui";
 import { BoardToolRow, PermissionCard, ToolRow, isBoardTool, useOpenSubagent } from "./ToolViews";
-import { AttachButton, AttachmentTray, EffortPicker, MessageAttachments, effortOptions, useAttachments } from "./Composer";
+import { AttachButton, AttachmentTray, ContextRing, EffortPicker, MessageAttachments, ModelChip, PermissionPicker, effortOptions, useAttachments } from "./Composer";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
 type ResultItem = Extract<Item, { kind: "tool_result" }>;
@@ -24,10 +24,12 @@ export interface ChatState {
   state: LiveState | null;
   mode: string | null;
   model: string | null;
+  effort: string | null; // the thread's effort when nothing overrides it, if the harness says (Codex)
+  usage: { used: number | null; max: number | null } | null;
 }
 
 export const empty = (): ChatState => ({
-  items: [], seen: new Set(), results: {}, pending: {}, resolved: new Set(), streaming: "", state: null, mode: null, model: null,
+  items: [], seen: new Set(), results: {}, pending: {}, resolved: new Set(), streaming: "", state: null, mode: null, model: null, effort: null, usage: null,
 });
 
 export function apply(st: ChatState, it: Item): ChatState {
@@ -36,6 +38,8 @@ export function apply(st: ChatState, it: Item): ChatState {
       return { ...st, streaming: st.streaming + it.text };
     case "state":
       return { ...st, state: it.state, streaming: it.state === "running" ? st.streaming : "" };
+    case "usage":
+      return { ...st, usage: { used: it.used, max: it.max } };
     case "tool_result":
       return { ...st, results: { ...st.results, [it.id]: it } };
     case "permission": {
@@ -62,6 +66,7 @@ export function apply(st: ChatState, it: Item): ChatState {
       if (it.kind === "system" && it.subtype === "init") {
         next.mode = it.permission_mode ?? next.mode;
         next.model = it.model ?? next.model;
+        next.effort = it.effort ?? next.effort;
       }
       return next;
     }
@@ -294,7 +299,6 @@ export function ChatView({ pid, sid, cwd, compact, forkable, placeholder, emptyH
   const forks = useMemo(() => (forkable ? forkPoints(st.items) : null), [st.items, forkable]);
   const onFork = useCallback((at: ForkAt, text: string) => setForkRequest({ sid, at, text }), [sid, setForkRequest]);
   const harness = meta?.harnesses.find((h) => h.id === (harnessId ?? "claude-code")) ?? meta?.harnesses[0];
-  const { efforts, fallback } = effortOptions(harness, settings.model || null);
   const canSend = (!!text.trim() || att.ids.length > 0) && !att.uploading && !sending;
 
   const send = useCallback(async () => {
@@ -343,24 +347,13 @@ export function ChatView({ pid, sid, cwd, compact, forkable, placeholder, emptyH
       toast(e.message, "error");
     }
   };
-  const setModel = async (model: string) => {
-    try {
-      await api.setModel(pid, sid, model);
-      setSt((s) => ({ ...s, model: model || s.model }));
-      setSettings((x) => ({ ...x, model }));
-      toast(`Model → ${model || "default"}`, "ok");
-    } catch (e: any) {
-      toast(e.message, "error");
-    }
-  };
-
 
   // detached sessions: show what the next attach will use (session settings, else the harness defaults)
   const defaults = meta?.settings.harnesses?.[harness?.id ?? ""] ?? {};
   const shownMode = st.mode || settings.mode || defaults.permission_mode || "";
-  const modeLabel = harness?.permission_modes.find((m) => m.id === shownMode)?.label ?? (shownMode || "Mode");
-  const shownModel = st.model || settings.model || defaults.model || "";
-  const modelLabel = shownModel ? harness?.models.find((m) => m.id === shownModel)?.label ?? shownModel.replace(/^claude-/, "") : "Default model";
+  const shownModel = st.model || settings.model || defaults.model || harness?.config_model || "";
+  const efforts = effortOptions(harness, shownModel || null);
+  const baseEffort = defaults.effort || st.effort || harness?.config_effort; // in effect while no effort is picked
   const pendingList = Object.values(st.pending);
 
   return (
@@ -415,37 +408,12 @@ export function ChatView({ pid, sid, cwd, compact, forkable, placeholder, emptyH
           <div className="composer-bar">
             <div className="bar-chips">
             <AttachButton onClick={att.open} />
-            {harness && (
-              <label className={clsx("chip", !st.mode && "faded")} title={st.mode ? "Permission mode" : "Permission mode (applies when the session is attached)"}>
-                {modeLabel}
-                <select value={shownMode} onChange={(e) => void setMode(e.target.value)}>
-                  {!shownMode && <option value="">Mode…</option>}
-                  {harness.permission_modes.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
-            {harness && !compact && (
-              <label className={clsx("chip", !st.model && "faded")} title={shownModel || "Model"}>
-                <span className="ellipsis" style={{ maxWidth: 160 }}>{modelLabel}</span>
-                <select value="" onChange={(e) => void setModel(e.target.value)}>
-                  <option value="" disabled>
-                    Switch model…
-                  </option>
-                  {harness.models.map((m) => (
-                    <option key={m.id || "default"} value={m.id}>
-                      {m.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
+            {harness && <PermissionPicker harness={harness} value={shownMode} onChange={(m) => void setMode(m)} detached={!st.mode} />}
+            {harness && !compact && <ModelChip harness={harness} model={shownModel} faded={!st.model} />}
             </div>
             <div className="bar-end">
-            <EffortPicker efforts={efforts} value={settings.effort} fallback={fallback} onChange={(e) => void setEffort(e)} />
+            <ContextRing used={st.usage?.used} max={st.usage?.max} />
+            <EffortPicker efforts={efforts} value={settings.effort} base={baseEffort} onChange={(e) => void setEffort(e)} />
             {running ? (
               <>
                 {canSend && (

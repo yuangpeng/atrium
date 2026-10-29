@@ -5,7 +5,7 @@ import { useApp } from "../store";
 import { EMPTY_DRAFT, NewAgentDraft, Workspace, useDrafts } from "../drafts";
 import { clsx, relTo } from "../util";
 import { Popover, Spinner } from "./ui";
-import { AttachButton, AttachmentTray, EffortPicker, PendingUpload, effortOptions, useAttachments } from "../chat/Composer";
+import { AttachButton, AttachmentTray, EffortPicker, HarnessPicker, ModelChip, PendingUpload, PermissionPicker, effortOptions, useAttachments } from "../chat/Composer";
 
 export function Home() {
   const { project, meta, selectSession, toast, refreshSessions, refreshProject } = useApp();
@@ -41,7 +41,9 @@ export function Home() {
   const defaults = meta.settings.harnesses?.[harness.id] ?? {};
   const mode = draft.mode ?? (defaults.permission_mode || harness.permission_modes[0]?.id || "");
   const model = draft.model ?? (defaults.model || "");
-  const effort = draft.effort ?? (defaults.effort || "");
+  // an effort picked here; without one, Atrium's default for the harness, else what its config files say
+  const effort = draft.effort ?? "";
+  const baseEffort = defaults.effort || harness.config_effort || "";
   const worktrees = project.worktrees.filter((w) => !w.main);
   const currentBranch = project.worktrees.find((w) => w.main)?.branch || "HEAD";
   // a worktree removed since the draft was written falls back to the project directory
@@ -49,7 +51,7 @@ export function Home() {
   const ws: Workspace = saved.kind === "worktree" && !worktrees.some((w) => w.path === saved.path) ? { kind: "root" } : saved;
   const setWs = (ws: Workspace) => patch({ ws });
 
-  const { efforts, fallback } = effortOptions(harness, model);
+  const efforts = effortOptions(harness, model || harness.config_model);
   const canStart = !!prompt.trim() && !busy && !att.uploading && harness.available;
 
   const start = async () => {
@@ -63,7 +65,7 @@ export function Home() {
         harness: harness.id,
         mode,
         model: model || undefined,
-        effort: effort || undefined,
+        effort: effort || defaults.effort || undefined,
         attachments: att.ids,
         cwd: ws.kind === "worktree" ? ws.path : undefined,
         worktree: ws.kind === "new" ? { branch: ws.branch.trim(), base: ws.base || undefined, create: true } : undefined,
@@ -122,20 +124,11 @@ export function Home() {
           <div className="composer-bar">
             <div className="bar-chips">
             <AttachButton onClick={att.open} />
+            {/* another harness: back to its defaults */}
             {meta.harnesses.length > 1 && (
-              <label className={clsx("chip", "harness-chip")} title={harness.available ? "Harness" : harness.unavailable_reason ?? ""}>
-                {harness.label}
-                {/* another harness: back to its defaults */}
-                <select value={harness.id} onChange={(e) => patch({ harness: e.target.value, mode: undefined, model: undefined, effort: undefined })}>
-                  {meta.harnesses.map((h) => (
-                    <option key={h.id} value={h.id} disabled={!h.available}>
-                      {h.label}
-                      {h.available ? "" : " (unavailable)"}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <HarnessPicker harnesses={meta.harnesses} value={harness.id} onChange={(id) => patch({ harness: id, mode: undefined, model: undefined, effort: undefined })} />
             )}
+            <PermissionPicker harness={harness} value={mode} onChange={(mode) => patch({ mode })} />
             {project.is_git ? (
               <Popover
                 up
@@ -182,29 +175,10 @@ export function Home() {
                 <FolderGit2 size={13} /> {project.name}
               </span>
             )}
-            <label className="chip" title="Permission mode">
-              {harness.permission_modes.find((m) => m.id === mode)?.label ?? mode}
-              <select value={mode} onChange={(e) => patch({ mode: e.target.value })}>
-                {harness.permission_modes.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="chip" title="Model">
-              {harness.models.find((m) => m.id === model)?.label ?? (model || "Default model")}
-              <select value={model} onChange={(e) => patch({ model: e.target.value })}>
-                {harness.models.map((m) => (
-                  <option key={m.id || "d"} value={m.id}>
-                    {m.label}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <ModelChip harness={harness} model={model || harness.config_model} />
             </div>
             <div className="bar-end">
-              <EffortPicker efforts={efforts} value={effort} fallback={fallback} onChange={(effort) => patch({ effort })} />
+              <EffortPicker efforts={efforts} value={effort} base={baseEffort} onChange={(effort) => patch({ effort })} />
               <button className="send-btn" disabled={!canStart} onClick={() => void start()} title="Start agent (Enter)">
                 {busy ? <Spinner /> : <ArrowUp size={17} strokeWidth={2.4} />}
               </button>

@@ -121,8 +121,9 @@ class SessionManager:
             fork = project.session_meta(sid).get("forked_from") if sid else None
             if fork:
                 append += "\n\n" + _fork_note(fork, cwd)
-        modes = [m["id"] for m in get_harness(harness_id).permission_modes]
-        default_mode = ("read-only" if "read-only" in modes else "default") if role == "git" else hdef.get("permission_mode")
+        harness = get_harness(harness_id)
+        modes = [m["id"] for m in harness.permission_modes]
+        default_mode = harness.git_agent_mode if role == "git" else hdef.get("permission_mode")
         mode = mode or default_mode or (modes[0] if modes else "default")
         spec = LiveSpec(
             session_id=sid,
@@ -167,6 +168,9 @@ class SessionManager:
             elif kind == "permission_resolved":
                 h.pending.pop(item["id"], None)
             elif kind == "result":
+                if "usage" in h.index:  # the context gauge outlives the live session
+                    u = h.items[h.index["usage"]]
+                    h.project.set_session_meta(h.sid, usage={"used": u.get("used"), "max": u.get("max")})
                 asyncio.get_running_loop().create_task(self._turn_ended(h))
                 notifier.turn_ended(h, item)
             hub.publish(topic, {"type": "item", "item": item})
@@ -528,7 +532,7 @@ class SessionManager:
             role = meta.get("role", "worker")
             harness = get_harness(harness_id)
             known = summary is not None or bool(fork)  # a fork exists before discovery lists it
-            preload = await harness.load_history(sid, cwd) if known else (h.items if h else [])
+            preload = _with_usage(await harness.load_history(sid, cwd), meta) if known else (h.items if h else [])
             return await self._start(project, sid, resume=known, harness_id=harness_id, cwd=cwd, name=name, role=role,
                                      model=model or meta.get("model"), effort=meta.get("effort"), mode=mode or meta.get("mode"), preload=preload)
 
@@ -632,8 +636,13 @@ class SessionManager:
         if not summary and not meta.get("forked_from"):  # never reached the transcript (e.g. failed to start): show what we have
             return {"live": False, "state": h.state if h else None, "items": h.items if h else [], "pending": [], "settings": settings}
         harness = get_harness(meta.get("harness") or (summary.harness if summary else "claude-code"))
-        items = await harness.load_history(sid, (summary.cwd if summary else None) or meta.get("cwd") or project.path)
+        items = _with_usage(await harness.load_history(sid, (summary.cwd if summary else None) or meta.get("cwd") or project.path), meta)
         return {"live": False, "state": None, "items": items, "pending": [], "settings": settings}
+
+
+def _with_usage(items: list[Item], meta: dict[str, Any]) -> list[Item]:
+    """History plus the context gauge as of the last turn Atrium saw (transcripts don't record the window)."""
+    return [*items, {"kind": "usage", "id": "usage", **meta["usage"]}] if meta.get("usage") else items
 
 
 def _subagent_rows(found: list[SubagentSummary], h: LiveHandle | None) -> list[dict[str, Any]]:

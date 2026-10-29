@@ -56,6 +56,7 @@ MAX_RESULT_CHARS = 20_000
 MAX_INLINE_IMAGE_B64 = 3_000_000  # history images above this are shown as a placeholder
 EFFORTS = ["low", "medium", "high", "xhigh", "max"]
 EFFORT_ENV = "CLAUDE_CODE_EFFORT_LEVEL"
+CLI_DEFAULT_EFFORT = "medium"  # what Claude Code sends when nothing sets an effort (seen with 2.1.310 on Opus 5.5)
 AGENT_TASKS = (None, "local_agent", "remote_agent")  # task types that are subagents (None: older CLIs)
 TASK_STATUS = {"completed": "done", "failed": "failed", "stopped": "stopped", "killed": "stopped"}
 SUBAGENT_STALE = 300  # a subagent mid-turn whose transcript sat still this long (seconds) is presumed stopped
@@ -76,6 +77,32 @@ def _effort_settings(effort: str | None) -> str | None:
     settings.json; flag settings sit above every other settings source.
     """
     return json.dumps({"env": {EFFORT_ENV: effort}}) if effort else None
+
+
+def config_defaults() -> tuple[str | None, str]:
+    """The model and effort a session gets when Atrium doesn't pick them, as the user settings and the
+    environment say (Claude Code applies the settings' ``env`` over its own). Project settings aren't read."""
+    try:
+        settings = json.loads((_claude_home() / "settings.json").read_text())
+    except (OSError, ValueError):
+        settings = {}
+    env = {**os.environ, **{k: str(v) for k, v in (settings.get("env") or {}).items()}}
+    model = env.get("ANTHROPIC_MODEL") or settings.get("model") or None
+    if model and re.fullmatch(r"[a-z]+(\[1m\])?", model):  # an alias ("opus[1m]") resolves through its env override
+        model = env.get(f"ANTHROPIC_DEFAULT_{model.split('[')[0].upper()}_MODEL") or model
+    effort = env.get(EFFORT_ENV) or settings.get("effortLevel")
+    if isinstance(effort, dict):  # effortLevel per model
+        effort = effort.get(model or "")
+    return model, effort if isinstance(effort, str) and effort else CLI_DEFAULT_EFFORT
+
+
+def context_item(last: AssistantMessage, result: ResultMessage) -> Item:
+    """The context gauge after a turn: the main thread's last call (prompt + reply) against the model's window."""
+    u = last.usage or {}
+    used = sum(int(u.get(k) or 0) for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"))
+    models = result.model_usage or {}
+    m = models.get(last.model) or max(models.values(), key=lambda x: x.get("contextWindow") or 0, default={})
+    return {"kind": "usage", "id": "usage", "used": used, "max": m.get("contextWindow")}
 
 
 def _short(s: Any, n: int) -> str:
@@ -337,8 +364,13 @@ class ClaudeLiveSession(LiveSession):
 
     async def _read_loop(self, client: ClaudeSDKClient) -> None:
         tasks: dict[str, str | None] = {}
+        last: AssistantMessage | None = None
         async for msg in client.receive_messages():
             try:
+                if isinstance(msg, AssistantMessage) and msg.parent_tool_use_id is None and msg.usage:
+                    last = msg
+                if isinstance(msg, ResultMessage) and last:
+                    self.emit(context_item(last, msg))  # ahead of the result, which saves it with the session
                 for item in live_message_items(msg, tasks):
                     self.emit(item)
                 if isinstance(msg, ResultMessage):
@@ -613,6 +645,11 @@ class ClaudeCodeHarness(Harness):
     def __init__(self) -> None:
         self._subagent_cache: dict[str, tuple[tuple[int, int, int], dict[str, Any]]] = {}  # path -> (signature, scan)
         self._subagent_lock = threading.Lock()  # list_subagents runs in worker threads
+
+    async def catalog(self) -> dict[str, Any]:
+        d = self.describe()
+        d["config_model"], d["config_effort"] = config_defaults()
+        return d
 
     def config_files(self, project_dir: str | None) -> list[Any]:
         from ..configfiles import ConfigFile

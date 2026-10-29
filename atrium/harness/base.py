@@ -204,6 +204,7 @@ class Harness(ABC):
     id: str
     label: str
     permission_modes: list[dict[str, str]] = []
+    git_agent_mode: str = "default"  # the Git agent's mode: reads freely, asks before anything else
     models: list[dict[str, Any]] = []  # [{id, label, efforts?: [..], default_effort?}]
     efforts: list[str] = []  # reasoning-effort levels when a model does not list its own
 

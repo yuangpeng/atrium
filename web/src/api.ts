@@ -17,6 +17,9 @@ export interface Harness {
   permission_modes: { id: string; label: string }[];
   models: HarnessModel[];
   efforts: string[];
+  // what a session gets when Atrium doesn't pick: from ~/.claude/settings.json / config.toml (or the CLI's own default)
+  config_model?: string | null;
+  config_effort?: string | null;
 }
 
 export interface HarnessDefaults {
@@ -187,10 +190,11 @@ export type Item =
       text?: string | null;
       terminal_reason?: string | null;
     }
-  | { kind: "system"; id: string; subtype: string; text: string; model?: string; permission_mode?: string; tool_use_id?: string | null; agent_id?: string | null }
+  | { kind: "system"; id: string; subtype: string; text: string; model?: string; effort?: string | null; permission_mode?: string; tool_use_id?: string | null; agent_id?: string | null }
   | { kind: "error"; id: string; text: string }
   | { kind: "delta"; text: string }
-  | { kind: "state"; state: LiveState };
+  | { kind: "state"; state: LiveState }
+  | { kind: "usage"; id: string; used: number | null; max: number | null }; // context window gauge, latest wins
 
 export interface BoardAgent {
   session_id: string;
