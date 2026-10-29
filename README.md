@@ -74,7 +74,9 @@ A project-centric workbench for coding agents — Claude Code and Codex side by 
    Sending while a Codex turn runs steers that turn. The new-agent page keeps a **draft** per project
    (name, task, attachments, workspace / harness / mode / model / effort) in the browser's
    localStorage: open another agent, hide the chat or reload, and it's still there until the agent
-   starts; a dot on the rail's new-agent button says one is waiting.
+   starts; a dot on the rail's new-agent button says one is waiting. Every agent's reply box (the Git
+   Agent's too) keeps its own draft the same way, text and attachments, until it's sent; while you're
+   elsewhere, its hover card and the agent list show a ✎.
 7. **Fork a conversation** to try several ideas in parallel — from the latest point (⑂ in the chat
    header) or from before any of your messages (hover it; the message is offered again, to edit).
    The fork is a new agent that remembers the conversation up to there and works in a **new

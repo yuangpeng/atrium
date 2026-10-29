@@ -3,6 +3,7 @@
 import type { ReactNode } from "react";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useShallow } from "zustand/react/shallow";
 import type { LucideIcon } from "lucide-react";
 import {
   Anchor, Archive, ArchiveRestore, Atom, Bird, Bug, Cat, Cherry, Citrus, Clover, Compass, Cookie, Dog, Feather, Fish, Flame, Flower2, FolderOpen, Gem,
@@ -11,7 +12,7 @@ import {
 } from "lucide-react";
 import { api, SessionRow } from "../api";
 import { useApp } from "../store";
-import { hasContent, useDrafts } from "../drafts";
+import { EMPTY_REPLY, hasContent, hasReply, useDrafts } from "../drafts";
 import { clsx, displayName, timeAgo } from "../util";
 import { Popover, useInterval, useTick } from "./ui";
 import { RailSubagents } from "./Subagents";
@@ -96,9 +97,19 @@ function HoverCard({ anchor, children }: { anchor: HTMLElement; children: ReactN
   );
 }
 
+/** An agent's unsent reply while its composer isn't on screen: the first line, else what's attached. */
+function useDraftAway(sid: string): string | null {
+  const away = useApp((st) => st.sessionId !== sid || !!st.subagentId);
+  const d = useDrafts((st) => st.bySession[sid]);
+  if (!away || !d || !hasReply(d)) return null;
+  const n = d.attachments.length;
+  return d.text.trim().split("\n")[0] || `${n} attachment${n === 1 ? "" : "s"}`;
+}
+
 function AgentTip({ s, glyph }: { s: SessionRow; glyph?: LucideIcon }) {
   const live = liveLabel(s);
   const text = s.doing || s.first_prompt;
+  const draft = useDraftAway(s.id);
   return (
     <>
       <div className="tip-title">
@@ -128,6 +139,12 @@ function AgentTip({ s, glyph }: { s: SessionRow; glyph?: LucideIcon }) {
         <span>{timeAgo(s.updated_at)} ago</span>
       </div>
       {s.pending > 0 && <div className="tip-alert">{s.pending} permission request{s.pending > 1 ? "s" : ""} waiting</div>}
+      {draft && (
+        <div className="tip-draft">
+          <SquarePen size={12} />
+          <span className="ellipsis">Draft: {draft}</span>
+        </div>
+      )}
     </>
   );
 }
@@ -144,8 +161,11 @@ function Tip({ title, sub, hint }: { title: ReactNode; sub?: ReactNode; hint?: s
 
 // ---------------------------------------------------------------- flyout with the full list
 function AgentsFlyout({ onClose }: { onClose: () => void }) {
-  const { project, meta, sessions, sessionId, selectSession, showArchived, setShowArchived, refreshSessions, toast } = useApp();
+  const { project, meta, sessions, sessionId, subagentId, selectSession, showArchived, setShowArchived, refreshSessions, toast } = useApp();
   const glyphs = useGlyphs();
+  // agents with an unsent reply, but not the one whose composer is on screen
+  const drafted = useDrafts(useShallow((d) => Object.keys(d.bySession).filter((k) => hasReply(d.bySession[k]) && (k !== sessionId || !!subagentId))));
+  const updateReply = useDrafts((d) => d.updateReply);
   const setArchived = async (s: SessionRow, archived: boolean) => {
     if (!project) return;
     await api.patchSession(project.id, s.id, { archived }).catch((e) => toast(e.message, "error"));
@@ -159,6 +179,7 @@ function AgentsFlyout({ onClose }: { onClose: () => void }) {
     if (!confirm(`Delete “${displayName(s)}”?\n\nThe conversation is removed from ${harness} as well.${live} A copy of the transcript is kept in .atrium/trash/sessions.`)) return;
     try {
       await api.deleteSession(project.id, s.id);
+      updateReply(s.id, () => EMPTY_REPLY);
       if (s.id === sessionId) selectSession(null);
       toast(`Deleted ${displayName(s)}`, "ok");
     } catch (e: any) {
@@ -204,6 +225,11 @@ function AgentsFlyout({ onClose }: { onClose: () => void }) {
             </span>
             {s.harness !== "claude-code" && <span className={clsx("harness-badge", s.harness)}>{s.harness}</span>}
             {s.pending > 0 && <span className="badge-n">{s.pending}</span>}
+            {drafted.includes(s.id) && (
+              <span className="draft-mark" title="Unsent draft">
+                <SquarePen size={12} />
+              </span>
+            )}
             <span className="faint" style={{ fontSize: 11, fontWeight: 400 }}>
               {timeAgo(s.updated_at)}
             </span>

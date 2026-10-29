@@ -226,6 +226,9 @@ a { color: var(--accent-strong); }
 .rail-tip .tip-body { color: var(--text-2); margin-top: 5px; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
 .rail-tip .tip-foot { display: flex; gap: 6px; color: var(--faint); font-size: 11px; margin-top: 7px; }
 .rail-tip .tip-alert { margin-top: 7px; color: var(--warn); font-weight: 600; font-size: 11.5px; }
+/* an agent's unsent reply (drafts.ts), while its composer isn't on screen */
+.rail-tip .tip-draft { display: flex; align-items: center; gap: 5px; margin-top: 7px; color: var(--accent-strong); font-size: 11.5px; }
+.rail-tip .tip-draft svg { flex: none; }
 .rail-flyout {
   position: fixed; right: 60px; top: 10px; bottom: 10px; width: 350px; z-index: 70; display: flex; flex-direction: column;
   background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow-lg);
@@ -256,6 +259,7 @@ a { color: var(--accent-strong); }
 .sb-item .sub { font-size: 12px; color: var(--muted); }
 .sb-item .bar { margin-top: 5px; }
 .sb-item .badge-n { min-width: 18px; height: 18px; border-radius: 9px; background: var(--warn); color: #fff; font-size: 11px; font-weight: 700; display: grid; place-items: center; padding: 0 5px; }
+.sb-item .draft-mark { display: inline-flex; flex: none; color: var(--accent-strong); }
 /* ---------------------------------------------------------------- top bar */
 .topbar { height: 48px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 8px 0 16px; border-bottom: 1px solid transparent; }
 .topbar.bordered { border-bottom-color: var(--border); }

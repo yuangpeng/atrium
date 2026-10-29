@@ -4,10 +4,11 @@ import { ArrowUp, ArrowUpRight, Brain, ChevronRight, GitFork, Info, Sparkle, Squ
 import { api, ForkAt, Item, LiveState, SessionSettings } from "../api";
 import { socket } from "../ws";
 import { useApp } from "../store";
+import { EMPTY_REPLY, useDrafts } from "../drafts";
 import { clsx, fmtDuration } from "../util";
 import { Markdown, Spinner } from "../components/ui";
 import { BoardToolRow, PermissionCard, ToolRow, isBoardTool, useOpenSubagent } from "./ToolViews";
-import { AttachButton, AttachmentTray, ContextRing, EffortPicker, MessageAttachments, ModelChip, PermissionPicker, effortOptions, useAttachments } from "./Composer";
+import { AttachButton, AttachmentTray, ContextRing, EffortPicker, MessageAttachments, ModelChip, PendingUpload, PermissionPicker, effortOptions, useAttachments } from "./Composer";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
 type ResultItem = Extract<Item, { kind: "tool_result" }>;
@@ -221,9 +222,17 @@ export function ChatView({ pid, sid, cwd, compact, forkable, placeholder, emptyH
   const [st, setSt] = useState<ChatState>(empty);
   const [harnessId, setHarnessId] = useState<string | null>(null);
   const [settings, setSettings] = useState<SessionSettings>({ model: "", effort: "", mode: "" });
-  const att = useAttachments();
+  // what's typed here is the session's draft, kept outside this component (../drafts)
+  const draft = useDrafts((s) => s.bySession[sid]) ?? EMPTY_REPLY;
+  const updateReply = useDrafts((s) => s.updateReply);
+  const text = draft.text;
+  const setText = (text: string) => updateReply(sid, (d) => ({ ...d, text }));
+  const setAttachments = useCallback(
+    (fn: (xs: PendingUpload[]) => PendingUpload[]) => updateReply(sid, (d) => ({ ...d, attachments: fn(d.attachments) })),
+    [sid, updateReply],
+  );
+  const att = useAttachments([draft.attachments, setAttachments]);
   const [loading, setLoading] = useState(true);
-  const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
@@ -293,6 +302,13 @@ export function ChatView({ pid, sid, cwd, compact, forkable, placeholder, emptyH
     el.style.height = "auto";
     el.style.height = Math.min(el.scrollHeight, 280) + "px";
   }, [text]);
+  // back to an unsent draft: carry on typing at its end (not in the Git Agent's drawer, which opens with its tab)
+  useEffect(() => {
+    const el = inputRef.current;
+    if (compact || !el?.value) return;
+    el.focus();
+    el.setSelectionRange(el.value.length, el.value.length);
+  }, [sid, compact]);
 
   const running = st.state === "running" || st.state === "starting" || st.state === "waiting";
   const blocks = useMemo(() => toBlocks(st.items), [st.items]);
