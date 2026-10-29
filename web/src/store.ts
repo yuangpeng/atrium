@@ -195,6 +195,10 @@ export const useApp = create<AppState>((set, get) => {
             // `git init` in a plain directory: is_git / worktrees were captured when the project opened
             if (msg.type === "git_changed" && !get().project?.is_git) refreshProjectThrottled();
             break;
+          case "worktrees_changed": // the worktree pickers, and agents whose worktree went away
+            refreshProjectThrottled();
+            refreshSessionsThrottled();
+            break;
         }
       });
       await get().refreshSessions();

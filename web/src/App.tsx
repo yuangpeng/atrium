@@ -4,7 +4,7 @@ import { createPortal } from "react-dom";
 import { Archive, ArchiveRestore, ArrowLeft, ChevronRight, FileDiff, Files, FolderOpen, GitBranch, GitFork, LayoutDashboard, MessageSquare, PanelRightClose, Plug, Unplug } from "lucide-react";
 import { api, SessionRow } from "./api";
 import { Panel, useApp } from "./store";
-import { clsx, displayName } from "./util";
+import { clsx, displayName, tidyNote } from "./util";
 import { Rail, liveLabel, statusClass } from "./components/Rail";
 import { Home } from "./components/Home";
 import { ProjectPicker } from "./components/Dialogs";
@@ -66,7 +66,7 @@ function SessionHeader() {
         )}
         {s && s.harness !== "claude-code" && <span className={clsx("harness-badge", s.harness)}>{s.harness}</span>}
         {s?.branch && (
-          <span className={clsx("pill mono hide-narrow", s.worktree && "accent")} title={s.cwd}>
+          <span className={clsx("pill mono hide-narrow", s.worktree && "accent", s.workspace_gone && "gone")} title={s.workspace_gone ? `${s.cwd} (removed)` : s.cwd}>
             ⎇ {s.branch}
           </span>
         )}
@@ -99,7 +99,12 @@ function SessionHeader() {
             <Unplug size={15} />
           </button>
         ) : (
-          <button className="icon-btn" title="Attach (resume the session now)" onClick={() => void api.attach(project.id, sessionId).then(refreshSessions).catch((e) => toast(e.message, "error"))}>
+          <button
+            className="icon-btn"
+            title={s?.workspace_gone ? "Its worktree was removed: pick where it continues in the reply box" : "Attach (resume the session now)"}
+            disabled={s?.workspace_gone}
+            onClick={() => void api.attach(project.id, sessionId).then(refreshSessions).catch((e) => toast(e.message, "error"))}
+          >
             <Plug size={15} />
           </button>
         )}
@@ -107,7 +112,9 @@ function SessionHeader() {
           className="icon-btn"
           title={s?.archived ? "Unarchive" : "Archive"}
           onClick={async () => {
-            await api.patchSession(project.id, sessionId, { archived: !s?.archived });
+            const res = await api.patchSession(project.id, sessionId, { archived: !s?.archived }).catch((e) => void toast(e.message, "error"));
+            const note = tidyNote(res?.worktree);
+            if (note) toast(...note);
             await refreshSessions();
             if (!s?.archived) selectSession(null);
           }}

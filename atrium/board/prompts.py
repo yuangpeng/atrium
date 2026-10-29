@@ -63,6 +63,22 @@ FORK_FILES = {
     "": "It has its own files, which may differ from what the earlier conversation saw — re-read before editing.",
 }
 
+MOVED_APPEND = """
+# Working directory changed
+Earlier in this conversation you worked in {old}{old_branch}, which {why}. You now work in
+{cwd}{branch}. Earlier messages and tool calls refer to files under {old}: the same relative paths
+are under {cwd} — read and edit only there. Its files are what is checked out there now, which may
+differ from what the earlier conversation saw (work that never reached this branch is not there),
+so re-read a file before you edit it.
+""".strip()
+
+WORKTREE_APPEND = """
+# Git worktree
+Your working directory is a git worktree: a separate checkout of this repository{branch}. Files git
+ignores (installed dependencies, build output, local env files) are not copied into a new
+worktree{include}, so set up what you need there before you build, run or test the project.
+""".strip()
+
 
 TRACKER_SYSTEM = """
 You are the Tracker Agent of Atrium, a workbench where several coding agents work on the same

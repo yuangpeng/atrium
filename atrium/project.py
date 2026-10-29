@@ -8,6 +8,7 @@
       reviews.json      per-session file review marks
       tracker.json      tracker offsets + run log
       git_view.json     the graph view chosen by the user or the Git Agent
+      worktrees.json    every linked worktree seen, removed ones included (their sessions stay listed)
       worktrees/        default location for worktrees created from Atrium
 """
 
@@ -147,6 +148,38 @@ class Project:
     def worktrees_sync(self) -> list[dict[str, Any]]:
         text = gitops._run_sync(self.path, "worktree", "list", "--porcelain")
         return gitops._parse_worktrees(text) if text else []
+
+    # ---- worktrees seen ----------------------------------------------------
+    def note_worktrees(self, wts: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        """Remember the linked worktrees of ``git worktree list``: a session keeps its directory after
+        the worktree is removed, and is still found there. Returns every worktree seen, by path:
+        {branch, head, gone} — ``gone`` is when it was first missed (None while it exists)."""
+        path = self.state_dir / "worktrees.json"
+        with self._lock:
+            seen: dict[str, dict[str, Any]] = _read_json(path, {})
+            if not wts:  # not a repository, or git failed: nothing to learn
+                return seen
+            before = json.dumps(seen, sort_keys=True)
+            live = {w["path"]: w for w in wts if not w.get("main") and not w.get("bare") and os.path.isdir(w["path"])}
+            for p, w in live.items():
+                seen[p] = {"branch": w.get("branch"), "head": w.get("head"), "gone": None}
+            for p, e in seen.items():
+                if p not in live and not e.get("gone"):
+                    e["gone"] = time.time()
+            if json.dumps(seen, sort_keys=True) != before:
+                _write_json(path, seen)
+            return seen
+
+    def known_worktrees(self) -> dict[str, dict[str, Any]]:
+        with self._lock:
+            return _read_json(self.state_dir / "worktrees.json", {})
+
+    def forget_worktrees(self, paths: list[str]) -> None:
+        with self._lock:
+            seen = _read_json(self.state_dir / "worktrees.json", {})
+            for p in paths:
+                seen.pop(p, None)
+            _write_json(self.state_dir / "worktrees.json", seen)
 
     def resolve(self, rel: str, root: str | None = None) -> Path:
         """Resolve a path inside one of the project's roots; refuse anything outside."""

@@ -1,4 +1,5 @@
 // Small shared helpers.
+import type { WorktreeTidy } from "./api";
 
 export function timeAgo(ts?: number | null): string {
   if (!ts) return "";
@@ -79,4 +80,13 @@ export function throttle<T extends (...a: any[]) => void>(fn: T, ms: number): T 
     if (now - last >= ms) run();
     else if (timer === null) timer = window.setTimeout(run, ms - (now - last));
   }) as T;
+}
+
+/** What archiving an agent did to its worktree, for a toast (null: it had none). */
+export function tidyNote(w: WorktreeTidy | null | undefined): [string, "ok" | "info"] | null {
+  if (!w) return null;
+  const name = w.branch ? `⎇ ${w.branch}` : "its worktree";
+  return w.removed
+    ? [`Archived. Its work is merged, so ${name} was removed${w.branch_deleted ? " (branch deleted too)" : ""}.`, "ok"]
+    : [`Archived. Kept ${name}: ${w.reason}.`, "info"];
 }

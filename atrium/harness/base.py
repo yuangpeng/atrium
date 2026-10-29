@@ -331,6 +331,13 @@ class Harness(ABC):
         apply a changed system prompt on resume (Codex) must put it into the copy's history."""
         raise NotImplementedError(f"{self.label} sessions can't be forked")
 
+    async def move_session(self, session_id: str, cwd: str, target_cwd: str, note: str = "") -> None:
+        """Make the (stopped) session resume in ``target_cwd`` instead of ``cwd`` — which may no
+        longer exist — so that discovery lists it there. ``note`` tells the model what changed;
+        like a fork's note, a harness that doesn't apply a changed system prompt on resume (Codex)
+        must put it into the history."""
+        raise NotImplementedError(f"{self.label} sessions can't be moved to another directory")
+
     def config_files(self, project_dir: str | None) -> list[Any]:
         """The harness's own settings files (``configfiles.ConfigFile``), edited raw in the UI."""
         return []

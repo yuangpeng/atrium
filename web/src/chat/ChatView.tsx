@@ -1,15 +1,18 @@
 import type { JSX } from "react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowUp, ArrowUpRight, Brain, ChevronRight, FoldVertical, GitFork, Info, Sparkle, Square } from "lucide-react";
-import { api, ForkAt, Item, LiveState, SessionRow, SessionSettings } from "../api";
+import { api, ForkAt, Item, LiveState, MoveWorkspace, SessionRow, SessionSettings } from "../api";
 import { socket } from "../ws";
 import { useApp } from "../store";
-import { EMPTY_REPLY, useDrafts } from "../drafts";
+import { EMPTY_REPLY, Workspace, useDrafts } from "../drafts";
 import { clsx, fmtDuration } from "../util";
 import { Markdown, Spinner } from "../components/ui";
 import { useOpenCompaction } from "../components/Compactions";
 import { BoardToolRow, PermissionCard, ToolRow, isBoardTool, useOpenSubagent } from "./ToolViews";
-import { AttachButton, AttachmentTray, ContextRing, EffortPicker, HarnessChip, MessageAttachments, ModelChip, PendingUpload, PermissionPicker, WorkspaceChip, effortOptions, useAttachments } from "./Composer";
+import {
+  AttachButton, AttachmentTray, ContextRing, EffortPicker, HarnessChip, MessageAttachments, ModelChip, NewWorktreeFields, PendingUpload, PermissionPicker,
+  WorkspaceChip, effortOptions, useAttachments,
+} from "./Composer";
 import { mergeCommands, useAtriumCommands, useSlashCommands, useSlashMenu } from "./SlashMenu";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
@@ -268,6 +271,8 @@ export function ChatView({ pid, sid, cwd, compact, forkable, placeholder, emptyH
   const project = useApp((s) => s.project);
   const toast = useApp((s) => s.toast);
   const setForkRequest = useApp((s) => s.setForkRequest);
+  const refreshSessions = useApp((s) => s.refreshSessions);
+  const refreshProject = useApp((s) => s.refreshProject);
   const [st, setSt] = useState<ChatState>(empty);
   // the session's row: the store's, else the one loaded with the conversation (the store leaves archived ones out)
   const listed = useApp((s) => s.sessions.find((x) => x.id === sid));
@@ -287,6 +292,9 @@ export function ChatView({ pid, sid, cwd, compact, forkable, placeholder, emptyH
   const att = useAttachments([draft.attachments, setAttachments]);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  // where the agent carries on once its directory is gone (a removed worktree): picked here, applied on send
+  const [ws, setWs] = useState<Workspace | null>(null);
+  useEffect(() => setWs(null), [sid]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -369,16 +377,28 @@ export function ChatView({ pid, sid, cwd, compact, forkable, placeholder, emptyH
   const forks = useMemo(() => (forkable ? forkPoints(st.items) : null), [st.items, forkable]);
   const onFork = useCallback((at: ForkAt, text: string) => setForkRequest({ sid, at, text }), [sid, setForkRequest]);
   const harness = meta?.harnesses.find((h) => h.id === (harnessId ?? "claude-code")) ?? meta?.harnesses[0];
-  const canSend = (!!text.trim() || att.ids.length > 0) && !att.uploading && !sending;
+  const gone = !!row?.workspace_gone;
+  const moveTo: MoveWorkspace | null = !gone || !ws ? null : ws.kind === "new" ? { kind: "new", branch: ws.branch.trim(), base: ws.base.trim() || undefined } : ws;
+  const placed = !gone || (!!moveTo && (moveTo.kind !== "new" || !!moveTo.branch)); // a removed worktree: somewhere picked to go on
+  const canSend = (!!text.trim() || att.ids.length > 0) && !att.uploading && !sending && placed;
+  // a new worktree for an agent that lost its own starts out on that worktree's branch name
+  const pickWs = (w: Workspace) => setWs(w.kind === "new" && !w.branch && row?.worktree && row.branch ? { ...w, branch: row.branch } : w);
 
   // `override`: a slash command picked in the menu, sent instead of what's typed
   const send = async (override?: string) => {
     const t = (override ?? text).trim();
     if (!(t || att.ids.length) || att.uploading || sending) return;
     if (forkable && atrium.run(t)) return setText(""); // an agent's chat (not the Git agent's)
+    if (!placed) return;
     setSending(true);
     stick.current = true;
     try {
+      if (moveTo) {
+        await api.moveSession(pid, sid, moveTo);
+        setWs(null);
+        if (moveTo.kind === "new") void refreshProject();
+        await refreshSessions();
+      }
       await api.send(pid, sid, t, att.ids);
       setText("");
       att.clear();
@@ -475,7 +495,16 @@ export function ChatView({ pid, sid, cwd, compact, forkable, placeholder, emptyH
             ref={inputRef}
             className="composer-input"
             rows={1}
-            placeholder={placeholder ?? (running ? (harnessId === "codex" ? "Steer the running turn…" : "Queue a follow-up…") : "Reply, or / for commands")}
+            placeholder={
+              placeholder ??
+              (gone && !ws
+                ? "Its worktree was removed: pick where it continues (below), then reply…"
+                : running
+                  ? harnessId === "codex"
+                    ? "Steer the running turn…"
+                    : "Queue a follow-up…"
+                  : "Reply, or / for commands")
+            }
             value={text}
             onChange={(e) => setText(e.target.value)}
             onSelect={slash.onSelect}
@@ -488,13 +517,15 @@ export function ChatView({ pid, sid, cwd, compact, forkable, placeholder, emptyH
               }
             }}
           />
+          {gone && ws?.kind === "new" && project && <NewWorktreeFields project={project} ws={ws} onChange={setWs} />}
           <div className="composer-bar">
             <div className="bar-chips">
             <AttachButton onClick={att.open} />
-            {/* the new-agent page's chips, in its order; harness and workspace can't change any more */}
+            {/* the new-agent page's chips, in its order; harness and workspace can't change any more (the
+                workspace can once it's gone) */}
             {harness && !compact && (meta?.harnesses.length ?? 0) > 1 && <HarnessChip harness={harness} />}
             {harness && <PermissionPicker harness={harness} value={shownMode} onChange={(m) => void setMode(m)} detached={!st.mode} />}
-            {project && row && !compact && <WorkspaceChip project={project} session={row} />}
+            {project && row && !compact && <WorkspaceChip project={project} session={row} pick={ws} onPick={pickWs} />}
             {harness && !compact && <ModelChip harness={harness} model={shownModel} faded={!st.model} />}
             </div>
             <div className="bar-end">
@@ -512,7 +543,12 @@ export function ChatView({ pid, sid, cwd, compact, forkable, placeholder, emptyH
                 </button>
               </>
             ) : (
-              <button className="send-btn" disabled={!canSend} onClick={() => void send()} title={st.state ? "Send (Enter)" : "Send (Enter) — resumes the session"}>
+              <button
+                className="send-btn"
+                disabled={!canSend}
+                onClick={() => void send()}
+                title={gone && !moveTo ? "Pick where the agent continues first" : moveTo ? "Send (Enter) — moves the agent there first" : st.state ? "Send (Enter)" : "Send (Enter) — resumes the session"}
+              >
                 {sending ? <Spinner /> : <ArrowUp size={17} strokeWidth={2.4} />}
               </button>
             )}

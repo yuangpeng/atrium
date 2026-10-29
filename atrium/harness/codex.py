@@ -1090,6 +1090,22 @@ class CodexHarness(Harness):
         await self.rename_session(tid, title, target_cwd)
         return tid
 
+    async def move_session(self, session_id: str, cwd: str, target_cwd: str, note: str = "") -> None:
+        # the thread takes the new cwd when it resumes; loading it here records it now and carries the note
+        await self.client.request("thread/resume", {"threadId": session_id, "cwd": target_cwd, "excludeTurns": True}, timeout=60)
+        try:
+            if note:  # as for forks: a changed developerInstructions isn't shown to the model on resume
+                item = {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": note}]}
+                try:
+                    await self.client.request("thread/inject_items", {"threadId": session_id, "items": [item]}, timeout=15)
+                except Exception as e:
+                    log.warning("couldn't add the move note to thread %s: %s", session_id, e)
+        finally:
+            try:
+                await self.client.request("thread/unsubscribe", {"threadId": session_id}, timeout=5)
+            except Exception:
+                pass
+
     # ---- content -----------------------------------------------------------
     async def _turns(self, session_id: str) -> list[dict[str, Any]]:
         turns: list[dict[str, Any]] = []

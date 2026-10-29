@@ -1,12 +1,13 @@
 // Composer building blocks shared by the chat view and the new-agent page:
 // attachments (paste / drop / pick → uploaded to ~/.atrium/uploads), the icon-only harness / permission-mode
-// pickers, the read-only model chip (and a started agent's harness and workspace), the reasoning-effort slider
-// and the context gauge.
+// pickers, the workspace menu, the read-only model chip (and a started agent's harness and workspace), the
+// reasoning-effort slider and the context gauge.
 import type { CSSProperties } from "react";
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import type { LucideIcon } from "lucide-react";
-import { Check, ChevronDown, ClipboardList, FilePen, FileText, FolderGit2, Hand, Paperclip, RotateCcw, Shield, ShieldAlert, ShieldCheck, X, createLucideIcon } from "lucide-react";
+import { Check, ChevronDown, ClipboardList, FilePen, FileText, FolderGit2, GitBranchPlus, Hand, Paperclip, RotateCcw, Shield, ShieldAlert, ShieldCheck, X, createLucideIcon } from "lucide-react";
 import { api, Attachment, Harness, ProjectInfo, SessionRow, Upload } from "../api";
+import type { Workspace } from "../drafts";
 import { useApp } from "../store";
 import { clsx, relTo, shortPath } from "../util";
 import { Popover, Spinner, useTip } from "../components/ui";
@@ -424,31 +425,130 @@ export function HarnessChip({ harness }: { harness: Harness }) {
   );
 }
 
-/** Where a started agent works, read-only, labelled like the new-agent page's picker: the branch, or ⎇ a worktree's. */
-export function WorkspaceChip({ project, session }: { project: ProjectInfo; session: SessionRow }) {
+const mainBranch = (project: ProjectInfo) => project.worktrees.find((w) => w.main)?.branch || "HEAD";
+
+/** A workspace as the composer's chip names it: the project's branch, ⎇ a worktree's, or + a new one. */
+export function workspaceLabel(project: ProjectInfo, ws: Workspace): string {
+  return ws.kind === "root" ? mainBranch(project) : ws.kind === "worktree" ? `⎇ ${ws.branch ?? relTo(project.path, ws.path)}` : `+ ${ws.branch || "new worktree"}`;
+}
+
+/** Where an agent can work: the project directory (on its current branch), one of its worktrees, or a new one. */
+export function WorkspaceMenu({ project, value, onPick }: { project: ProjectInfo; value: Workspace | null; onPick: (ws: Workspace) => void }) {
+  const worktrees = project.worktrees.filter((w) => !w.main && !w.bare && !w.prunable);
+  const root = (
+    <button className={clsx("menu-item", value?.kind === "root" && "on")} onClick={() => onPick({ kind: "root" })}>
+      <div>
+        <div>Project directory</div>
+        <div className="d">{project.is_git ? `${mainBranch(project)} · shares the working tree` : shortPath(project.path)}</div>
+      </div>
+    </button>
+  );
+  if (!project.is_git) return root;
+  return (
+    <>
+      {root}
+      {worktrees.map((w) => (
+        <button
+          key={w.path}
+          className={clsx("menu-item", value?.kind === "worktree" && value.path === w.path && "on")}
+          onClick={() => onPick({ kind: "worktree", path: w.path, branch: w.branch })}
+        >
+          <div>
+            <div>⎇ {w.branch ?? "(detached)"}</div>
+            <div className="d mono">{relTo(project.path, w.path)}</div>
+          </div>
+        </button>
+      ))}
+      <div className="menu-sep" />
+      <button className={clsx("menu-item", value?.kind === "new" && "on")} onClick={() => onPick({ kind: "new", branch: "", base: "" })}>
+        <GitBranchPlus size={14} />
+        <div>
+          <div>New worktree…</div>
+          <div className="d">Isolated checkout on a new branch</div>
+        </div>
+      </button>
+    </>
+  );
+}
+
+/** A new worktree's branch and base, under the composer's input while "New worktree…" is picked. */
+export function NewWorktreeFields({ project, ws, onChange }: { project: ProjectInfo; ws: Extract<Workspace, { kind: "new" }>; onChange: (ws: Workspace) => void }) {
+  return (
+    <div className="row" style={{ marginTop: 8 }}>
+      <input className="input" style={{ height: 30 }} placeholder="new branch, e.g. feature/auth" value={ws.branch} onChange={(e) => onChange({ ...ws, branch: e.target.value })} />
+      <span className="muted" style={{ fontSize: 12.5 }}>from</span>
+      <input className="input" style={{ height: 30, width: 160 }} placeholder={mainBranch(project)} value={ws.base} onChange={(e) => onChange({ ...ws, base: e.target.value })} />
+    </div>
+  );
+}
+
+/** Where a started agent works, labelled like the new-agent page's picker: the branch, or ⎇ a worktree's.
+ *  Read-only — until that directory is gone (its worktree was removed): then it shows struck through, and
+ *  picks where the agent carries on (`pick`, applied when the next message is sent). */
+export function WorkspaceChip({ project, session, pick, onPick }: { project: ProjectInfo; session: SessionRow; pick?: Workspace | null; onPick?: (ws: Workspace) => void }) {
+  const gone = session.workspace_gone && !!onPick;
   const worktree = project.is_git && session.worktree;
-  const branch = session.branch || project.worktrees.find((w) => w.main)?.branch || "HEAD";
+  const branch = session.branch || mainBranch(project);
   const label = !project.is_git ? project.name : worktree ? `⎇ ${session.branch ?? relTo(project.path, session.cwd)}` : branch;
   const [tipProps, tip] = useTip(
-    <>
-      <div>
-        <span className="k">Works in:</span> {worktree ? "Worktree" : "Project directory"}
-      </div>
-      {worktree ? (
+    gone ? (
+      <>
+        <div>
+          <span className="k">Worked in:</span> {worktree ? "Worktree" : "Directory"} <span className="k">— removed</span>
+        </div>
         <div className="k mono">{relTo(project.path, session.cwd)}</div>
-      ) : project.is_git ? (
-        <div className="k">{branch} · shares the working tree</div>
-      ) : (
-        <div className="k mono">{shortPath(project.path)}</div>
-      )}
-      <div className="k">set when the agent started</div>
-    </>,
+        <div className="k">{pick ? `continues in ${workspaceLabel(project, pick)} once you send` : "pick where it continues"}</div>
+      </>
+    ) : (
+      <>
+        <div>
+          <span className="k">Works in:</span> {worktree ? "Worktree" : "Project directory"}
+        </div>
+        {worktree ? (
+          <div className="k mono">{relTo(project.path, session.cwd)}</div>
+        ) : project.is_git ? (
+          <div className="k">{branch} · shares the working tree</div>
+        ) : (
+          <div className="k mono">{shortPath(project.path)}</div>
+        )}
+        <div className="k">set when the agent started</div>
+      </>
+    ),
   );
+  if (!gone)
+    return (
+      <span className="chip fixed" aria-label={`Works in: ${label}`} {...tipProps}>
+        <FolderGit2 size={13} /> <span className="ellipsis" style={{ maxWidth: 160 }}>{label}</span>
+        {tip}
+      </span>
+    );
   return (
-    <span className="chip fixed" aria-label={`Works in: ${label}`} {...tipProps}>
-      <FolderGit2 size={13} /> <span className="ellipsis" style={{ maxWidth: 160 }}>{label}</span>
-      {tip}
-    </span>
+    <Popover
+      up
+      within=".composer-box"
+      width={300}
+      trigger={(open, toggle) => (
+        <button className={clsx("chip", open && "open", !pick && "gone")} onClick={toggle} aria-label={`Worked in ${label}, removed: pick where it continues`} {...tipProps}>
+          <FolderGit2 size={13} />
+          {pick ? (
+            <span className="ellipsis" style={{ maxWidth: 160 }}>{workspaceLabel(project, pick)}</span>
+          ) : (
+            <s className="ellipsis" style={{ maxWidth: 160 }}>{label}</s>
+          )}
+          <ChevronDown size={12} />
+          {tip}
+        </button>
+      )}
+    >
+      {(close) => (
+        <>
+          <div className="pick-head">
+            <span className="grow">{label} was removed. Where should the agent continue?</span>
+          </div>
+          <WorkspaceMenu project={project} value={pick ?? null} onPick={(ws) => (onPick(ws), close())} />
+        </>
+      )}
+    </Popover>
   );
 }
 

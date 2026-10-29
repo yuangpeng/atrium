@@ -178,7 +178,9 @@ def _tile(a: dict[str, Any]) -> str:
         foot.append(f"<span>● {_e(LIVE_LABEL.get(live, live))}</span>")
     if stats.get("harness") and stats["harness"] != "claude-code":
         foot.append(f"<span>◆ {_e(stats['harness'])}</span>")
-    if stats.get("branch"):
+    if stats.get("branch") and stats.get("workspace_gone"):  # its worktree was removed; it continues once moved
+        foot.append(f"<span>⎇ <s>{_e(stats['branch'])}</s> ({'worktree ' if stats.get('worktree') else ''}removed)</span>")
+    elif stats.get("branch"):
         foot.append(f"<span>⎇ {_e(stats['branch'])}{' (worktree)' if stats.get('worktree') else ''}</span>")
     if stats.get("files_changed"):
         n = int(stats["files_changed"])

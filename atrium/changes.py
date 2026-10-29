@@ -14,6 +14,9 @@ Files changed during a session's turns by other means (shell commands,
 code generators…) are found by diffing each turn's start/end snapshots. The
 content the agent left behind (end-of-turn snapshot, else transcript) is used
 to flag *drift*: later edits by the human or other agents.
+
+Once the checkout a session worked in is removed (a worktree, e.g. after it was
+merged), its files are shown as the agent left them, read-only.
 """
 
 from __future__ import annotations
@@ -95,7 +98,16 @@ def reverse_patch(after: str, patch: str) -> str | None:
 
 
 def _snapshots(project: Project, sid: str) -> list[dict[str, Any]]:
-    return [s for s in project.session_meta(sid).get("snapshots") or [] if s.get("tree") and s.get("root")]
+    # "git": where to read them — every checkout of the repository has the objects, the project's
+    # own one included, so a removed worktree's snapshots stay readable
+    return [{**s, "git": s["root"] if os.path.isdir(s["root"]) else project.path}
+            for s in project.session_meta(sid).get("snapshots") or [] if s.get("tree") and s.get("root")]
+
+
+def _gone_roots(project: Project, sid: str, cwd: str, snaps: list[dict[str, Any]]) -> list[str]:
+    """Directories the session worked in that no longer exist (removed worktrees)."""
+    moves = project.session_meta(sid).get("moves") or []
+    return [r for r in dict.fromkeys([cwd, *(s["root"] for s in snaps), *(m["from"] for m in moves)]) if r and not os.path.isdir(r)]
 
 
 def _turns(snaps: list[dict[str, Any]]) -> list[tuple[dict[str, Any], dict[str, Any]]]:
@@ -130,7 +142,7 @@ def _collect(project: Project, sid: str, cwd: str, harness_id: str) -> tuple[dic
     for a, b in _turns(snaps):
         if a["tree"] == b["tree"]:
             continue
-        for p in snapshots.changed_paths(a["root"], a["tree"], b["tree"]):
+        for p in snapshots.changed_paths(a["root"], a["tree"], b["tree"], git=a["git"]):
             if "/.atrium/" in p and "/.atrium/worktrees/" not in p:
                 continue
             f = files.get(p)
@@ -148,10 +160,10 @@ def _baseline(f: dict[str, Any], snaps: list[dict[str, Any]], current: str | Non
     if starts:
         s = starts[-1]
         rel = os.path.relpath(path, s["root"])
-        present, content = snapshots.read_blob(s["root"], s["tree"], rel)
+        present, content = snapshots.read_blob(s["git"], s["tree"], rel)
         if present:
             return content, "snapshot"
-        if snapshots.tree_exists(s["root"], s["tree"]) and not snapshots.is_ignored(s["root"], rel):
+        if snapshots.tree_exists(s["git"], s["tree"]) and not snapshots.is_ignored(s["git"], rel):
             return None, "snapshot"  # not there before → created by the session
     edits: list[FileEdit] = f["edits"]
     if edits:
@@ -182,8 +194,8 @@ def _agent_final(f: dict[str, Any], snaps: list[dict[str, Any]]) -> Any:
     ends = [s for s in snaps if s["phase"] == "end" and _inside(f["path"], s["root"]) and last is not None and s["ts"] >= last - 1]
     if ends:
         s = ends[0]
-        present, content = snapshots.read_blob(s["root"], s["tree"], os.path.relpath(f["path"], s["root"]))
-        if present or snapshots.tree_exists(s["root"], s["tree"]):
+        present, content = snapshots.read_blob(s["git"], s["tree"], os.path.relpath(f["path"], s["root"]))
+        if present or snapshots.tree_exists(s["git"], s["tree"]):
             return content
     edits: list[FileEdit] = f["edits"]
     if edits:
@@ -193,21 +205,25 @@ def _agent_final(f: dict[str, Any], snaps: list[dict[str, Any]]) -> Any:
     return _UNKNOWN
 
 
-def _resolve(f: dict[str, Any], snaps: list[dict[str, Any]]) -> dict[str, Any]:
+def _resolve(f: dict[str, Any], snaps: list[dict[str, Any]], gone_roots: list[str]) -> dict[str, Any]:
     path = f["path"]
     exists = os.path.exists(path)
     current = read_text(Path(path)) if exists else None
-    baseline, source = _baseline(f, snaps, current)
     final = _agent_final(f, snaps)
-    return {"exists": exists, "current": current, "baseline": baseline, "source": source, "final": final}
+    gone = not exists and any(_inside(path, r) for r in gone_roots)
+    if gone and final is not _UNKNOWN:  # its checkout was removed: as the agent left it
+        current, exists = final, final is not None
+    baseline, source = _baseline(f, snaps, current)
+    return {"exists": exists, "current": current, "baseline": baseline, "source": source, "final": final, "gone": gone}
 
 
 def session_changes(project: Project, sid: str, cwd: str, harness_id: str) -> dict[str, Any]:
     files, snaps = _collect(project, sid, cwd, harness_id)
+    gone_roots = _gone_roots(project, sid, cwd, snaps)
     reviews = project.reviews(sid)
     out = []
     for path, f in files.items():
-        r = _resolve(f, snaps)
+        r = _resolve(f, snaps, gone_roots)
         baseline, current, exists = r["baseline"], r["current"], r["exists"]
         if f["detected"] and baseline is not _UNKNOWN and baseline == current:
             continue  # a shell-detected change that is gone again
@@ -227,7 +243,8 @@ def session_changes(project: Project, sid: str, cwd: str, harness_id: str) -> di
             "added": add,
             "removed": rem,
             "unchanged": known and baseline == current and (baseline is not None or not exists),
-            "drift": r["final"] is not _UNKNOWN and r["final"] != current,
+            "drift": not r["gone"] and r["final"] is not _UNKNOWN and r["final"] != current,
+            "gone": r["gone"],
             "reviewed": reviews.get(path) == cur_sha,
             "last_ts": f["last"],
             "baseline_source": r["source"],
@@ -242,7 +259,7 @@ def _file(project: Project, sid: str, cwd: str, harness_id: str, path: str) -> t
     f = files.get(path)
     if not f:
         raise FileNotFoundError(path)
-    return f, _resolve(f, snaps)
+    return f, _resolve(f, snaps, _gone_roots(project, sid, cwd, snaps))
 
 
 def file_change(project: Project, sid: str, cwd: str, harness_id: str, path: str) -> dict[str, Any]:
@@ -256,6 +273,7 @@ def file_change(project: Project, sid: str, cwd: str, harness_id: str, path: str
         "current": r["current"],
         "exists": r["exists"],
         "sha": sha_of(r["current"]) if r["exists"] else None,
+        "gone": r["gone"],
     }
 
 
@@ -263,6 +281,8 @@ def revert(project: Project, sid: str, cwd: str, harness_id: str, path: str) -> 
     """Restore the file to its content before this session first touched it."""
     project.resolve(path)  # must be inside the project
     _f, r = _file(project, sid, cwd, harness_id, path)
+    if r["gone"]:
+        raise PermissionError("The worktree this file was in has been removed: there is nothing to revert")
     if r["baseline"] is _UNKNOWN:
         raise RuntimeError("The content before this session is unknown (no snapshot, transcript or git history)")
     p = Path(path)

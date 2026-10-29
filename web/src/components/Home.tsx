@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, FolderGit2, GitBranchPlus } from "lucide-react";
+import { ArrowUp, FolderGit2 } from "lucide-react";
 import { api } from "../api";
 import { useApp } from "../store";
 import { EMPTY_DRAFT, NewAgentDraft, Workspace, useDrafts } from "../drafts";
-import { clsx, relTo } from "../util";
+import { clsx } from "../util";
 import { Popover, Spinner } from "./ui";
-import { AttachButton, AttachmentTray, EffortPicker, HarnessPicker, ModelChip, PendingUpload, PermissionPicker, effortOptions, useAttachments } from "../chat/Composer";
+import {
+  AttachButton, AttachmentTray, EffortPicker, HarnessPicker, ModelChip, NewWorktreeFields, PendingUpload, PermissionPicker, WorkspaceMenu, effortOptions,
+  useAttachments, workspaceLabel,
+} from "../chat/Composer";
 import { mergeCommands, useSlashCommands, useSlashMenu } from "../chat/SlashMenu";
 
 export function Home() {
@@ -55,7 +58,6 @@ export function Home() {
   const effort = draft.effort ?? "";
   const baseEffort = defaults.effort || harness.config_effort || "";
   const worktrees = project.worktrees.filter((w) => !w.main);
-  const currentBranch = project.worktrees.find((w) => w.main)?.branch || "HEAD";
   // a worktree removed since the draft was written falls back to the project directory
   const saved = draft.ws;
   const ws: Workspace = saved.kind === "worktree" && !worktrees.some((w) => w.path === saved.path) ? { kind: "root" } : saved;
@@ -94,8 +96,6 @@ export function Home() {
     }
   };
 
-  const wsLabel =
-    ws.kind === "root" ? currentBranch : ws.kind === "worktree" ? `⎇ ${ws.branch ?? relTo(project.path, ws.path)}` : `+ ${ws.branch || "new worktree"}`;
   return (
     <div className="home">
       <div className="home-empty">
@@ -129,13 +129,7 @@ export function Home() {
             }}
           />
           <AttachmentTray items={att.items} onRemove={att.remove} />
-          {ws.kind === "new" && (
-            <div className="row" style={{ marginTop: 8 }}>
-              <input className="input" style={{ height: 30 }} placeholder="new branch, e.g. feature/auth" value={ws.branch} onChange={(e) => setWs({ ...ws, branch: e.target.value })} />
-              <span className="muted" style={{ fontSize: 12.5 }}>from</span>
-              <input className="input" style={{ height: 30, width: 160 }} placeholder={currentBranch} value={ws.base} onChange={(e) => setWs({ ...ws, base: e.target.value })} />
-            </div>
-          )}
+          {ws.kind === "new" && <NewWorktreeFields project={project} ws={ws} onChange={setWs} />}
           <div className="composer-bar">
             <div className="bar-chips">
             <AttachButton onClick={att.open} />
@@ -150,40 +144,11 @@ export function Home() {
                 width={300}
                 trigger={(_o, toggle) => (
                   <button className="chip" onClick={toggle} title="Where the agent works">
-                    <FolderGit2 size={13} /> <span className="ellipsis" style={{ maxWidth: 160 }}>{wsLabel}</span>
+                    <FolderGit2 size={13} /> <span className="ellipsis" style={{ maxWidth: 160 }}>{workspaceLabel(project, ws)}</span>
                   </button>
                 )}
               >
-                {(close) => (
-                  <>
-                    <button className={clsx("menu-item", ws.kind === "root" && "on")} onClick={() => (setWs({ kind: "root" }), close())}>
-                      <div>
-                        <div>Project directory</div>
-                        <div className="d">{currentBranch} · shares the working tree</div>
-                      </div>
-                    </button>
-                    {worktrees.map((w) => (
-                      <button
-                        key={w.path}
-                        className={clsx("menu-item", ws.kind === "worktree" && ws.path === w.path && "on")}
-                        onClick={() => (setWs({ kind: "worktree", path: w.path, branch: w.branch }), close())}
-                      >
-                        <div>
-                          <div>⎇ {w.branch ?? "(detached)"}</div>
-                          <div className="d mono">{relTo(project.path, w.path)}</div>
-                        </div>
-                      </button>
-                    ))}
-                    <div className="menu-sep" />
-                    <button className={clsx("menu-item", ws.kind === "new" && "on")} onClick={() => (setWs({ kind: "new", branch: "", base: "" }), close())}>
-                      <GitBranchPlus size={14} />
-                      <div>
-                        <div>New worktree…</div>
-                        <div className="d">Isolated checkout on a new branch</div>
-                      </div>
-                    </button>
-                  </>
-                )}
+                {(close) => <WorkspaceMenu project={project} value={ws} onPick={(ws) => (setWs(ws), close())} />}
               </Popover>
             ) : (
               <span className="chip" style={{ cursor: "default" }}>

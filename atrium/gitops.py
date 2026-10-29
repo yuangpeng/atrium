@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
+import shutil
 import subprocess
 import time
 from pathlib import Path
 from typing import Any
+
+log = logging.getLogger("atrium.gitops")
 
 SEP = "\x1f"
 
@@ -93,6 +97,8 @@ def _slug(s: str) -> str:
 
 
 async def add_worktree(path: str, branch: str, base: str | None = None, create_branch: bool = True, dest: str | None = None) -> dict[str, Any]:
+    """Check out ``branch`` in a new worktree (default: ``.atrium/worktrees/<branch>``) and copy in
+    the gitignored files ``.worktreeinclude`` names. Returns {path, branch, copied}."""
     root = repo_root(path) or path
     dest = dest or os.path.join(root, ".atrium", "worktrees", _slug(branch))
     Path(dest).parent.mkdir(parents=True, exist_ok=True)
@@ -101,12 +107,55 @@ async def add_worktree(path: str, branch: str, base: str | None = None, create_b
     else:
         args = ["worktree", "add", dest, branch]
     await run_git(path, *args)
-    return {"path": os.path.realpath(dest), "branch": branch}
+    dest = os.path.realpath(dest)
+    try:
+        copied = await asyncio.to_thread(copy_included, root, dest)
+    except (OSError, subprocess.SubprocessError) as e:  # the worktree is usable without them
+        copied = []
+        log.warning("couldn't copy .worktreeinclude files into %s: %s", dest, e)
+    return {"path": dest, "branch": branch, "copied": copied}
+
+
+def copy_included(src_root: str, dest_root: str) -> list[str]:
+    """Copy the gitignored files of the main checkout that ``.worktreeinclude`` names into a new
+    worktree, which only gets tracked files (``.env``, local settings…). Same file and rules as
+    Claude Code and Codex: gitignore syntax, and only files that are also gitignored are copied."""
+    spec = os.path.join(src_root, ".worktreeinclude")
+    if not os.path.isfile(spec):
+        return []
+    listed = _run_sync(src_root, "ls-files", "--others", "--ignored", "-z", f"--exclude-from={spec}") or ""
+    wanted = [p for p in listed.split("\0") if p and not p.startswith((".atrium/", ".claude/worktrees/"))]  # other checkouts
+    if not wanted:
+        return []
+    r = subprocess.run(["git", "check-ignore", "--stdin", "-z"], cwd=src_root, input="\0".join(wanted), capture_output=True, text=True, timeout=60)
+    copied = []
+    for rel in (p for p in r.stdout.split("\0") if p):
+        dst = os.path.join(dest_root, rel)
+        if os.path.lexists(dst):
+            continue
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copy2(os.path.join(src_root, rel), dst, follow_symlinks=False)
+        copied.append(rel)
+    return copied
 
 
 async def remove_worktree(path: str, wt_path: str, force: bool = False) -> None:
     args = ["worktree", "remove"] + (["--force"] if force else []) + [wt_path]
     await run_git(path, *args)
+
+
+async def git_ok(cwd: str, *args: str) -> bool:
+    """Whether a git command exits 0 (``merge-base --is-ancestor``, ``branch -d``…)."""
+    proc = await asyncio.create_subprocess_exec(
+        "git", *args, cwd=cwd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        env={**os.environ, "GIT_OPTIONAL_LOCKS": "0", "LC_ALL": "C"},
+    )
+    return await proc.wait() == 0
+
+
+async def is_merged(path: str, commit: str) -> bool:
+    """Whether ``commit`` is in the history of the checkout's HEAD, or of the remote's default branch."""
+    return await git_ok(path, "merge-base", "--is-ancestor", commit, "HEAD") or await git_ok(path, "merge-base", "--is-ancestor", commit, "refs/remotes/origin/HEAD")
 
 
 async def branches(path: str) -> list[dict[str, Any]]:

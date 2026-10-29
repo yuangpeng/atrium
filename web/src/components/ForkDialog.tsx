@@ -170,12 +170,13 @@ function ForkForm({ req }: { req: ForkRequest }) {
                 ))}
               </select>,
             )}
-          {option(
-            "same",
-            <Folder size={14} />,
-            "Same directory",
-            <>Shares the files with the original{onBranch ? <> on {onBranch}</> : null}. Fine to discuss alternatives; two agents editing the same files collide.</>,
-          )}
+          {!src?.workspace_gone && // its worktree was removed: nowhere to share
+            option(
+              "same",
+              <Folder size={14} />,
+              "Same directory",
+              <>Shares the files with the original{onBranch ? <> on {onBranch}</> : null}. Fine to discuss alternatives; two agents editing the same files collide.</>,
+            )}
         </div>
       </div>
 

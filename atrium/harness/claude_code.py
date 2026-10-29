@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import threading
 import time
 import uuid
@@ -773,12 +774,18 @@ class ClaudeCodeHarness(Harness):
 
     # ---- discovery ---------------------------------------------------------
     async def list_sessions(self, project_dir: str, roots: list[str]) -> list[SessionSummary]:
-        return await asyncio.to_thread(self._list_sessions, project_dir)
+        return await asyncio.to_thread(self._list_sessions, project_dir, roots)
 
-    def _list_sessions(self, project_dir: str) -> list[SessionSummary]:
+    def _list_sessions(self, project_dir: str, roots: list[str]) -> list[SessionSummary]:
         out: list[SessionSummary] = []
         try:
             infos = list_sessions(directory=project_dir, include_worktrees=True)
+            # gone directories (removed worktrees) aren't in `git worktree list`; their transcripts stay
+            ids = {s.session_id for s in infos}
+            for root in roots:
+                if not os.path.isdir(root):
+                    infos += [s for s in list_sessions(directory=root, include_worktrees=False) if s.session_id not in ids]
+                    ids = {s.session_id for s in infos}
         except Exception:
             log.exception("list_sessions failed")
             return out
@@ -943,6 +950,23 @@ class ClaudeCodeHarness(Harness):
             return new_id
 
         return await asyncio.to_thread(fork)
+
+    async def move_session(self, session_id: str, cwd: str, target_cwd: str, note: str = "") -> None:
+        # ``note`` reaches the model through the system prompt, which Claude Code re-applies on resume
+        def move() -> None:
+            path = self.transcript_path(session_id, cwd)
+            if not path:
+                raise FileNotFoundError(f"transcript of session {session_id}")
+            dest = _claude_projects_dir() / project_key_for_directory(os.path.realpath(target_cwd))
+            if path.parent == dest:
+                return
+            sidecar = path.with_suffix("")  # <sid>/: subagent transcripts, tool results
+            _move_transcript(path, cwd, target_cwd)
+            if sidecar.is_dir():
+                shutil.copytree(sidecar, dest / sidecar.name, symlinks=True, dirs_exist_ok=True)
+                shutil.rmtree(sidecar)
+
+        await asyncio.to_thread(move)
 
     # ---- content -----------------------------------------------------------
     async def load_history(self, session_id: str, cwd: str) -> list[Item]:
@@ -1359,8 +1383,9 @@ def _fork_point(path: Path, anchor: str | None, user_index: int | None) -> ForkP
 
 
 def _move_transcript(path: Path, cwd: str, target_cwd: str) -> None:
-    """Move a fork's transcript under ``target_cwd``'s project key — where Claude Code looks for
-    sessions started there — and point the entries' ``cwd`` at it (session listings read it)."""
+    """Move a transcript (a fork's, or a session moving on) under ``target_cwd``'s project key —
+    where Claude Code looks for sessions started there — and point the entries' ``cwd`` at it
+    (session listings read it)."""
     olds = {cwd, os.path.realpath(cwd)}
     new = os.path.realpath(target_cwd)
     lines = []

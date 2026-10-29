@@ -256,10 +256,10 @@ function AgentChangesView() {
                     Save
                   </button>
                 )}
-                <button className="btn btn-sm" title="Open in editor" onClick={() => openFile(cur.path, cwd)} disabled={!detail.exists}>
+                <button className="btn btn-sm" title="Open in editor" onClick={() => openFile(cur.path, cwd)} disabled={!detail.exists || detail.gone}>
                   <ExternalLink size={12} /> Edit
                 </button>
-                <button className="btn btn-sm btn-danger" onClick={() => void revert(cur)} title="Restore pre-agent content" disabled={detail.baseline_source === "unknown"}>
+                <button className="btn btn-sm btn-danger" onClick={() => void revert(cur)} title="Restore pre-agent content" disabled={detail.baseline_source === "unknown" || detail.gone}>
                   <Undo2 size={12} /> Revert
                 </button>
                 <button className={clsx("btn btn-sm", cur.reviewed ? "" : "btn-primary")} onClick={() => void review([cur], !cur.reviewed)}>
@@ -267,6 +267,11 @@ function AgentChangesView() {
                 </button>
               </div>
             </div>
+            {detail.gone && (
+              <div className="banner">
+                <AlertTriangle size={13} /> The worktree this agent worked in has been removed: this is the file as the agent left it, read-only.
+              </div>
+            )}
             {cur.drift && (
               <div className="banner">
                 <AlertTriangle size={13} /> The file has changed since this agent's last edit (you or another agent edited it). The diff shows everything since before the agent started.
@@ -278,7 +283,7 @@ function AgentChangesView() {
                 original={detail.baseline ?? ""}
                 modified={detail.current ?? ""}
                 language={languageFor(cur.path)}
-                editable={detail.exists}
+                editable={detail.exists && !detail.gone}
                 labels={{
                   original: (
                     <>
@@ -288,7 +293,11 @@ function AgentChangesView() {
                       </span>
                     </>
                   ),
-                  modified: detail.exists ? (
+                  modified: detail.gone ? (
+                    <>
+                      <b>As the agent left it</b> <span className="faint ellipsis">· its worktree was removed</span>
+                    </>
+                  ) : detail.exists ? (
                     <>
                       <b>Now</b> on disk <span className="faint ellipsis">· editable, ⌘S saves</span>
                     </>

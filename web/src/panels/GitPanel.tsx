@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Bot, ChevronDown, ChevronUp, ExternalLink, FolderGit2, GitBranch, GitBranchPlus, Lightbulb, Maximize2, Minimize2, RefreshCw, Sparkles, Trash2, X } from "lucide-react";
 import { api, Branch, Commit, CommitDetail, CommitFile, GitSummary, GitView } from "../api";
 import { useApp } from "../store";
-import { clsx, languageFor, relTo, throttle, timeAgo } from "../util";
+import { clsx, displayName, languageFor, relTo, throttle, timeAgo } from "../util";
 import { Spinner, useFullscreen } from "../components/ui";
 import { DiffEditor } from "../components/LazyEditors";
 import { DiffOptions } from "../components/DiffOptions";
@@ -537,11 +537,14 @@ function Worktrees({ summary, onChanged }: { summary: GitSummary | null; onChang
     }
   };
   const remove = async (path: string) => {
-    if (!confirm(`Remove worktree ${relTo(project!.path, path)}? (the branch is kept)`)) return;
+    const agents = sessions.filter((s) => (s.cwd === path || s.cwd.startsWith(path + "/")) && s.role === "worker");
+    const kept = agents.length ? `\n\nIts agents (${agents.map(displayName).join(", ")}) stay in the list: their next message asks where they continue.` : "";
+    if (!confirm(`Remove worktree ${relTo(project!.path, path)}? (the branch is kept)${kept}`)) return;
     try {
       await api.gitRemoveWorktree(pid, path);
       onChanged();
     } catch (e: any) {
+      if (e.status === 409) return toast(e.message, "error"); // an agent is working there
       if (confirm(`${e.message}\n\nForce removal (discards uncommitted changes in the worktree)?`)) {
         await api.gitRemoveWorktree(pid, path, true).catch((er) => toast(er.message, "error"));
         onChanged();

@@ -104,10 +104,11 @@ def restore(root: str, tree: str) -> None:
         raise RuntimeError(f"couldn't restore the files: {r.stderr.strip()[:300]}")
 
 
-def changed_paths(root: str, a: str, b: str) -> list[str]:
-    """Paths (absolute) that differ between two snapshot trees."""
+def changed_paths(root: str, a: str, b: str, git: str | None = None) -> list[str]:
+    """Paths (absolute, under ``root``) that differ between two snapshot trees; ``git``: the checkout
+    to read them from, if not ``root`` (removed since)."""
     try:
-        r = _git(root, "diff-tree", "-r", "--name-only", "-z", "--no-renames", a, b, timeout=20)
+        r = _git(git or root, "diff-tree", "-r", "--name-only", "-z", "--no-renames", a, b, timeout=20)
     except (OSError, subprocess.TimeoutExpired):
         return []
     if r.returncode != 0:

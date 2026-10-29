@@ -12,7 +12,9 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Callable
 
 from . import gitops, snapshots
-from .board.prompts import FORK_FILES, FORK_MOVED_APPEND, FORK_SAME_DIR_APPEND, GIT_AGENT_APPEND, SESSION_AGENT_APPEND
+from .board.prompts import (
+    FORK_FILES, FORK_MOVED_APPEND, FORK_SAME_DIR_APPEND, GIT_AGENT_APPEND, MOVED_APPEND, SESSION_AGENT_APPEND, WORKTREE_APPEND,
+)
 from .board.tools import BOARD_SERVER, board_toolset
 from .config import UPLOADS_DIR, config
 from .events import hub
@@ -28,6 +30,16 @@ log = logging.getLogger("atrium.sessions")
 
 TRANSIENT = {"delta", "state"}
 MAX_SNAPSHOTS = 200
+FORGET_EMPTY_WORKTREES = 30 * 86400  # a removed worktree no session is found in is forgotten after this (seconds)
+BUSY = ("starting", "running", "waiting")
+
+
+class WorkspaceGone(FileNotFoundError):
+    """The session's directory no longer exists (its worktree was removed): it continues once moved."""
+
+    def __init__(self, cwd: str):
+        super().__init__(f"{cwd} no longer exists: choose where the agent continues")
+        self.cwd = cwd
 
 
 @dataclass
@@ -50,6 +62,7 @@ class LiveHandle:
     pending: dict[str, Item] = field(default_factory=dict)
     tasks: dict[str, dict[str, Any]] = field(default_factory=dict)  # subagents seen on the stream, by spawning tool call
     title_synced: bool = False
+    released: bool = False  # stopped because its directory went away
 
     @property
     def alive(self) -> bool:
@@ -97,6 +110,8 @@ class SessionManager:
                 if h.alive and h.state == "idle" and not h.pending and now - h.last_activity > limit:
                     log.info("closing idle session %s", sid)
                     await self.close(sid)
+                elif h.alive and h.state == "idle" and not os.path.isdir(h.cwd):  # its worktree was removed
+                    await self._release(h)
 
     # ---- spec --------------------------------------------------------------
     def _spec(self, project: Project, sid: str | None, *, resume: bool, harness_id: str, cwd: str, name: str, role: str,
@@ -118,9 +133,15 @@ class SessionManager:
         else:
             toolsets[BOARD_SERVER] = board_toolset(project, lambda: sid_box[0])
             append = SESSION_AGENT_APPEND.format(name=name, project=project.name, path=project.path, cwd=cwd)
-            fork = project.session_meta(sid).get("forked_from") if sid else None
-            if fork:
-                append += "\n\n" + _fork_note(fork, cwd)
+            meta = project.session_meta(sid) if sid else {}
+            moved = (meta.get("moves") or [None])[-1]
+            if moved and os.path.realpath(moved["to"]) == os.path.realpath(cwd):  # where it works now: over a fork's note
+                append += "\n\n" + _moved_note(moved)
+            elif meta.get("forked_from"):
+                append += "\n\n" + _fork_note(meta["forked_from"], cwd)
+            worktree = _worktree_note(project, cwd)
+            if worktree:
+                append += "\n\n" + worktree
         harness = get_harness(harness_id)
         modes = [m["id"] for m in harness.permission_modes]
         default_mode = harness.git_agent_mode if role == "git" else hdef.get("permission_mode")
@@ -201,8 +222,29 @@ class SessionManager:
                 cb(h.project, h.sid)
             except Exception:
                 log.exception("turn-end callback failed")
+        if not os.path.isdir(h.cwd):  # the agent removed its own worktree (e.g. after merging it)
+            await self._release(h)
         self.invalidate(h.project)
         hub.publish(f"project:{h.project.id}", {"type": "sessions_changed"})
+
+    async def _release(self, h: LiveHandle) -> None:
+        """The session's directory was removed: stop its process. The session stays, and carries on
+        wherever it is moved to (``move``)."""
+        if h.released:
+            return
+        h.released = True
+        log.info("releasing %s: %s no longer exists", h.sid, h.cwd)
+        await self.close(h.sid)
+        if h.role == "worker" and h.project.board.agent(h.sid):
+            h.project.board.update_agent(h.sid, stats={"workspace_gone": True})
+        self.invalidate(h.project)
+        hub.publish(f"project:{h.project.id}", {"type": "sessions_changed"})
+
+    async def release_gone(self, project: Project) -> None:
+        """Release the project's idle sessions whose directory is gone (busy ones: when their turn ends)."""
+        for h in list(self.live.values()):
+            if h.project.id == project.id and h.alive and h.state not in BUSY and not os.path.isdir(h.cwd):
+                await self._release(h)
 
     async def _snapshot(self, h: LiveHandle, phase: str) -> None:
         snap = await asyncio.to_thread(snapshots.take, h.cwd, phase)
@@ -227,7 +269,15 @@ class SessionManager:
         return await asyncio.shield(task)
 
     async def _discover(self, project: Project) -> list[SessionSummary]:
-        roots = await asyncio.to_thread(project.roots)
+        wts = await asyncio.to_thread(project.worktrees_sync)
+        seen = project.note_worktrees(wts)
+        roots = [project.path] + [w["path"] for w in wts if not w.get("bare") and w["path"] != project.path]
+        # directories that are gone (removed worktrees): their sessions are still the project's — and
+        # those sessions moved away from (Codex keeps listing a thread under the directory it started in)
+        gone = [p for p, e in seen.items() if e.get("gone")]
+        for m in project.sessions_meta().values():
+            gone += [p for p in [m.get("cwd"), *(mv["from"] for mv in m.get("moves") or [])] if p and not os.path.isdir(p)]
+        roots += [p for p in dict.fromkeys(gone) if p not in roots]
         results = await asyncio.gather(*(h.list_sessions(project.path, roots) for h in all_harnesses()), return_exceptions=True)
         out: list[SessionSummary] = []
         for h, r in zip(all_harnesses(), results):
@@ -235,6 +285,10 @@ class SessionManager:
                 log.warning("%s: listing sessions failed: %s", h.id, r)
             else:
                 out += r
+        found = {os.path.realpath(s.cwd) for s in out if s.cwd}
+        stale = [p for p, e in seen.items() if e.get("gone") and time.time() - e["gone"] > FORGET_EMPTY_WORKTREES and p not in found]
+        if stale:  # removed long ago and no session worked there
+            project.forget_worktrees(stale)
         self._summary_cache[project.id] = (time.time(), out)
         return out
 
@@ -264,11 +318,21 @@ class SessionManager:
     async def list_sessions(self, project: Project, include_archived: bool = False) -> list[dict[str, Any]]:
         summaries = await self.summaries(project)
         wts = await asyncio.to_thread(project.worktrees_sync)
+        known = project.note_worktrees(wts)
         meta = project.sessions_meta()
         board = project.board.snapshot()["agents"]
         wt_branch = {w["path"]: w.get("branch") for w in wts}
+        linked = [p for p in dict.fromkeys([*wt_branch, *known]) if p != project.path]
+        atrium_wts = os.path.join(project.path, ".atrium", "worktrees") + os.sep
         out: list[dict[str, Any]] = []
         seen: set[str] = set()
+
+        def worktree_of(real: str) -> str | None:
+            """The linked worktree, existing or removed, that holds ``real``."""
+            wt = max((p for p in linked if real == p or real.startswith(p + os.sep)), key=len, default=None)
+            if wt is None and real.startswith(atrium_wts) and not os.path.isdir(real):  # removed before Atrium kept track
+                wt = atrium_wts + real[len(atrium_wts):].split(os.sep, 1)[0]
+            return wt
 
         def row(sid: str, harness: str, title: str, cwd: str, updated: float, created: float | None, branch: str | None,
                 first_prompt: str | None, transcript: str | None) -> dict[str, Any]:
@@ -277,7 +341,14 @@ class SessionManager:
             h = self.live.get(sid)
             if h and h.alive:
                 updated = max(updated, h.last_activity)
+            if m.get("moves") and m.get("cwd"):  # moved by Atrium: its record wins over what the harness lists
+                cwd = m["cwd"]
             real = os.path.realpath(cwd) if cwd else ""
+            wt = worktree_of(real) if real else None
+            if wt:  # a removed worktree's branch is the one it last had
+                branch = wt_branch.get(wt) or known.get(wt, {}).get("branch") or branch
+            else:
+                branch = wt_branch.get(real) or branch
             fork = m.get("forked_from")
             if fork:  # the copied transcript starts with the source's timestamps
                 created = m.get("created_at") or created
@@ -288,8 +359,9 @@ class SessionManager:
                 "title": title,
                 "role": m.get("role", "worker"),
                 "cwd": real or cwd,
-                "worktree": bool(real) and real in wt_branch and real != project.path,
-                "branch": wt_branch.get(real) or branch,
+                "worktree": wt is not None,
+                "branch": branch,
+                "workspace_gone": bool(real) and not os.path.isdir(real),  # e.g. its worktree was removed: kept, moved on demand
                 "created_at": created or m.get("created_at"),
                 "updated_at": updated,
                 "live": h.state if h and h.alive else None,
@@ -318,9 +390,16 @@ class SessionManager:
                 title = m.get("name") or f"{fork.get('name') or 'Agent'} (fork)"
                 out.append(row(sid, m.get("harness") or "claude-code", title, m["cwd"], m.get("forked_at") or 0, m.get("created_at"), None, None, None))
         ids = {r["id"] for r in out}
+        synced = False
         for r in out:
             if r["forked_from"]:
                 r["forked_from"]["exists"] = r["forked_from"]["session"] in ids  # the original may have been deleted since
+            stats = (board.get(r["id"]) or {}).get("stats")
+            if stats is not None and bool(stats.get("workspace_gone")) != r["workspace_gone"]:  # the board shows it too
+                project.board.update_agent(r["id"], stats={"workspace_gone": r["workspace_gone"], "branch": r["branch"]}, quiet=True)
+                synced = True
+        if synced:
+            project.board.rerender()
         if not include_archived:
             out = [r for r in out if not r["archived"]]
         roots = [project.path] + [w["path"] for w in wts if w["path"] != project.path and not w.get("bare")]
@@ -466,8 +545,11 @@ class SessionManager:
         target, created, files = src_cwd, None, None
         ws = workspace or {}
         kind = ws.get("kind") or "same"
+        gone = not os.path.isdir(src_cwd)  # its worktree was removed
+        if kind == "same" and gone:
+            raise ValueError("Its worktree was removed: fork it into a new or an existing worktree")
         if kind != "same":
-            src_root = gitops.repo_root(src_cwd)
+            src_root = gitops.repo_root(src_cwd) if not gone else gitops.repo_root(project.path)  # then: off the project's HEAD
             if not src_root:
                 raise ValueError("Forking into a worktree needs a git repository")
             if kind == "new":
@@ -543,17 +625,100 @@ class SessionManager:
         snapshots.restore(dest_root, snap["tree"])
         return files
 
+    async def move(self, project: Project, sid: str, workspace: dict[str, Any]) -> dict[str, Any]:
+        """Carry on the same conversation in another directory — e.g. after its worktree was removed.
+
+        ``workspace``: {"kind": "root"} (the project directory, on whatever branch it has),
+        {"kind": "worktree", "path"} or {"kind": "new", "branch", "base"?} — a new worktree off
+        ``base`` (default: the project's HEAD), or on ``branch`` if it exists already. A session
+        working in a subdirectory keeps to it when the new checkout has it. Returns {cwd, branch,
+        worktree: the new one, if any}."""
+        async with self._lock(sid):  # not while it is being started
+            return await self._move(project, sid, workspace)
+
+    async def _move(self, project: Project, sid: str, workspace: dict[str, Any]) -> dict[str, Any]:
+        recorded, harness_id = await self.session_info(project, sid)
+        src_cwd = os.path.realpath(recorded)
+        harness = get_harness(harness_id)
+        h = self.live.get(sid)
+        if h and h.alive and h.state in BUSY:
+            raise ValueError("The agent is still working: wait for its turn to end (or stop it), then move it")
+        kind = workspace.get("kind") or "root"
+        known = project.known_worktrees()
+        created = None
+        if kind == "root":
+            root = project.path
+        elif kind == "worktree":
+            root = os.path.realpath(str(workspace.get("path") or ""))
+            if root == project.path or root not in project.roots() or not os.path.isdir(root):
+                raise ValueError("Pick one of the project's worktrees")
+        elif kind == "new":
+            branch = str(workspace.get("branch") or "").strip()
+            if not branch:
+                raise ValueError("Give the new worktree a branch name")
+            # a branch that is still there (removing a worktree keeps it) is checked out again
+            fresh = not await gitops.git_ok(project.path, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}")
+            base = str(workspace.get("base") or "").strip() or None
+            created = await gitops.add_worktree(project.path, branch, base=base if fresh else None, create_branch=fresh)
+            created["new_branch"] = fresh
+            root = created["path"]
+        else:
+            raise ValueError(f"unknown workspace {kind!r}")
+        # the checkout it worked in (existing or removed), to keep to the same subdirectory
+        src_root = gitops.repo_root(src_cwd) if os.path.isdir(src_cwd) else None
+        src_root = src_root or max((r for r in [project.path, *known] if src_cwd == r or src_cwd.startswith(r + os.sep)), key=len, default=src_cwd)
+        sub = os.path.join(root, os.path.relpath(src_cwd, src_root))
+        target = os.path.realpath(sub if os.path.isdir(sub) else root)
+        branch = _branch_of(target)
+        if target == src_cwd:  # e.g. its worktree was created again at the same place
+            return {"cwd": target, "branch": branch, "worktree": created}
+        gone = not os.path.isdir(src_cwd)
+        if gone:  # the branch it last had: as Atrium saw the worktree, else as the transcript recorded
+            summary = await self.find_summary(project, sid)
+            branch_from = known.get(src_root, {}).get("branch") or (summary.git_branch if summary else None)
+        else:
+            branch_from = _branch_of(src_cwd)
+        move = {"from": src_cwd, "to": target, "branch_from": branch_from, "branch": branch, "gone": gone, "at": time.time()}
+        try:
+            project.resolve(".", root=target)  # must belong to the project
+            if h and h.alive:
+                await self.close(sid)
+            await harness.move_session(sid, recorded, target, note=_moved_note(move))
+        except BaseException:
+            if created:  # nothing refers to it yet
+                await gitops.run_git(project.path, "worktree", "remove", "--force", created["path"], check=False)
+                if created["new_branch"]:
+                    await gitops.run_git(project.path, "branch", "-D", created["branch"], check=False)
+            raise
+
+        meta = project.session_meta(sid)
+        # every move is kept: Codex lists a thread under the directory it started in, whatever it moved to since
+        project.set_session_meta(sid, cwd=target, harness=harness_id, moves=[*(meta.get("moves") or []), move])
+        transcript = harness.transcript_path(sid, target)
+        if transcript and project.tracker:
+            project.tracker.skip_existing(str(transcript))  # moved, not new: its history was tracked already
+        if meta.get("role", "worker") == "worker":
+            in_worktree = root != project.path
+            where = f"worktree {branch}" if in_worktree and branch else "a worktree" if in_worktree else "the project directory"
+            project.board.update_agent(sid, stats={"branch": branch, "worktree": in_worktree, "workspace_gone": False, "live": None}, source="atrium")
+            project.board.log(sid, f"Moved to {where}" + (" (its worktree was removed)" if gone else ""), source="atrium")
+        self.invalidate(project)
+        hub.publish(f"project:{project.id}", {"type": "sessions_changed"})
+        return {"cwd": target, "branch": branch, "worktree": created}
+
     async def ensure_live(self, project: Project, sid: str, *, model: str | None = None, mode: str | None = None) -> LiveHandle:
         async with self._lock(sid):
             h = self.live.get(sid)
             if h and h.alive:
-                return h
+                if h.state in BUSY or os.path.isdir(h.cwd):
+                    return h
+                await self._release(h)  # idle in a directory removed since
             meta = project.session_meta(sid)
             summary = await self.find_summary(project, sid)
             harness_id = meta.get("harness") or (summary.harness if summary else None) or "claude-code"
             cwd = meta.get("cwd") or (summary.cwd if summary else None) or project.path
             if not os.path.isdir(cwd):
-                raise FileNotFoundError(f"session directory no longer exists: {cwd}")
+                raise WorkspaceGone(cwd)
             fork = meta.get("forked_from")
             name = meta.get("name") or (summary.title if summary else None) or (f"{fork.get('name') or 'Agent'} (fork)" if fork else "Agent")
             role = meta.get("role", "worker")
@@ -666,6 +831,55 @@ class SessionManager:
         hub.publish(f"project:{project.id}", {"type": "sessions_changed"})
         return backup
 
+    async def set_archived(self, project: Project, sid: str, archived: bool) -> dict[str, Any] | None:
+        """Archive (stops the agent) or unarchive. Archiving the last agent of a linked worktree whose
+        work is merged and committed also removes the worktree and its merged branch, after a
+        snapshot. Returns what happened to the worktree, if the agent had one."""
+        project.set_session_meta(sid, archived=archived)
+        if project.board.agent(sid):
+            project.board.update_agent(sid, stats={"archived": archived})
+        if not archived:
+            return None
+        await self.close(sid)
+        try:
+            return await self._tidy_worktree(project, sid)
+        except gitops.GitError as e:  # archived all the same
+            log.warning("archived %s, but couldn't tidy its worktree: %s", sid, e)
+            return {"removed": False, "path": None, "branch": None, "reason": f"git failed: {e}"}
+
+    async def _tidy_worktree(self, project: Project, sid: str) -> dict[str, Any] | None:
+        cwd, _ = await self.session_info(project, sid)
+        root = gitops.repo_root(cwd) if os.path.isdir(cwd) else None
+        wt = next((w for w in await gitops.worktrees(project.path) if root and w["path"] == os.path.realpath(root)), None)
+        if not wt or wt["main"] or wt["locked"]:
+            return None
+        root, branch = wt["path"], wt["branch"]
+        kept = {"removed": False, "path": root, "branch": branch}
+        others = [r for r in await self.list_sessions(project) if r["id"] != sid and _inside(r["cwd"], root)]
+        if others:
+            return {**kept, "reason": f"{_name(others[0])} still works there" if len(others) == 1 else f"{len(others)} other agents still work there"}
+        if (await gitops.run_git(root, "status", "--porcelain")).strip():
+            return {**kept, "reason": "it has uncommitted changes"}
+        head = (await gitops.run_git(root, "rev-parse", "HEAD")).strip()
+        if not await gitops.is_merged(project.path, head):
+            return {**kept, "reason": "its commits aren't merged"}
+        snap = await asyncio.to_thread(snapshots.take, root, "archive")
+        project.set_session_meta(sid, released={"path": root, "branch": branch, "head": head, "tree": snap["tree"] if snap else None, "at": time.time()})
+        await gitops.remove_worktree(project.path, root)
+        deleted = bool(branch) and await gitops.git_ok(project.path, "branch", "-d", branch)  # -d: only when merged
+        log.info("archived %s: removed its worktree %s%s", sid, root, f" and branch {branch}" if deleted else "")
+        if project.board.agent(sid):
+            project.board.update_agent(sid, stats={"workspace_gone": True})
+        self.invalidate(project)
+        hub.publish(f"project:{project.id}", {"type": "git_changed"})
+        return {"removed": True, "path": root, "branch": branch, "branch_deleted": deleted}
+
+    def busy_in(self, project: Project, root: str) -> list[str]:
+        """Names of the project's agents in the middle of a turn in ``root`` or below."""
+        root = os.path.realpath(root)
+        return [h.name for h in self.live.values()
+                if h.project.id == project.id and h.alive and h.state in BUSY and _inside(os.path.realpath(h.cwd), root)]
+
     async def snapshot(self, project: Project, sid: str) -> dict[str, Any]:
         meta = project.session_meta(sid)
         h = self.live.get(sid)
@@ -717,6 +931,14 @@ def attachment_from_upload(name: str) -> Attachment:
     return Attachment(path=path, name=label, mime=mimetypes.guess_type(path)[0] or "application/octet-stream")
 
 
+def _inside(path: str, root: str) -> bool:
+    return path == root or path.startswith(root + os.sep)
+
+
+def _name(row: dict[str, Any]) -> str:
+    return row.get("name") or row.get("title") or "another agent"
+
+
 def _short(s: str, n: int) -> str:
     s = " ".join(s.split())
     return s if len(s) <= n else s[: n - 1] + "…"
@@ -748,6 +970,27 @@ def _fork_note(fork: dict[str, Any], cwd: str) -> str:
     if os.path.realpath(old) == os.path.realpath(cwd):
         return FORK_SAME_DIR_APPEND.format(source=source)
     return FORK_MOVED_APPEND.format(source=source, old=old, cwd=cwd, files=FORK_FILES.get(fork.get("files") or "", FORK_FILES[""]))
+
+
+def _moved_note(move: dict[str, Any]) -> str:
+    """System-prompt note for a session Atrium moved to another directory (``SessionManager.move``)."""
+    why = "no longer exists (its worktree was removed)" if move.get("gone") else "is no longer your working directory"
+    return MOVED_APPEND.format(old=move["from"], old_branch=_on_branch(move.get("branch_from")), cwd=move["to"],
+                               branch=_on_branch(move.get("branch")), why=why)
+
+
+def _on_branch(branch: str | None) -> str:
+    return f" (branch {branch})" if branch else ""
+
+
+def _worktree_note(project: Project, cwd: str) -> str | None:
+    """System-prompt note for a session in a linked worktree: a fresh checkout, without ignored files."""
+    out = gitops._run_sync(cwd, "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir", "--abbrev-ref", "HEAD")
+    git_dir, common, head = ((out or "").splitlines() + ["", "", ""])[:3]
+    if not out or git_dir == common:  # not in git, or the main checkout
+        return None
+    include = " (Atrium copies in the ones .worktreeinclude lists when it creates one)" if os.path.isfile(os.path.join(project.path, ".worktreeinclude")) else ""
+    return WORKTREE_APPEND.format(branch=f" on branch {head}" if head and head != "HEAD" else "", include=include)
 
 
 def _branch_of(cwd: str) -> str | None:

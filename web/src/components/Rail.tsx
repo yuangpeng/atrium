@@ -13,7 +13,7 @@ import {
 import { api, SessionRow } from "../api";
 import { useApp } from "../store";
 import { EMPTY_REPLY, hasContent, hasReply, useDrafts } from "../drafts";
-import { clsx, displayName, timeAgo } from "../util";
+import { clsx, displayName, tidyNote, timeAgo } from "../util";
 import { Popover, useInterval, useTick } from "./ui";
 import { RailSubagents } from "./Subagents";
 
@@ -132,8 +132,8 @@ function AgentTip({ s, glyph }: { s: SessionRow; glyph?: LucideIcon }) {
       <div className="tip-foot">
         {s.branch && (
           <span className="mono">
-            ⎇ {s.branch}
-            {s.worktree ? " · worktree" : ""}
+            <span className={clsx(s.workspace_gone && "ws-gone")}>⎇ {s.branch}</span>
+            {s.workspace_gone ? (s.worktree ? " · worktree removed" : " · removed") : s.worktree ? " · worktree" : ""}
           </span>
         )}
         <span className="grow" />
@@ -169,7 +169,9 @@ function AgentsFlyout({ onClose }: { onClose: () => void }) {
   const updateReply = useDrafts((d) => d.updateReply);
   const setArchived = async (s: SessionRow, archived: boolean) => {
     if (!project) return;
-    await api.patchSession(project.id, s.id, { archived }).catch((e) => toast(e.message, "error"));
+    const res = await api.patchSession(project.id, s.id, { archived }).catch((e) => void toast(e.message, "error"));
+    const note = tidyNote(res?.worktree);
+    if (note) toast(...note);
     if (archived && s.id === sessionId) selectSession(null);
     void refreshSessions();
   };
@@ -236,7 +238,11 @@ function AgentsFlyout({ onClose }: { onClose: () => void }) {
             </span>
           </div>
           <div className="sub ellipsis">
-            {s.worktree && s.branch && <span className="mono" style={{ color: "var(--accent-strong)", marginRight: 5 }}>⎇ {s.branch}</span>}
+            {s.worktree && s.branch && (
+              <span className={clsx("mono", s.workspace_gone && "ws-gone")} style={{ color: "var(--accent-strong)", marginRight: 5 }} title={s.workspace_gone ? "Its worktree was removed" : undefined}>
+                ⎇ {s.branch}
+              </span>
+            )}
             {s.doing || s.first_prompt || <span className="faint">—</span>}
           </div>
         </div>

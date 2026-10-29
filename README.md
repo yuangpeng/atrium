@@ -82,11 +82,24 @@ A project-centric workbench for coding agents — Claude Code and Codex side by 
    The fork is a new agent that remembers the conversation up to there and works in a **new
    worktree** (a branch from the original's commit, with the files of that moment — taken from the
    turn snapshots, uncommitted changes included), an existing worktree, or the same directory.
-   This is also how a conversation changes worktree: a running agent stays bound to its directory
-   (its process, its transcript, the paths in its history, the uncommitted edits it made there), so
-   it is copied rather than moved — tick *Archive the original* to move it. Forks are native to both
-   harnesses (Claude: `fork_session`, the transcript moved under the new directory; Codex:
-   `thread/fork`); the fork's Changes and the Tracker only count what happened after the fork.
+   This is also how a conversation changes worktree while it has one: an agent stays bound to its
+   directory (its process, its transcript, the paths in its history, the uncommitted edits it made
+   there), so it is copied rather than moved — tick *Archive the original* to move it. Forks are
+   native to both harnesses (Claude: `fork_session`, the transcript moved under the new directory;
+   Codex: `thread/fork`); the fork's Changes and the Tracker only count what happened after the fork.
+8. **Agents outlive their worktrees.** Remove a worktree — from the Git panel, or the agent does it
+   after merging its branch — and its agents stay in the list with the worktree struck through
+   (⎇ ~~feat/x~~). Their process stops, and their Changes show the files as they left them, read-only.
+   The next message to one first asks where it continues — the project directory (on its current
+   branch), another worktree or a new one (a branch that still exists is checked out again), the
+   new-agent page's menu — then moves the same conversation there and tells the agent (Claude: the
+   transcript moves under the new directory; Codex: the thread resumes there). A worktree can't be
+   removed while an agent is mid-turn in it. Archiving the last agent of a worktree whose work is
+   committed and merged (into the project's HEAD or the remote's default branch) removes the
+   worktree and its branch, after a snapshot; otherwise the toast says why they were kept. New
+   worktrees get the gitignored files listed in `.worktreeinclude` (gitignore syntax — the file
+   Claude Code and the Codex app read too), e.g. `.env`; an agent in a worktree is told to set up
+   the rest (dependencies, builds) itself.
 
 ## Quick start
 
@@ -123,6 +136,7 @@ Atrium binds to `127.0.0.1` and has **no authentication** — don't expose it.
 | `<project>/.atrium/agents.json` | session → agent name / role / harness / mode / model / effort / turn snapshots |
 | `<project>/.atrium/tracker.json` | tracker transcript offsets + run log |
 | `<project>/.atrium/worktrees/` | worktrees created from Atrium |
+| `<project>/.atrium/worktrees.json` | every worktree seen, removed ones too, so their agents stay listed |
 | `<project>/.atrium/trash/` | files deleted or reverted from the UI |
 
 `.atrium/` contains a `.gitignore` with `*`, so it never shows up in your repo.

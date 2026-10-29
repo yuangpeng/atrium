@@ -399,6 +399,10 @@ a { color: var(--accent-strong); }
 /* shown, not picked (the model; a started agent's harness and workspace): no border */
 .composer-bar .chip.fixed { border-color: transparent; color: var(--muted); cursor: default; }
 .composer-bar .chip.fixed:hover { background: transparent; }
+/* a started agent's workspace once it's gone (worktree removed): struck through, picks where it continues */
+.composer-bar .chip.gone { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); }
+.composer-bar .chip s, .ws-gone { text-decoration: line-through; }
+.pill.gone { text-decoration: line-through; opacity: 0.75; }
 /* the hidden copy measures the width the model's name needs */
 .composer-bar .chip.model-chip { padding: 0 6px; }
 .composer-bar .chip.measure { position: absolute; left: 0; top: 0; visibility: hidden; pointer-events: none; }

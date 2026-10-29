@@ -54,9 +54,10 @@ def board_toolset(project: "Project", session_id: str | Callable[[], str | None]
             me = " (you)" if a.get("session_id") == sid() else ""
             age = int((now - (a.get("updated_at") or now)) / 60)
             branch = (a.get("stats") or {}).get("branch")
+            gone = ", worktree removed" if (a.get("stats") or {}).get("workspace_gone") else ""
             lines.append(
                 f"- {a.get('name')}{me}: {a.get('status')} {a.get('progress', 0)}% — {a.get('doing') or '—'}"
-                f"{f' [branch {branch}]' if branch else ''} (updated {age}m ago)"
+                f"{f' [branch {branch}{gone}]' if branch else ''} (updated {age}m ago)"
                 + (f"\n  summary: {a['summary']}" if a.get("summary") else "")
                 + (f"\n  cards: {', '.join(c.get('title', k) for k, c in (a.get('cards') or {}).items())}" if a.get("cards") else "")
             )

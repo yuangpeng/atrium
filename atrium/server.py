@@ -22,7 +22,7 @@ from .events import Subscriber, hub
 from .gitagent import set_view
 from .harness import all_harnesses, get_harness
 from .project import Project, ProjectNotFound, projects
-from .sessions import attachment_from_upload, sessions
+from .sessions import WorkspaceGone, attachment_from_upload, sessions
 from .tracker import Tracker
 from .watch import ProjectWatcher, transcript_watcher
 
@@ -91,6 +91,11 @@ async def _nf(_r: Request, e: ProjectNotFound):
 @app.exception_handler(PermissionError)
 async def _perm(_r: Request, e: PermissionError):
     return JSONResponse({"error": str(e)}, status_code=403)
+
+
+@app.exception_handler(WorkspaceGone)
+async def _gone(_r: Request, e: WorkspaceGone):
+    return JSONResponse({"error": str(e), "code": "workspace_gone", "cwd": e.cwd}, status_code=409)
 
 
 @app.exception_handler(FileNotFoundError)
@@ -342,14 +347,26 @@ async def patch_session(pid: str, sid: str, body: dict[str, Any] = Body(...)):
         h = sessions.live.get(sid)
         if h:
             h.name = name
+    out: dict[str, Any] = {"ok": True}
     if "archived" in body:
-        p.set_session_meta(sid, archived=bool(body["archived"]))
-        p.board.update_agent(sid, stats={"archived": bool(body["archived"])}) if p.board.agent(sid) else None
-        if body["archived"]:
-            await sessions.close(sid)
+        out["worktree"] = await sessions.set_archived(p, sid, bool(body["archived"]))
     sessions.invalidate(p)
     hub.publish(f"project:{pid}", {"type": "sessions_changed"})
-    return {"ok": True}
+    return out
+
+
+@app.post("/api/p/{pid}/sessions/{sid}/workspace")
+async def move_session(pid: str, sid: str, body: dict[str, Any] = Body(...)):
+    """Carry on in another directory: {"kind": "root"} | {"kind": "worktree", "path"} | {"kind": "new", "branch", "base"?}."""
+    p = P(pid)
+    try:
+        res = await sessions.move(p, sid, body)
+    except (ValueError, NotImplementedError) as e:
+        raise HTTPException(400, str(e))
+    transcript_watcher.add_project(p)  # watch where its transcript now goes
+    if res.get("worktree"):
+        hub.publish(f"project:{pid}", {"type": "git_changed"})
+    return res
 
 
 @app.post("/api/p/{pid}/sessions/{sid}/send")
@@ -663,8 +680,15 @@ async def git_add_worktree(pid: str, body: dict[str, Any] = Body(...)):
 @app.post("/api/p/{pid}/git/worktrees/remove")
 async def git_remove_worktree(pid: str, body: dict[str, Any] = Body(...)):
     p = P(pid)
+    busy = sessions.busy_in(p, body["path"])
+    if busy:
+        who = f"“{busy[0]}” is" if len(busy) == 1 else f"{len(busy)} agents are"
+        raise HTTPException(409, f"{who} still working in this worktree: wait for the turn to end, or stop it, before removing the worktree")
     await gitops.remove_worktree(p.path, body["path"], force=bool(body.get("force")))
+    await sessions.release_gone(p)  # its agents stay, and continue wherever they are moved to
+    sessions.invalidate(p)
     hub.publish(f"project:{pid}", {"type": "git_changed"})
+    hub.publish(f"project:{pid}", {"type": "sessions_changed"})
     return {"ok": True}
 
 

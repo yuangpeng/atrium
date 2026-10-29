@@ -153,6 +153,7 @@ export interface SessionRow {
   cwd: string;
   worktree: boolean;
   branch: string | null;
+  workspace_gone: boolean; // its directory no longer exists (worktree removed): it continues once moved
   created_at: number | null;
   updated_at: number;
   live: LiveState | null;
@@ -177,6 +178,12 @@ export interface ForkAt {
 }
 
 export type ForkWorkspace = { kind: "same" } | { kind: "worktree"; path: string } | { kind: "new"; branch: string };
+
+/** Where an agent moves to (after its worktree was removed): the project directory, a worktree, a new one. */
+export type MoveWorkspace = { kind: "root" } | { kind: "worktree"; path: string } | { kind: "new"; branch: string; base?: string };
+
+/** What archiving an agent did to its worktree: removed (it was the last agent there, its work merged and committed), or why not. */
+export type WorktreeTidy = { removed: true; path: string; branch: string | null; branch_deleted: boolean } | { removed: false; path: string; branch: string | null; reason: string };
 
 /** What a forked worktree's files are: as at the fork point, the source's current files, or just the commit. */
 export type ForkFiles = "fork-point" | "current" | "committed";
@@ -315,6 +322,7 @@ export interface ChangeFile {
   last_ts: number | null;
   baseline_source: "snapshot" | "transcript" | "head" | "unknown";
   detected: boolean;
+  gone: boolean; // its checkout was removed: the file as the agent left it, read-only
 }
 
 export interface ChangeDetail {
@@ -326,6 +334,7 @@ export interface ChangeDetail {
   current: string | null;
   exists: boolean;
   sha: string | null;
+  gone: boolean;
 }
 
 export interface AgentChanges {
@@ -484,7 +493,9 @@ export const api = {
   compaction: (pid: string, sid: string, cid: string) =>
     req<{ compaction: CompactionRow & { index: number }; items: Item[] }>("GET", `/api/p/${pid}/sessions/${sid}/compactions/${encodeURIComponent(cid)}`),
   patchSession: (pid: string, sid: string, body: { name?: string; archived?: boolean }) =>
-    req("PATCH", `/api/p/${pid}/sessions/${sid}`, body),
+    req<{ ok: boolean; worktree?: WorktreeTidy | null }>("PATCH", `/api/p/${pid}/sessions/${sid}`, body),
+  moveSession: (pid: string, sid: string, workspace: MoveWorkspace) =>
+    req<{ cwd: string; branch: string | null; worktree: { path: string; branch: string } | null }>("POST", `/api/p/${pid}/sessions/${sid}/workspace`, workspace),
   deleteSession: (pid: string, sid: string) => req<{ ok: boolean; backup: string | null }>("DELETE", `/api/p/${pid}/sessions/${sid}`),
   forkSession: (
     pid: string,

@@ -48,16 +48,22 @@ class ProjectWatcher:
         try:
             async for changes in awatch(*roots, watch_filter=_project_filter, stop_event=self._stop, debounce=400, step=100, recursive=True):
                 files: list[str] = []
-                git_changed = False
-                for _change, path in changes:
+                git_changed = worktrees_changed = False
+                for change, path in changes:
                     if "/.git/" in path:
                         git_changed = True
+                        tail = path.split("/.git/", 1)[1]
+                        # a worktree added or removed: its admin dir worktrees/<name> (with its gitdir file) comes or goes
+                        if change != Change.modified and tail.startswith("worktrees/") and (tail.count("/") == 1 or tail.endswith("/gitdir")):
+                            worktrees_changed = True
                         continue
                     files.append(path)
                 if files:
                     hub.publish(topic, {"type": "fs", "paths": files[:200]})
                 if files or git_changed:
                     hub.publish(topic, {"type": "git_changed"})
+                if worktrees_changed:  # the worktree pickers, and agents whose worktree went away
+                    hub.publish(topic, {"type": "worktrees_changed"})
         except Exception:
             log.exception("project watcher stopped for %s", self.project.path)
 
