@@ -207,24 +207,37 @@ function ChatColumn() {
   const [drag, setDrag] = useState(false);
   useEffect(() => {
     if (!drag) return;
-    const move = (e: MouseEvent) => setChatWidth(Math.max(MIN_CHAT, Math.min(window.innerWidth - RAIL_WIDTH - MIN_WORKSPACE, window.innerWidth - RAIL_WIDTH - e.clientX)));
+    const move = (e: PointerEvent) => setChatWidth(Math.max(MIN_CHAT, Math.min(window.innerWidth - RAIL_WIDTH - MIN_WORKSPACE, window.innerWidth - RAIL_WIDTH - e.clientX)));
     const up = () => setDrag(false);
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
-    window.addEventListener("mousemove", move);
-    window.addEventListener("mouseup", up);
+    document.body.classList.add("col-resizing");
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+    window.addEventListener("blur", up); // switched away mid-drag: the release may never reach the page
     return () => {
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-      window.removeEventListener("mousemove", move);
-      window.removeEventListener("mouseup", up);
+      document.body.classList.remove("col-resizing");
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+      window.removeEventListener("blur", up);
     };
   }, [drag, setChatWidth]);
   if (!project) return null;
   const current = sessions.find((s) => s.id === sessionId);
   return (
     <section className="chatcol" style={{ width: chatWidth }}>
-      <div className={clsx("resizer", drag && "drag")} onMouseDown={() => setDrag(true)} />
+      <div
+        className={clsx("resizer", drag && "drag")}
+        onPointerDown={(e) => {
+          if (e.button !== 0) return;
+          // A fast pointer gets past the 6px handle onto the board, an iframe, which would take the moves and the
+          // release (the splitter stalls, then sticks to the pointer). Capture keeps them coming here;
+          // .col-resizing also turns iframes off, for browsers whose capture stops at frames.
+          e.currentTarget.setPointerCapture(e.pointerId);
+          setDrag(true);
+        }}
+        onLostPointerCapture={() => setDrag(false)}
+      />
       {sessionId && subagentId ? (
         <>
           <SubagentHeader parent={current} aid={subagentId} />

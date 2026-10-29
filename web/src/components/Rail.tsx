@@ -50,13 +50,14 @@ function hash(key: string): number {
   return h >>> 0;
 }
 
-/** Glyph per session: preferred by id, else the next free one, assigned in creation order so agents keep theirs. */
+/** Glyph per session: preferred by id, else the next free one, assigned in creation order so agents keep theirs.
+ *  Archived ones go last, so showing them doesn't change the others'. */
 export function useGlyphs(): Map<string, LucideIcon> {
   const sessions = useApp((s) => s.sessions);
   return useMemo(() => {
     const out = new Map<string, LucideIcon>();
     const used = new Set<number>();
-    const ordered = sessions.filter((s) => s.role === "worker").sort((a, b) => (a.created_at ?? a.updated_at) - (b.created_at ?? b.updated_at) || a.id.localeCompare(b.id));
+    const ordered = sessions.filter((s) => s.role === "worker").sort((a, b) => Number(a.archived) - Number(b.archived) || (a.created_at ?? a.updated_at) - (b.created_at ?? b.updated_at) || a.id.localeCompare(b.id));
     for (const s of ordered) {
       let i = hash(s.id) % GLYPHS.length;
       for (let n = 0; n < GLYPHS.length && used.has(i); n++) i = (i + 1) % GLYPHS.length;

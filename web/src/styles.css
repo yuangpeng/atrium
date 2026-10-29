@@ -438,8 +438,10 @@ a { color: var(--accent-strong); }
 .name-input::placeholder { font-weight: 500; color: var(--faint); }
 
 /* ---------------------------------------------------------------- panel */
-.resizer { position: absolute; left: -3px; top: 0; bottom: 0; width: 6px; cursor: col-resize; z-index: 5; }
+.resizer { position: absolute; left: -3px; top: 0; bottom: 0; width: 6px; cursor: col-resize; z-index: 5; touch-action: none; }
 .resizer:hover, .resizer.drag { background: color-mix(in srgb, var(--accent) 35%, transparent); }
+body.col-resizing { cursor: col-resize; user-select: none; }
+body.col-resizing iframe { pointer-events: none; } /* the board's would take the pointer from the splitter */
 .panel-tab { height: 32px; padding: 0 11px; border: 0; background: transparent; border-radius: 8px; cursor: pointer; color: var(--muted); font-weight: 500; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; }
 .panel-tab:hover { background: var(--hover); color: var(--text); }
 .panel-tab.on { background: var(--active); color: var(--text); }

@@ -77,6 +77,8 @@ interface AppState {
 
 let unsubProject: (() => void) | null = null;
 let toastId = 0;
+let sessionsAsked = 0; // session-list requests sent
+let sessionsShown = 0; // the one whose answer is in the store
 
 function syncUrl(pid: string | null, sid: string | null, aid: string | null = null) {
   const u = new URL(location.href);
@@ -210,9 +212,14 @@ export const useApp = create<AppState>((set, get) => {
     refreshSessions: async () => {
       const p = get().project;
       if (!p) return;
+      const seq = ++sessionsAsked;
+      const archived = get().showArchived;
       try {
-        const sessions = await api.sessions(p.id, get().showArchived);
-        if (get().project?.id === p.id) set({ sessions });
+        const sessions = await api.sessions(p.id, archived);
+        // answers can overtake each other: never go back to an older list, nor show one from before Archived was toggled
+        if (seq < sessionsShown || archived !== get().showArchived || get().project?.id !== p.id) return;
+        sessionsShown = seq;
+        set({ sessions });
       } catch {
         /* transient */
       }
@@ -247,7 +254,7 @@ export const useApp = create<AppState>((set, get) => {
       set({ theme: t, boardVersion: get().boardVersion + 1 });
     },
     setShowArchived: (v) => {
-      set({ showArchived: v });
+      set((s) => ({ showArchived: v, sessions: v ? s.sessions : s.sessions.filter((r) => !r.archived) })); // hiding them needs no request
       void get().refreshSessions();
     },
     setPickerOpen: (v) => set({ pickerOpen: v }),
