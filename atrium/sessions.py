@@ -8,7 +8,7 @@ import os
 import shutil
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any, Callable
 
 from . import snapshots
@@ -18,7 +18,7 @@ from .config import UPLOADS_DIR, config
 from .events import hub
 from .gitagent import GIT_AGENT_ALLOWED_TOOLS, GIT_SERVER, git_toolset
 from .harness import all_harnesses, get_harness
-from .harness.base import Attachment, Item, LiveSession, LiveSpec, SessionSummary
+from .harness.base import Attachment, Item, LiveSession, LiveSpec, SessionSummary, SubagentSummary
 from .harness.util import upload_url
 from .mcp.web import WEB_SERVER, web_toolset
 from .notify import notifier
@@ -48,6 +48,7 @@ class LiveHandle:
     started_at: float = field(default_factory=time.time)
     last_activity: float = field(default_factory=time.time)
     pending: dict[str, Item] = field(default_factory=dict)
+    tasks: dict[str, dict[str, Any]] = field(default_factory=dict)  # subagents seen on the stream, by spawning tool call
     title_synced: bool = False
 
     @property
@@ -142,6 +143,9 @@ class SessionManager:
         def emit(item: Item) -> None:
             kind = item.get("kind")
             h.last_activity = time.time()
+            if kind == "task":
+                self._track_task(h, item)
+                return
             if kind not in TRANSIENT:
                 h.store(item)
             topic = f"session:{h.sid}"
@@ -165,6 +169,20 @@ class SessionManager:
             hub.publish(topic, {"type": "item", "item": item})
 
         return emit
+
+    def _track_task(self, h: LiveHandle, item: Item) -> None:
+        """A subagent started / ended (harness ``task`` items): its status, ahead of the transcript."""
+        key = item.get("tool_use_id")
+        if not key:  # end-of-task updates may only carry the task id
+            key = next((k for k, t in h.tasks.items() if t["task_id"] == item.get("task_id")), item.get("task_id"))
+        if not key:
+            return
+        now = time.time()
+        t = h.tasks.setdefault(key, {"task_id": item.get("task_id"), "tool_use_id": item.get("tool_use_id"), "created_at": now})
+        t.update({k: item[k] for k in ("description", "agent_type") if item.get(k)})
+        t["status"] = item.get("status") or "running"
+        t["updated_at"] = now
+        hub.publish(f"project:{h.project.id}", {"type": "sessions_changed", "session_id": h.sid, "source": "subagents"})
 
     async def _turn_ended(self, h: LiveHandle) -> None:
         await self._snapshot(h, "end")
@@ -284,8 +302,37 @@ class SessionManager:
                 out.append(row(sid, h.harness_id, h.name, h.cwd, h.last_activity, h.started_at, None, None, None))
         if not include_archived:
             out = [r for r in out if not r["archived"]]
+        roots = [project.path] + [w["path"] for w in wts if w["path"] != project.path and not w.get("bare")]
+        listed = {r["id"] for r in out}
+        found = await self._subagents([s for s in summaries if s.id in listed], roots)
+        for r in out:
+            r["subagents"] = _subagent_rows(found.get(r["id"], []), self.live.get(r["id"]))
         out.sort(key=lambda r: -(r["updated_at"] or 0))
         return out
+
+    async def _subagents(self, summaries: list[SessionSummary], roots: list[str]) -> dict[str, list[SubagentSummary]]:
+        groups: dict[str, list[SessionSummary]] = {}
+        for s in summaries:
+            groups.setdefault(s.harness, []).append(s)
+        results = await asyncio.gather(*(get_harness(hid).list_subagents(ss, roots) for hid, ss in groups.items()), return_exceptions=True)
+        found: dict[str, list[SubagentSummary]] = {}
+        for hid, r in zip(groups, results):
+            if isinstance(r, BaseException):
+                log.warning("%s: listing subagents failed: %s", hid, r)
+            else:
+                found.update(r)
+        return found
+
+    async def subagent(self, project: Project, sid: str, aid: str) -> dict[str, Any]:
+        """A subagent's row and conversation (read-only: only its parent talks to it)."""
+        summary = await self.find_summary(project, sid)
+        found = await self._subagents([summary], await asyncio.to_thread(project.roots)) if summary else {}
+        sub = next((a for a in _subagent_rows(found.get(sid, []), self.live.get(sid)) if a["id"] == aid), None)
+        if sub is None:
+            raise FileNotFoundError(f"no subagent {aid} in session {sid}")
+        cwd, harness_id = await self.session_info(project, sid)
+        items = await get_harness(harness_id).load_subagent_history(sid, aid, cwd)
+        return {"subagent": sub, "items": items}
 
     # ---- operations --------------------------------------------------------
     def _lock(self, sid: str) -> asyncio.Lock:
@@ -464,6 +511,27 @@ class SessionManager:
         harness = get_harness(meta.get("harness") or summary.harness)
         items = await harness.load_history(sid, summary.cwd or project.path)
         return {"live": False, "state": None, "items": items, "pending": [], "settings": settings}
+
+
+def _subagent_rows(found: list[SubagentSummary], h: LiveHandle | None) -> list[dict[str, Any]]:
+    """Discovered subagents, with the live stream's word on their status when the parent runs in Atrium."""
+    rows = [asdict(a) for a in found]
+    if h and h.alive and h.tasks:
+        index: dict[str, dict[str, Any]] = {}
+        for r in rows:
+            index.setdefault(r["id"], r)
+            if r["tool_use_id"]:
+                index[r["tool_use_id"]] = r
+        for key, t in h.tasks.items():
+            r = index.get(key) or index.get(t["task_id"] or "")
+            if r is None:  # no transcript yet
+                r = asdict(SubagentSummary(id=t["task_id"] or key, agent_type=t.get("agent_type"), description=t.get("description") or "Subagent",
+                                           status=t["status"], updated_at=t["updated_at"], created_at=t["created_at"], tool_use_id=t["tool_use_id"]))
+                rows.append(r)
+            r["status"] = t["status"]
+            r["updated_at"] = max(r["updated_at"], t["updated_at"])
+    rows.sort(key=lambda r: r["created_at"] or r["updated_at"])
+    return rows
 
 
 def attachment_from_upload(name: str) -> Attachment:

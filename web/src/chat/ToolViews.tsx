@@ -1,7 +1,7 @@
 import type { JSX } from "react";
 import { useMemo, useState } from "react";
 import {
-  Bot, Check, ChevronDown, ChevronRight, ClipboardCheck, ExternalLink, FileDiff, FilePlus2, FileText, GitBranch, Globe, Image, LayoutDashboard,
+  ArrowUpRight, Bot, Check, ChevronDown, ChevronRight, ClipboardCheck, ExternalLink, FileDiff, FilePlus2, FileText, GitBranch, Globe, Image, LayoutDashboard,
   Link2, ListTodo, Pencil, Plug, Search, ShieldAlert, Terminal, X,
 } from "lucide-react";
 import { Item } from "../api";
@@ -285,15 +285,34 @@ function ToolDetail({ tool, result, cwd }: { tool: ToolItem; result?: ResultItem
   }
 }
 
+/** Opens the subagent a tool call spawned (Claude: by the call's id; Codex: the threads it targets), when Atrium knows it. */
+export function useOpenSubagent(toolUseId: string | null, agentIds?: string[]): (() => void) | null {
+  const sessionId = useApp((s) => s.sessionId);
+  const selectSubagent = useApp((s) => s.selectSubagent);
+  const aid = useApp((s) => {
+    if (!toolUseId && !agentIds?.length) return null;
+    const subs = s.sessions.find((x) => x.id === s.sessionId)?.subagents;
+    return subs?.find((a) => (toolUseId && a.tool_use_id === toolUseId) || agentIds?.includes(a.id))?.id ?? null;
+  });
+  return aid && sessionId ? () => selectSubagent(sessionId, aid) : null;
+}
+
 export function ToolRow({ tool, result, cwd, running }: { tool: ToolItem; result?: ResultItem; cwd: string; running: boolean }) {
   const [open, setOpen] = useState(tool.name === "TodoWrite");
   const meta = toolMeta(tool.name, tool.input || {}, cwd);
+  const spawns = tool.name === "Agent" || tool.name === "Task";
+  const openSub = useOpenSubagent(spawns ? tool.id : null, spawns ? tool.input?.agent_ids : undefined);
   return (
     <div className="tool">
       <div className="tool-row" onClick={() => setOpen((o) => !o)}>
         <span className="ico">{meta.icon}</span>
         <span className="label">{meta.label}</span>
         <span className="brief">{meta.brief}</span>
+        {openSub && (
+          <button className="sub-link" title="Open the subagent's conversation" onClick={(e) => (e.stopPropagation(), openSub())}>
+            Open <ArrowUpRight size={12} />
+          </button>
+        )}
         <span className={`st ${result ? (result.is_error ? "err" : "ok") : ""}`}>
           {result ? result.is_error ? <X size={14} /> : <Check size={14} /> : running ? <Spinner /> : null}
         </span>

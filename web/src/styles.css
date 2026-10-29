@@ -596,3 +596,56 @@ a { color: var(--accent-strong); }
 [data-theme="dark"] .hljs-string, [data-theme="dark"] .hljs-regexp, [data-theme="dark"] .hljs-symbol { color: #ce9178; }
 [data-theme="dark"] .hljs-number { color: #b5cea8; }
 [data-theme="dark"] .hljs-comment, [data-theme="dark"] .hljs-quote { color: #6a9955; }
+
+/* ---------------------------------------------------------------- subagents */
+/* how many subagents an agent has (bottom-left of its emblem); lit while one runs */
+.rail-agent .subs-n {
+  position: absolute; left: -5px; bottom: -4px; min-width: 15px; height: 15px; padding: 0 3px; border-radius: 8px; display: grid; place-items: center;
+  background: var(--surface); color: var(--muted); border: 1.5px solid var(--sidebar); box-shadow: inset 0 0 0 1px var(--border-strong);
+  font: 700 9.5px/1 var(--font-ui); font-variant-numeric: tabular-nums;
+}
+.rail-agent .subs-n.on { background: var(--accent-soft); color: var(--accent-strong); box-shadow: inset 0 0 0 1.5px var(--accent); }
+.rail-agent.parent-on .agent-av { box-shadow: 0 0 0 2px var(--sidebar), 0 0 0 3.5px color-mix(in srgb, var(--hc) 40%, transparent); }
+/* an agent's subagents slide open under it and push the agents below down (-8px: the closed box would add a rail gap) */
+.rail-subs { --hc: #5b7fbf; flex: none; align-self: stretch; display: grid; grid-template-rows: 0fr; margin-top: -8px; transition: grid-template-rows 0.2s ease, margin-top 0.2s ease; }
+.rail-subs.h-claude-code { --hc: #d97757; }
+.rail-subs.h-codex { --hc: #10a37f; }
+.rail-subs.open { grid-template-rows: 1fr; margin-top: -3px; }
+.rail-subs-inner { min-height: 0; overflow: hidden; position: relative; display: flex; flex-direction: column; align-items: center; gap: 7px; visibility: hidden; transition: visibility 0s linear 0.2s; }
+.rail-subs.open .rail-subs-inner { visibility: visible; transition-delay: 0s; padding: 5px 0; }
+/* the thread from the agent down through its subagents */
+.rail-subs-inner::before { content: ""; position: absolute; left: calc(50% - 0.75px); top: 0; bottom: 17px; width: 1.5px; border-radius: 1px; background: color-mix(in srgb, var(--hc) 32%, var(--border)); }
+.rail-sub { position: relative; width: 24px; height: 24px; border-radius: 50%; border: 0; padding: 0; flex: none; cursor: pointer; background: transparent; display: grid; place-items: center; }
+.rail-subs.open .rail-sub { animation: sub-in 0.22s ease both; animation-delay: calc(var(--i) * 30ms); }
+@keyframes sub-in { from { opacity: 0; transform: translateY(-6px) scale(0.8); } }
+.rail-sub .st { position: absolute; right: -3px; bottom: -3px; width: 9px; height: 9px; border: 2px solid var(--sidebar); }
+.rail-sub:hover .sub-av { background: color-mix(in srgb, var(--hc) 12%, var(--surface)); }
+.rail-sub.on .sub-av { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--hc) 45%, transparent), 0 0 0 2px var(--sidebar), 0 0 0 3.5px var(--hc); }
+.rail-sub-more {
+  position: relative; height: 16px; min-width: 24px; padding: 0 5px; border-radius: 8px; border: 1px solid var(--border-strong); background: var(--sidebar);
+  color: var(--muted); font: 600 10px/1 var(--font-ui); cursor: pointer; display: grid; place-items: center; flex: none;
+}
+.rail-sub-more:hover { color: var(--text); background: var(--surface); }
+/* subagent emblem: an outlined circle, a lighter version of its agent's */
+.sub-av {
+  --hc: #5b7fbf; display: inline-grid; place-items: center; border-radius: 50%; flex: none; background: var(--surface);
+  color: color-mix(in srgb, var(--hc) 85%, #000); box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--hc) 45%, transparent);
+}
+.sub-av.h-claude-code { --hc: #d97757; }
+.sub-av.h-codex { --hc: #10a37f; }
+[data-theme="dark"] .sub-av { color: color-mix(in srgb, var(--hc) 70%, #fff); }
+.dot.stopped { background: var(--faint); }
+/* chat: "Open" on Agent tool rows and subagent lines; the subagent view */
+.sub-link {
+  display: inline-flex; align-items: center; gap: 2px; height: 22px; padding: 0 7px; border-radius: 6px; border: 0; background: transparent; flex: none;
+  color: var(--accent-strong); font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.sub-link:hover { background: var(--accent-soft); }
+.sub-link.inline { height: 18px; padding: 0 4px; margin-left: 4px; vertical-align: baseline; font-size: inherit; }
+.sub-task { border: 1px solid var(--border); border-radius: 12px; background: var(--surface); overflow: hidden; }
+.sub-task-head { display: flex; align-items: center; gap: 6px; padding: 7px 12px; font-size: 12.5px; color: var(--muted); background: var(--surface-2); border-bottom: 1px solid var(--border); }
+.sub-task-head b { color: var(--text-2); font-weight: 600; }
+.sub-task-body { padding: 10px 12px; white-space: pre-wrap; word-wrap: break-word; font-size: 13.5px; color: var(--text-2); max-height: 240px; overflow: auto; }
+.sub-foot { flex: none; display: flex; align-items: center; gap: 8px; padding: 9px 12px 9px 16px; border-top: 1px solid var(--border); font-size: 12.5px; color: var(--muted); }
+.topbar .t-name .crumb { flex: 0 1 auto; min-width: 0; border: 0; background: transparent; padding: 2px 4px; margin: 0 -2px; border-radius: 6px; font: inherit; color: var(--muted); cursor: pointer; }
+.topbar .t-name .crumb:hover { background: var(--hover); color: var(--text); }

@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import config
-from .base import Attachment, Emit, FileEdit, Harness, Item, LiveSession, LiveSpec, SessionSummary, ToolSpec
+from .base import Attachment, Emit, FileEdit, Harness, Item, LiveSession, LiveSpec, SessionSummary, SubagentSummary, ToolSpec
 from .codex_rpc import AppServerClient, RpcError
 from .util import attachment_note, clip, hhmm, parse_json_loose, short, split_attachment_note, strict_schema, upload_url
 
@@ -50,6 +50,8 @@ SANDBOX_POLICY = {
     "danger-full-access": {"type": "dangerFullAccess"},
 }
 SOURCE_KINDS = ["cli", "vscode", "exec", "appServer", "unknown"]
+SUBAGENT_SOURCE_KINDS = ["subAgentThreadSpawn"]  # threads spawned by another thread (review / compaction threads are internal)
+SUBAGENT_STATUS = {"active": "running", "systemError": "failed"}  # thread status -> subagent status (else done)
 # Atrium namespace -> Codex dynamic-tool namespace ("web" is reserved by the Responses API)
 NS_ALIAS = {"web": "internet"}
 NS_UNALIAS = {v: k for k, v in NS_ALIAS.items()}
@@ -151,7 +153,8 @@ def tool_item(item: dict[str, Any]) -> Item | None:
     if t == "imageView":
         return {"kind": "tool", "id": iid, "name": "ViewImage", "input": {"file_path": item.get("path")}}
     if t == "collabAgentToolCall":
-        return {"kind": "tool", "id": iid, "name": "Agent", "input": {"description": short(item.get("prompt") or "", 200), "subagent_type": item.get("tool")}}
+        return {"kind": "tool", "id": iid, "name": "Agent", "input": {"description": short(item.get("prompt") or "", 200), "subagent_type": item.get("tool"),
+                                                                      "agent_ids": item.get("receiverThreadIds") or []}}
     if t == "imageGeneration":
         return {"kind": "tool", "id": iid, "name": "ImageGen", "input": {"prompt": item.get("revisedPrompt") or "", "file_path": item.get("savedPath")}}
     return None
@@ -530,6 +533,7 @@ class CodexHarness(Harness):
         self._cwd_cache: dict[str, str | None] = {}
         self._models: tuple[float, list[dict[str, Any]]] | None = None
         self._list_warned = False
+        self._subagent_threads: dict[tuple[str, ...], tuple[float, list[dict[str, Any]]]] = {}
 
     @property
     def client(self) -> AppServerClient:
@@ -608,15 +612,10 @@ class CodexHarness(Harness):
     async def list_sessions(self, project_dir: str, roots: list[str]) -> list[SessionSummary]:
         if not self.available()[0]:
             return []
-        cwds: set[str] = set()
-        for r in roots:
-            cwds.add(r)
-            if r.startswith("/private/"):  # macOS: /tmp → /private/tmp; threads record whichever the shell used
-                cwds.add(r[len("/private"):])
         out: list[SessionSummary] = []
         cursor = None
         for _ in range(10):
-            params: dict[str, Any] = {"cwd": sorted(cwds), "sourceKinds": SOURCE_KINDS, "limit": 100}
+            params: dict[str, Any] = {"cwd": _thread_cwds(roots), "sourceKinds": SOURCE_KINDS, "limit": 100}
             if cursor:
                 params["cursor"] = cursor
             try:
@@ -632,6 +631,47 @@ class CodexHarness(Harness):
             if not cursor:
                 break
         return out
+
+    async def list_subagents(self, sessions: list[SessionSummary], roots: list[str]) -> dict[str, list[SubagentSummary]]:
+        ids = {s.id for s in sessions if s.harness == self.id}
+        if not ids or not self.available()[0]:
+            return {}
+        threads = await self._spawned_threads(_thread_cwds(roots))
+        by_id = {t["id"]: t for t in threads}
+        out: dict[str, list[SubagentSummary]] = {}
+        for t in threads:  # nested sub-agents are listed under the top-level session
+            root, depth = t.get("parentThreadId"), 1
+            while root in by_id and depth < 16:
+                root, depth = by_id[root].get("parentThreadId"), depth + 1
+            if root in ids:
+                out.setdefault(root, []).append(_subagent_summary(t, depth))
+        return out
+
+    async def _spawned_threads(self, cwds: list[str]) -> list[dict[str, Any]]:
+        key = tuple(cwds)
+        hit = self._subagent_threads.get(key)
+        if hit and time.time() - hit[0] < 2:
+            return hit[1]
+        threads: list[dict[str, Any]] = []
+        cursor = None
+        for _ in range(10):
+            params: dict[str, Any] = {"cwd": cwds, "sourceKinds": SUBAGENT_SOURCE_KINDS, "limit": 100}
+            if cursor:
+                params["cursor"] = cursor
+            try:
+                res = await self.client.request("thread/list", params, timeout=30)
+            except Exception as e:
+                log.debug("codex thread/list (sub-agents) failed: %s", e)
+                break
+            threads += [t for t in res.get("data") or [] if t.get("id")]
+            cursor = res.get("nextCursor")
+            if not cursor:
+                break
+        self._subagent_threads[key] = (time.time(), threads)
+        return threads
+
+    async def load_subagent_history(self, session_id: str, agent_id: str, cwd: str) -> list[Item]:
+        return await self.load_history(agent_id, cwd)  # a sub-agent is a thread of its own
 
     def _summary(self, t: dict[str, Any]) -> SessionSummary:
         if t.get("path"):
@@ -807,6 +847,32 @@ class CodexHarness(Harness):
         total = (usage.get("total") or {}) if isinstance(usage.get("total"), dict) else {}
         return data, {"cost_usd": None, "duration_ms": int((time.time() - started) * 1000), "turns": 1,
                       "tokens": total.get("totalTokens") or total.get("total_tokens")}
+
+
+def _thread_cwds(roots: list[str]) -> list[str]:
+    cwds: set[str] = set()
+    for r in roots:
+        cwds.add(r)
+        if r.startswith("/private/"):  # macOS: /tmp → /private/tmp; threads record whichever the shell used
+            cwds.add(r[len("/private"):])
+    return sorted(cwds)
+
+
+def _subagent_summary(t: dict[str, Any], depth: int) -> SubagentSummary:
+    source = t.get("source")
+    spawn = source.get("subAgent") if isinstance(source, dict) else None
+    spawn = (spawn.get("thread_spawn") if isinstance(spawn, dict) else None) or {}
+    return SubagentSummary(
+        id=t["id"],
+        agent_type=t.get("agentRole") or spawn.get("agent_role"),
+        name=t.get("agentNickname") or spawn.get("agent_nickname") or t.get("name"),
+        description=short(t.get("preview") or "", 120) or t.get("name") or "Sub-agent",
+        status=SUBAGENT_STATUS.get((t.get("status") or {}).get("type") or "", "done"),
+        updated_at=float(t.get("updatedAt") or t.get("createdAt") or 0),
+        created_at=float(t["createdAt"]) if t.get("createdAt") else None,
+        model=t.get("model"),
+        depth=int(spawn.get("depth") or depth),
+    )
 
 
 def _digest_item(it: dict[str, Any]) -> list[str]:

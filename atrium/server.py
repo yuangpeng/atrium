@@ -293,6 +293,11 @@ async def get_session(pid: str, sid: str):
     return snap
 
 
+@app.get("/api/p/{pid}/sessions/{sid}/subagents/{aid}")
+async def get_subagent(pid: str, sid: str, aid: str):
+    return await sessions.subagent(P(pid), sid, aid)
+
+
 @app.delete("/api/p/{pid}/sessions/{sid}")
 async def delete_session(pid: str, sid: str):
     try:

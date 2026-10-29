@@ -1,7 +1,7 @@
 // The rail on the far right: project, new agent, one avatar per agent (status at a glance,
 // details on hover), the full agent list as a flyout, the system agents, settings.
 import type { ReactNode } from "react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { LucideIcon } from "lucide-react";
 import {
@@ -13,7 +13,8 @@ import { api, SessionRow } from "../api";
 import { useApp } from "../store";
 import { hasContent, useDrafts } from "../drafts";
 import { clsx, displayName, timeAgo } from "../util";
-import { Popover, useTick } from "./ui";
+import { Popover, useInterval, useTick } from "./ui";
+import { RailSubagents } from "./Subagents";
 
 export function statusClass(s: SessionRow): string {
   if (s.live === "waiting" || s.pending) return "waiting";
@@ -82,7 +83,8 @@ function HoverCard({ anchor, children }: { anchor: HTMLElement; children: ReactN
     if (!el) return;
     const r = anchor.getBoundingClientRect();
     const h = el.offsetHeight;
-    el.style.right = `${window.innerWidth - r.left + 10}px`;
+    const left = (anchor.closest(".rail") ?? anchor).getBoundingClientRect().left; // flush with the rail, whatever the button's size
+    el.style.right = `${window.innerWidth - left + 8}px`;
     el.style.top = `${Math.max(8, Math.min(window.innerHeight - h - 8, r.top + r.height / 2 - h / 2))}px`;
     el.style.opacity = "1";
   });
@@ -253,15 +255,21 @@ function AgentsFlyout({ onClose }: { onClose: () => void }) {
 // ---------------------------------------------------------------- rail
 export function Rail() {
   useTick(30000);
-  const { project, sessions, sessionId, selectSession, setPickerOpen, setSettingsOpen, theme, setTheme, setPanel } = useApp();
+  const { project, sessions, sessionId, subagentId, selectSession, selectSubagent, refreshSessions, setPickerOpen, setSettingsOpen, theme, setTheme, setPanel } =
+    useApp();
   const draftWaiting = useDrafts((s) => hasContent(s.byProject[project?.id ?? ""]));
   const [tip, setTip] = useState<{ el: HTMLElement; content: ReactNode } | null>(null);
   const [flyout, setFlyout] = useState(false);
+  const [collapsed, setCollapsed] = useState(false); // the selected agent's subagents open under it, unless clicked shut
   const glyphs = useGlyphs();
   const workers = useMemo(() => {
     const w = sessions.filter((s) => s.role === "worker" && !s.archived);
     return [...w.filter(isActive), ...w.filter((s) => !isActive(s))];
   }, [sessions]);
+  useEffect(() => setCollapsed(false), [sessionId, subagentId]);
+  // subagent progress rarely triggers a session event (and can only be guessed for CLI sessions): poll meanwhile
+  useInterval(() => void refreshSessions(), workers.some((s) => s.subagents?.some((a) => a.status === "running")) ? 4000 : null);
+  const pickAgent = (s: SessionRow) => (s.id === sessionId && !subagentId ? setCollapsed((c) => !c) : selectSession(s.id));
   const live = sessions.filter((s) => s.live).length;
   const hoverProps = (content: ReactNode) => ({
     onMouseEnter: (e: React.MouseEvent<HTMLElement>) => setTip({ el: e.currentTarget, content }),
@@ -289,17 +297,25 @@ export function Rail() {
           <div className="rail-agents">
             {workers.map((s) => {
               const sc = statusClass(s);
+              const subs = s.subagents ?? [];
+              const open = s.id === sessionId && !collapsed && subs.length > 0;
               return (
-                <button
-                  key={s.id}
-                  className={clsx("rail-agent", s.id === sessionId && "on")}
-                  onClick={click(() => selectSession(s.id))}
-                  {...hoverProps(<AgentTip s={s} glyph={glyphs.get(s.id)} />)}
-                >
-                  <AgentAvatar s={s} glyph={glyphs.get(s.id)} />
-                  {sc && <span className={clsx("st dot", sc)} />}
-                  {s.pending > 0 && <span className="pend">{s.pending}</span>}
-                </button>
+                <Fragment key={s.id}>
+                  <button
+                    className={clsx("rail-agent", s.id === sessionId && !subagentId && "on", s.id === sessionId && subagentId && "parent-on")}
+                    onClick={click(() => pickAgent(s))}
+                    aria-expanded={subs.length ? open : undefined}
+                    {...hoverProps(<AgentTip s={s} glyph={glyphs.get(s.id)} />)}
+                  >
+                    <AgentAvatar s={s} glyph={glyphs.get(s.id)} />
+                    {sc && <span className={clsx("st dot", sc)} />}
+                    {s.pending > 0 && <span className="pend">{s.pending}</span>}
+                    {subs.length > 0 && !open && (
+                      <span className={clsx("subs-n", subs.some((a) => a.status === "running") && "on")}>{subs.length}</span>
+                    )}
+                  </button>
+                  {subs.length > 0 && <RailSubagents parent={s} open={open} hover={hoverProps} onPick={(a) => (setTip(null), selectSubagent(s.id, a.id))} />}
+                </Fragment>
               );
             })}
           </div>

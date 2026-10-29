@@ -27,6 +27,7 @@ interface AppState {
   project: ProjectInfo | null;
   sessions: SessionRow[];
   sessionId: string | null;
+  subagentId: string | null; // a subagent of the selected session, shown read-only in the chat column
   panel: Panel; // the workspace tab (left, always shown)
   chatOpen: boolean; // the chat column (right)
   chatWidth: number;
@@ -52,6 +53,7 @@ interface AppState {
   refreshProject: () => Promise<void>;
   refreshSessions: () => Promise<void>;
   selectSession: (sid: string | null) => void;
+  selectSubagent: (sid: string, aid: string) => void;
   setPanel: (p: Panel) => void;
   setChatOpen: (v: boolean) => void;
   setChatWidth: (w: number) => void;
@@ -67,10 +69,11 @@ interface AppState {
 let unsubProject: (() => void) | null = null;
 let toastId = 0;
 
-function syncUrl(pid: string | null, sid: string | null) {
+function syncUrl(pid: string | null, sid: string | null, aid: string | null = null) {
   const u = new URL(location.href);
   pid ? u.searchParams.set("project", pid) : u.searchParams.delete("project");
   sid ? u.searchParams.set("session", sid) : u.searchParams.delete("session");
+  aid ? u.searchParams.set("agent", aid) : u.searchParams.delete("agent");
   history.replaceState(null, "", u.toString());
 }
 
@@ -93,6 +96,7 @@ export const useApp = create<AppState>((set, get) => {
     project: null,
     sessions: [],
     sessionId: null,
+    subagentId: null,
     panel: PANELS.find((p) => p === localStorage.getItem("atrium.panel")) ?? "board",
     chatOpen: localStorage.getItem("atrium.chatOpen") !== "0",
     chatWidth: Number(localStorage.getItem("atrium.chatWidth")) || Math.round(Math.min(520, Math.max(400, window.innerWidth * 0.3))),
@@ -119,7 +123,9 @@ export const useApp = create<AppState>((set, get) => {
       if (pid && get().projects.some((p) => p.id === pid)) {
         await get().openProject(pid);
         const sid = params.get("session");
-        if (sid) get().selectSession(sid);
+        const aid = params.get("agent");
+        if (sid && aid) get().selectSubagent(sid, aid);
+        else if (sid) get().selectSession(sid);
       } else {
         set({ pickerOpen: true });
       }
@@ -141,13 +147,13 @@ export const useApp = create<AppState>((set, get) => {
       unsubProject?.();
       unsubProject = null;
       if (!pid) {
-        set({ project: null, sessions: [], sessionId: null });
+        set({ project: null, sessions: [], sessionId: null, subagentId: null });
         syncUrl(null, null);
         return;
       }
       const project = await api.project(pid);
       localStorage.setItem("atrium.project", pid);
-      set({ project, sessions: [], sessionId: null, changesSession: null, fileRequest: null });
+      set({ project, sessions: [], sessionId: null, subagentId: null, changesSession: null, fileRequest: null });
       syncUrl(pid, null);
       unsubProject = socket.subscribe(`project:${pid}`, (msg) => {
         switch (msg.type) {
@@ -204,8 +210,13 @@ export const useApp = create<AppState>((set, get) => {
 
     selectSession: (sid) => {
       get().setChatOpen(true);
-      set({ sessionId: sid });
+      set({ sessionId: sid, subagentId: null });
       syncUrl(get().project?.id ?? null, sid);
+    },
+    selectSubagent: (sid, aid) => {
+      get().setChatOpen(true);
+      set({ sessionId: sid, subagentId: aid });
+      syncUrl(get().project?.id ?? null, sid, aid);
     },
 
     setPanel: (p) => {

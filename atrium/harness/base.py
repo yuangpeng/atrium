@@ -37,7 +37,9 @@ from typing import Any, Awaitable, Callable
 #   tool        {id, name, input, parent?}      a tool call; names follow Claude Code
 #                                               (Bash, Edit, Write, …), Atrium tools are
 #                                               mcp__<namespace>__<tool>; Codex patches
-#                                               are "Patch" {changes: [{path, kind, diff}]}
+#                                               are "Patch" {changes: [{path, kind, diff}]}.
+#                                               ``parent`` (also on thinking / tool_result):
+#                                               made by the subagent of that Agent call
 #   tool_result {id, content, is_error}         ``id`` == the tool call id
 #   permission  {id, tool, input, title?, description?, can_remember}
 #   permission_resolved {id, decision}
@@ -47,6 +49,9 @@ from typing import Any, Awaitable, Callable
 #   -- transient (not stored in history) --
 #   delta       {text}                          streaming assistant text
 #   state       {state}                         live session state change
+#   task        {task_id, tool_use_id, status, description?, agent_type?}
+#                                               a subagent started / ended; consumed by the
+#                                               session manager (status: SUBAGENT_STATES)
 
 Item = dict[str, Any]
 Emit = Callable[[Item], None]
@@ -67,6 +72,29 @@ class ToolSpec:
     input_schema: dict[str, Any]
     handler: Callable[[dict[str, Any]], Awaitable[str | dict[str, Any]]]
     read_only: bool = False
+
+
+SUBAGENT_STATES = ("running", "done", "failed", "stopped")
+
+
+@dataclass
+class SubagentSummary:
+    """An agent spawned by a session (Claude's Agent tool, a Codex sub-agent thread).
+
+    Subagents are listed under their top-level session, nested ones included
+    (``depth`` > 1). They are read-only in Atrium: only the parent talks to them.
+    """
+
+    id: str  # agent id (Claude) / thread id (Codex)
+    agent_type: str | None  # Explore, general-purpose, a Codex role…
+    description: str
+    status: str  # one of SUBAGENT_STATES
+    updated_at: float
+    created_at: float | None = None
+    name: str | None = None  # Codex nickname
+    tool_use_id: str | None = None  # the parent's tool call that spawned it
+    model: str | None = None
+    depth: int = 1
 
 
 @dataclass
@@ -198,6 +226,15 @@ class Harness(ABC):
 
     @abstractmethod
     def file_edits(self, session_id: str, cwd: str) -> list[FileEdit]: ...
+
+    async def list_subagents(self, sessions: list[SessionSummary], roots: list[str]) -> dict[str, list[SubagentSummary]]:
+        """Subagents of these sessions (this harness's own), keyed by session id. Called on every
+        session-list request, so implementations cache what is expensive to compute."""
+        return {}
+
+    async def load_subagent_history(self, session_id: str, agent_id: str, cwd: str) -> list[Item]:
+        """A subagent's conversation (``agent_id`` as in ``list_subagents``)."""
+        return []
 
     async def rename_session(self, session_id: str, title: str, cwd: str) -> None:  # optional
         return None

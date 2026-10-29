@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -22,6 +23,7 @@ from claude_agent_sdk import (
     ResultMessage,
     ServerToolResultBlock,
     ServerToolUseBlock,
+    SessionMessage,
     StreamEvent,
     SystemMessage,
     TaskNotificationMessage,
@@ -44,7 +46,7 @@ from claude_agent_sdk import (
 
 from .. import gitops
 from ..config import UPLOADS_DIR
-from .base import Attachment, Emit, FileEdit, Harness, Item, LiveSession, LiveSpec, SessionSummary, ToolSpec
+from .base import Attachment, Emit, FileEdit, Harness, Item, LiveSession, LiveSpec, SessionSummary, SubagentSummary, ToolSpec
 from .util import attachment_note, hhmm, parse_json_loose, split_attachment_note
 
 log = logging.getLogger("atrium.claude")
@@ -53,6 +55,9 @@ MAX_RESULT_CHARS = 20_000
 MAX_INLINE_IMAGE_B64 = 3_000_000  # history images above this are shown as a placeholder
 EFFORTS = ["low", "medium", "high", "xhigh", "max"]
 EFFORT_ENV = "CLAUDE_CODE_EFFORT_LEVEL"
+AGENT_TASKS = (None, "local_agent", "remote_agent")  # task types that are subagents (None: older CLIs)
+TASK_STATUS = {"completed": "done", "failed": "failed", "stopped": "stopped", "killed": "stopped"}
+SUBAGENT_STALE = 300  # a subagent mid-turn whose transcript sat still this long (seconds) is presumed stopped
 
 
 def _claude_home() -> Path:
@@ -330,9 +335,10 @@ class ClaudeLiveSession(LiveSession):
                 fut.set_exception(RuntimeError("session closed"))
 
     async def _read_loop(self, client: ClaudeSDKClient) -> None:
+        tasks: dict[str, str | None] = {}
         async for msg in client.receive_messages():
             try:
-                for item in live_message_items(msg):
+                for item in live_message_items(msg, tasks):
                     self.emit(item)
                 if isinstance(msg, ResultMessage):
                     self._set_state("waiting" if self._pending else "idle")
@@ -397,9 +403,13 @@ def _user_message(text: str, attachments: list[Attachment]) -> str | Any:
     return stream()
 
 
-def live_message_items(msg: Any) -> list[Item]:
-    """Normalize one SDK stream message into chat items."""
+def live_message_items(msg: Any, tasks: dict[str, str | None] | None = None) -> list[Item]:
+    """Normalize one SDK stream message into chat items.
+
+    ``tasks`` (task id -> task type) carries the background tasks of one stream across calls.
+    """
     items: list[Item] = []
+    tasks = {} if tasks is None else tasks
     if isinstance(msg, StreamEvent):
         ev = msg.event or {}
         if msg.parent_tool_use_id is None and ev.get("type") == "content_block_delta":
@@ -407,29 +417,32 @@ def live_message_items(msg: Any) -> list[Item]:
             if d.get("type") == "text_delta":
                 items.append({"kind": "delta", "text": d.get("text", "")})
         return items
+    parent = getattr(msg, "parent_tool_use_id", None)
     if isinstance(msg, AssistantMessage):
         base = msg.uuid or msg.message_id or uuid.uuid4().hex
         for i, b in enumerate(msg.content):
             iid = f"{base}:{i}"
+            it: Item | None = None
             if isinstance(b, TextBlock):
-                if msg.parent_tool_use_id is None and b.text.strip():
-                    items.append({"kind": "text", "id": iid, "text": b.text})
+                if parent is None and b.text.strip():
+                    it = {"kind": "text", "id": iid, "text": b.text}
             elif isinstance(b, ThinkingBlock):
                 if b.thinking.strip():
-                    items.append({"kind": "thinking", "id": iid, "text": b.thinking})
+                    it = {"kind": "thinking", "id": iid, "text": b.thinking}
             elif isinstance(b, (ToolUseBlock, ServerToolUseBlock)):
-                it: Item = {"kind": "tool", "id": b.id, "name": b.name, "input": b.input}
-                if msg.parent_tool_use_id:
-                    it["parent"] = msg.parent_tool_use_id
-                items.append(it)
+                it = {"kind": "tool", "id": b.id, "name": b.name, "input": b.input}
             elif isinstance(b, ServerToolResultBlock):
-                items.append({"kind": "tool_result", "id": b.tool_use_id, "content": _clip(_block_text(b.content)), "is_error": False})
+                it = {"kind": "tool_result", "id": b.tool_use_id, "content": _clip(_block_text(b.content)), "is_error": False}
+            if it:
+                if parent:
+                    it["parent"] = parent
+                items.append(it)
         if msg.error:
             items.append({"kind": "error", "id": f"{base}:err", "text": f"API error: {msg.error}"})
         return items
     if isinstance(msg, UserMessage):
         if isinstance(msg.content, str):
-            if msg.content.strip():
+            if msg.content.strip() and not parent:
                 kind = (msg.origin or {}).get("kind")
                 if kind and kind != "human":
                     items.append({"kind": "system", "id": msg.uuid or uuid.uuid4().hex, "subtype": kind, "text": _short(msg.content, 2000)})
@@ -438,10 +451,11 @@ def live_message_items(msg: Any) -> list[Item]:
         else:
             for i, b in enumerate(msg.content):
                 if isinstance(b, ToolResultBlock):
-                    items.append(
-                        {"kind": "tool_result", "id": b.tool_use_id, "content": _clip(_block_text(b.content)), "is_error": bool(b.is_error)}
-                    )
-                elif isinstance(b, TextBlock) and b.text.strip():
+                    it = {"kind": "tool_result", "id": b.tool_use_id, "content": _clip(_block_text(b.content)), "is_error": bool(b.is_error)}
+                    if parent:
+                        it["parent"] = parent
+                    items.append(it)
+                elif isinstance(b, TextBlock) and b.text.strip() and not parent:
                     items.append(_user_text_item(f"{msg.uuid}:{i}", b.text))
         return items
     if isinstance(msg, ResultMessage):
@@ -460,13 +474,29 @@ def live_message_items(msg: Any) -> list[Item]:
         )
         return items
     if isinstance(msg, TaskStartedMessage):
-        items.append({"kind": "system", "id": msg.uuid, "subtype": "task_started", "text": f"Subagent started: {msg.description}"})
+        subagent_type = (msg.data or {}).get("subagent_type")
+        tasks[msg.task_id] = msg.task_type if subagent_type != "main-session" else "main-session"  # a backgrounded main turn
+        agent = tasks[msg.task_id] in AGENT_TASKS
+        items.append({"kind": "system", "id": msg.uuid, "subtype": "task_started", "tool_use_id": msg.tool_use_id,
+                      "text": f"{'Subagent' if agent else 'Background task'} started: {msg.description}"})
+        if agent:
+            items.append({"kind": "task", "task_id": msg.task_id, "tool_use_id": msg.tool_use_id, "status": "running",
+                          "description": msg.description, "agent_type": subagent_type})
         return items
     if isinstance(msg, TaskNotificationMessage):
-        items.append({"kind": "system", "id": msg.uuid, "subtype": "task_done", "text": f"Subagent {msg.status}: {_short(msg.summary, 300)}"})
+        agent = tasks.get(msg.task_id) in AGENT_TASKS
+        items.append({"kind": "system", "id": msg.uuid, "subtype": "task_done", "tool_use_id": msg.tool_use_id,
+                      "text": f"{'Subagent' if agent else 'Background task'} {msg.status}: {_short(msg.summary, 300)}"})
+        if agent:
+            items.append({"kind": "task", "task_id": msg.task_id, "tool_use_id": msg.tool_use_id, "status": TASK_STATUS.get(msg.status, "done")})
         return items
     if isinstance(msg, SystemMessage):
-        if msg.subtype == "init":
+        if msg.subtype == "task_updated":  # a background task can end with this alone (no task_notification)
+            d = msg.data or {}
+            status = TASK_STATUS.get((d.get("patch") or {}).get("status") or "")
+            if status and tasks.get(d.get("task_id") or "", "") in AGENT_TASKS:
+                items.append({"kind": "task", "task_id": d.get("task_id"), "tool_use_id": None, "status": status})
+        elif msg.subtype == "init":
             d = msg.data or {}
             mcp = ", ".join(f"{s.get('name')}:{s.get('status')}" for s in d.get("mcp_servers", []) or [])
             items.append(
@@ -579,6 +609,10 @@ class ClaudeCodeHarness(Harness):
     ]
     efforts = EFFORTS
 
+    def __init__(self) -> None:
+        self._subagent_cache: dict[str, tuple[tuple[int, int, int], dict[str, Any]]] = {}  # path -> (signature, scan)
+        self._subagent_lock = threading.Lock()  # list_subagents runs in worker threads
+
     def config_files(self, project_dir: str | None) -> list[Any]:
         from ..configfiles import ConfigFile
 
@@ -642,6 +676,77 @@ class ClaudeCodeHarness(Harness):
     def transcript_dirs(self, project_dir: str) -> list[Path]:
         roots = [project_dir] + [w for w in gitops.worktree_paths_sync(project_dir) if w != project_dir]
         return [_claude_projects_dir() / project_key_for_directory(r) for r in roots]
+
+    # ---- subagents: <transcript dir>/<sid>/subagents/[workflows/<run>/]agent-<id>.jsonl + .meta.json
+    async def list_subagents(self, sessions: list[SessionSummary], roots: list[str]) -> dict[str, list[SubagentSummary]]:
+        def scan() -> dict[str, list[SubagentSummary]]:
+            with self._subagent_lock:
+                return self._list_subagents(sessions)
+
+        return await asyncio.to_thread(scan)
+
+    def _list_subagents(self, sessions: list[SessionSummary]) -> dict[str, list[SubagentSummary]]:
+        out: dict[str, list[SubagentSummary]] = {}
+        for s in sessions:
+            if s.harness != self.id or not s.transcript:
+                continue
+            base = Path(s.transcript).with_suffix("") / "subagents"
+            if not base.is_dir():
+                continue
+            subs = [sub for sub in (self._subagent(p) for p in sorted(base.rglob("agent-*.jsonl"))) if sub]
+            if subs:
+                out[s.id] = subs
+        if len(self._subagent_cache) > 4096:  # forget deleted transcripts
+            for gone in [p for p in self._subagent_cache if not os.path.exists(p)]:
+                del self._subagent_cache[gone]
+        return out
+
+    def _subagent(self, path: Path) -> SubagentSummary | None:
+        meta_path = path.with_name(path.name[: -len(".jsonl")] + ".meta.json")
+        try:
+            st = path.stat()
+            meta_mtime = meta_path.stat().st_mtime_ns if meta_path.exists() else 0
+        except OSError:
+            return None
+        sig = (st.st_size, st.st_mtime_ns, meta_mtime)
+        hit = self._subagent_cache.get(str(path))
+        if hit and hit[0] == sig:
+            info = hit[1]
+        else:
+            info = _scan_subagent(path, st.st_size)
+            try:
+                info["meta"] = json.loads(meta_path.read_text()) if meta_mtime else {}
+            except (OSError, ValueError):
+                info["meta"] = {}
+            self._subagent_cache[str(path)] = (sig, info)
+        meta = info["meta"] if isinstance(info["meta"], dict) else {}
+        if meta.get("agentType") == "main-session":  # a backgrounded main turn, not a subagent
+            return None
+        status = {"final": "done", "failed": "failed"}.get(info["phase"])
+        if status is None:  # mid-turn: running, unless it went quiet (its process is gone)
+            status = "running" if time.time() - st.st_mtime < SUBAGENT_STALE else "stopped"
+        return SubagentSummary(
+            id=path.name[len("agent-") : -len(".jsonl")],
+            agent_type=meta.get("agentType"),
+            description=meta.get("description") or _short(info["prompt"], 80) or "Subagent",
+            status=status,
+            updated_at=st.st_mtime,
+            created_at=info["created_at"],
+            tool_use_id=meta.get("toolUseId"),
+            model=meta.get("model"),
+            depth=int(meta.get("spawnDepth") or 1),
+        )
+
+    async def load_subagent_history(self, session_id: str, agent_id: str, cwd: str) -> list[Item]:
+        def load() -> list[Item]:
+            transcript = self.transcript_path(session_id, cwd)
+            base = transcript.with_suffix("") / "subagents" if transcript else None
+            if not base or not base.is_dir() or not re.fullmatch(r"[\w-]+", agent_id):
+                return []
+            path = next(base.rglob(f"agent-{agent_id}.jsonl"), None)
+            return history_items(_subagent_messages(path)) if path else []
+
+        return await asyncio.to_thread(load)
 
     async def delete_session(self, session_id: str, cwd: str) -> None:
         # the transcript normally sits under the cwd's project key; otherwise search them all
@@ -716,7 +821,7 @@ class ClaudeCodeHarness(Harness):
         path = self.transcript_path(session_id, cwd)
         if not path:
             return []
-        files = [path] + sorted((path.parent / session_id / "subagents").glob("*.jsonl"))
+        files = [path] + sorted((path.parent / session_id / "subagents").rglob("agent-*.jsonl"))
         edits: list[FileEdit] = []
         for f in files:
             try:
@@ -779,6 +884,83 @@ class ClaudeCodeHarness(Harness):
             data = parse_json_loose(result.result or "\n".join(texts))
         usage = {"cost_usd": result.total_cost_usd, "duration_ms": int((time.time() - started) * 1000), "turns": result.num_turns}
         return data, usage
+
+
+def _ts_epoch(ts: Any) -> float | None:
+    if not isinstance(ts, str):
+        return None
+    try:
+        from datetime import datetime
+
+        return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def _subagent_messages(path: Path) -> list[SessionMessage]:
+    """Every message of a subagent transcript, in file order. (Parallel tool calls branch: each result
+    hangs off its own call, so walking ``parentUuid`` back from the last entry, as the SDK's
+    ``get_subagent_messages`` does, drops results. Subagent transcripts have no compaction or rewinds.)"""
+    out: list[SessionMessage] = []
+    with path.open(encoding="utf-8", errors="replace") as f:
+        for line in f:
+            if line.startswith('{"type":"api-request'):  # request logs, possibly large
+                continue
+            try:
+                d = json.loads(line)
+            except ValueError:
+                continue
+            if d.get("type") in ("user", "assistant") and not d.get("isMeta") and isinstance(d.get("message"), dict):
+                out.append(SessionMessage(type=d["type"], uuid=d.get("uuid") or "", session_id=d.get("sessionId") or "", message=d["message"]))
+    return out
+
+
+def _scan_subagent(path: Path, size: int) -> dict[str, Any]:
+    """Start time and prompt (first message) and where the subagent stands (last message):
+    ``final`` (answered), ``failed`` (ended on an API error) or ``open`` (mid-turn)."""
+    created, prompt, last = None, "", None
+    try:
+        with path.open("rb") as f:
+            for raw in f.read(64 * 1024).split(b"\n")[:20]:
+                try:
+                    d = json.loads(raw)
+                except ValueError:
+                    continue
+                if d.get("type") == "user":
+                    created = _ts_epoch(d.get("timestamp"))
+                    content = (d.get("message") or {}).get("content")
+                    prompt = content if isinstance(content, str) else _block_text(content)
+                    break
+            # walk back from the end to the last message; transcripts also log large API request blobs
+            pos, carry, block = size, b"", 256 * 1024
+            while pos > 0 and last is None and size - pos < 32 * 1024 * 1024:
+                step = min(block, pos)
+                pos -= step
+                f.seek(pos)
+                lines = (f.read(step) + carry).split(b"\n")
+                carry = lines.pop(0) if pos > 0 else b""
+                for raw in reversed(lines):
+                    if b'"assistant"' not in raw and b'"user"' not in raw:
+                        continue
+                    try:
+                        d = json.loads(raw)
+                    except ValueError:
+                        continue
+                    if d.get("type") in ("user", "assistant") and not d.get("isMeta"):
+                        last = d
+                        break
+    except OSError:
+        pass
+    phase = "open"
+    if last and last.get("type") == "assistant":
+        msg = last.get("message") or {}
+        content = msg.get("content")
+        calls = isinstance(content, list) and any(isinstance(b, dict) and b.get("type") == "tool_use" for b in content)
+        if last.get("isApiErrorMessage"):
+            phase = "failed"
+        elif not calls and msg.get("stop_reason") != "tool_use":
+            phase = "final"
+    return {"created_at": created, "prompt": prompt, "phase": phase}
 
 
 def _edit_from_result(tur: dict[str, Any], ts: str | None) -> FileEdit | None:

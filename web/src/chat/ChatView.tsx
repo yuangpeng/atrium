@@ -1,19 +1,20 @@
 import type { JSX } from "react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, Brain, ChevronRight, Info, Sparkle, Square } from "lucide-react";
+import { ArrowUp, ArrowUpRight, Brain, ChevronRight, Info, Sparkle, Square } from "lucide-react";
 import { api, Item, LiveState, SessionSettings } from "../api";
 import { socket } from "../ws";
 import { useApp } from "../store";
 import { clsx, fmtDuration } from "../util";
 import { Markdown, Spinner } from "../components/ui";
-import { BoardToolRow, PermissionCard, ToolRow, isBoardTool } from "./ToolViews";
+import { BoardToolRow, PermissionCard, ToolRow, isBoardTool, useOpenSubagent } from "./ToolViews";
 import { AttachButton, AttachmentTray, EffortPicker, MessageAttachments, effortOptions, useAttachments } from "./Composer";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
 type ResultItem = Extract<Item, { kind: "tool_result" }>;
 type PermItem = Extract<Item, { kind: "permission" }>;
+type SystemItem = Extract<Item, { kind: "system" }>;
 
-interface ChatState {
+export interface ChatState {
   items: Item[];
   seen: Set<string>;
   results: Record<string, ResultItem>;
@@ -25,11 +26,11 @@ interface ChatState {
   model: string | null;
 }
 
-const empty = (): ChatState => ({
+export const empty = (): ChatState => ({
   items: [], seen: new Set(), results: {}, pending: {}, resolved: new Set(), streaming: "", state: null, mode: null, model: null,
 });
 
-function apply(st: ChatState, it: Item): ChatState {
+export function apply(st: ChatState, it: Item): ChatState {
   switch (it.kind) {
     case "delta":
       return { ...st, streaming: st.streaming + it.text };
@@ -67,16 +68,16 @@ function apply(st: ChatState, it: Item): ChatState {
   }
 }
 
-type Block =
+export type Block =
   | { type: "tools"; key: string; tools: ToolItem[] }
   | { type: "board"; key: string; tool: ToolItem }
   | { type: "item"; key: string; item: Item };
 
-function toBlocks(items: Item[]): Block[] {
+export function toBlocks(items: Item[]): Block[] {
   const out: Block[] = [];
   for (const it of items) {
+    if ("parent" in it && it.parent) continue; // a subagent's own steps: shown in its view, not the parent's
     if (it.kind === "tool") {
-      if (it.parent) continue; // subagent internals stay folded into the Task row
       if (isBoardTool(it.name)) {
         out.push({ type: "board", key: it.id, tool: it });
         continue;
@@ -89,6 +90,88 @@ function toBlocks(items: Item[]): Block[] {
     }
   }
   return out;
+}
+
+export function Transcript({ blocks, results, running, cwd }: { blocks: Block[]; results: Record<string, ResultItem>; running: boolean; cwd: string }) {
+  const rendered = useMemo(
+    () =>
+      blocks.map((b) => {
+        if (b.type === "tools")
+          return (
+            <div className="tools" key={b.key}>
+              {b.tools.map((t) => (
+                <ToolRow key={t.id} tool={t} result={results[t.id]} cwd={cwd} running={running} />
+              ))}
+            </div>
+          );
+        if (b.type === "board") return <BoardToolRow key={b.key} tool={b.tool} />;
+        const it = b.item;
+        switch (it.kind) {
+          case "user":
+            return (
+              <div className="msg-user" key={b.key}>
+                {it.attachments?.length ? <MessageAttachments items={it.attachments} /> : null}
+                {it.text}
+              </div>
+            );
+          case "text":
+            return (
+              <div className="msg-text" key={b.key}>
+                <Markdown text={it.text} />
+              </div>
+            );
+          case "thinking":
+            return (
+              <details className="msg-thinking" key={b.key}>
+                <summary>
+                  <Brain size={13} /> Thinking <ChevronRight size={12} />
+                </summary>
+                <div className="content">{it.text}</div>
+              </details>
+            );
+          case "system":
+            return <SystemLine key={b.key} item={it} />;
+          case "result":
+            return (
+              <div className="msg-result" key={b.key}>
+                {it.is_error ? <span className="pill err">{it.subtype}</span> : <span>Done</span>}
+                {it.turns ? <span>{it.turns} turns</span> : null}
+                {it.duration_ms ? <span>{fmtDuration(it.duration_ms)}</span> : null}
+                {it.cost_usd ? <span>${it.cost_usd.toFixed(3)}</span> : null}
+                {it.text && <span>{it.text}</span>}
+              </div>
+            );
+          case "error":
+            return (
+              <div className="msg-error" key={b.key}>
+                {it.text}
+              </div>
+            );
+          default:
+            return null;
+        }
+      }),
+    [blocks, results, running, cwd],
+  );
+  return <>{rendered}</>;
+}
+
+/** Info line; a subagent's end links to it (it can land turns after its Agent row, which has a link of its own). */
+function SystemLine({ item }: { item: SystemItem }) {
+  const open = useOpenSubagent(item.subtype === "task_done" ? (item.tool_use_id ?? null) : null);
+  return (
+    <div className="msg-system">
+      <Info size={12} style={{ flex: "none" }} />
+      <span>
+        {item.text}
+        {open && (
+          <button className="sub-link inline" onClick={open}>
+            Open <ArrowUpRight size={12} />
+          </button>
+        )}
+      </span>
+    </div>
+  );
 }
 
 export function ChatView({ pid, sid, cwd, compact, placeholder, emptyHint }: { pid: string; sid: string; cwd: string; compact?: boolean; placeholder?: string; emptyHint?: JSX.Element }) {
@@ -233,70 +316,6 @@ export function ChatView({ pid, sid, cwd, compact, placeholder, emptyHint }: { p
     }
   };
 
-  const rendered = useMemo(
-    () =>
-      blocks.map((b) => {
-        if (b.type === "tools")
-          return (
-            <div className="tools" key={b.key}>
-              {b.tools.map((t) => (
-                <ToolRow key={t.id} tool={t} result={st.results[t.id]} cwd={cwd} running={running} />
-              ))}
-            </div>
-          );
-        if (b.type === "board") return <BoardToolRow key={b.key} tool={b.tool} />;
-        const it = b.item;
-        switch (it.kind) {
-          case "user":
-            return (
-              <div className="msg-user" key={b.key}>
-                {it.attachments?.length ? <MessageAttachments items={it.attachments} /> : null}
-                {it.text}
-              </div>
-            );
-          case "text":
-            return (
-              <div className="msg-text" key={b.key}>
-                <Markdown text={it.text} />
-              </div>
-            );
-          case "thinking":
-            return (
-              <details className="msg-thinking" key={b.key}>
-                <summary>
-                  <Brain size={13} /> Thinking <ChevronRight size={12} />
-                </summary>
-                <div className="content">{it.text}</div>
-              </details>
-            );
-          case "system":
-            return (
-              <div className="msg-system" key={b.key}>
-                <Info size={12} /> {it.text}
-              </div>
-            );
-          case "result":
-            return (
-              <div className="msg-result" key={b.key}>
-                {it.is_error ? <span className="pill err">{it.subtype}</span> : <span>Done</span>}
-                {it.turns ? <span>{it.turns} turns</span> : null}
-                {it.duration_ms ? <span>{fmtDuration(it.duration_ms)}</span> : null}
-                {it.cost_usd ? <span>${it.cost_usd.toFixed(3)}</span> : null}
-                {it.text && <span>{it.text}</span>}
-              </div>
-            );
-          case "error":
-            return (
-              <div className="msg-error" key={b.key}>
-                {it.text}
-              </div>
-            );
-          default:
-            return null;
-        }
-      }),
-    [blocks, st.results, running, cwd],
-  );
 
   // detached sessions: show what the next attach will use (session settings, else the harness defaults)
   const defaults = meta?.settings.harnesses?.[harness?.id ?? ""] ?? {};
@@ -316,7 +335,7 @@ export function ChatView({ pid, sid, cwd, compact, placeholder, emptyHint }: { p
             </div>
           )}
           {!loading && blocks.length === 0 && emptyHint}
-          {rendered}
+          <Transcript blocks={blocks} results={st.results} running={running} cwd={cwd} />
           {st.streaming && (
             <div className="msg-text stream-cursor">
               <Markdown text={st.streaming} />

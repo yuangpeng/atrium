@@ -105,6 +105,21 @@ export interface ProjectInfo extends Project {
 
 export type LiveState = "starting" | "running" | "idle" | "waiting" | "closed" | "error";
 export type AgentStatus = "working" | "waiting" | "blocked" | "done" | "idle";
+export type SubagentStatus = "running" | "done" | "failed" | "stopped";
+
+/** An agent spawned by a session (Claude's Agent tool, a Codex sub-agent thread); read-only. */
+export interface SubagentRow {
+  id: string;
+  agent_type: string | null;
+  description: string;
+  status: SubagentStatus;
+  updated_at: number;
+  created_at: number | null;
+  name: string | null; // Codex nickname
+  tool_use_id: string | null; // the parent's tool call that spawned it (Claude)
+  model: string | null;
+  depth: number;
+}
 
 export interface SessionRow {
   id: string;
@@ -126,14 +141,15 @@ export interface SessionRow {
   archived: boolean;
   created_by: "atrium" | "external";
   effort: string;
+  subagents: SubagentRow[]; // oldest first, nested ones included
 }
 
 export type Item =
   | { kind: "user"; id: string; text: string; ts?: number; attachments?: Attachment[] }
   | { kind: "text"; id: string; text: string }
-  | { kind: "thinking"; id: string; text: string }
+  | { kind: "thinking"; id: string; text: string; parent?: string }
   | { kind: "tool"; id: string; name: string; input: Record<string, any>; parent?: string }
-  | { kind: "tool_result"; id: string; content: string; is_error: boolean }
+  | { kind: "tool_result"; id: string; content: string; is_error: boolean; parent?: string }
   | {
       kind: "permission";
       id: string;
@@ -158,7 +174,7 @@ export type Item =
       text?: string | null;
       terminal_reason?: string | null;
     }
-  | { kind: "system"; id: string; subtype: string; text: string; model?: string; permission_mode?: string }
+  | { kind: "system"; id: string; subtype: string; text: string; model?: string; permission_mode?: string; tool_use_id?: string | null }
   | { kind: "error"; id: string; text: string }
   | { kind: "delta"; text: string }
   | { kind: "state"; state: LiveState };
@@ -412,6 +428,8 @@ export const api = {
     },
   ) => req<{ id: string; cwd: string }>("POST", `/api/p/${pid}/sessions`, body),
   session: (pid: string, sid: string) => req<Snapshot>("GET", `/api/p/${pid}/sessions/${sid}`),
+  subagent: (pid: string, sid: string, aid: string) =>
+    req<{ subagent: SubagentRow; items: Item[] }>("GET", `/api/p/${pid}/sessions/${sid}/subagents/${encodeURIComponent(aid)}`),
   patchSession: (pid: string, sid: string, body: { name?: string; archived?: boolean }) =>
     req("PATCH", `/api/p/${pid}/sessions/${sid}`, body),
   deleteSession: (pid: string, sid: string) => req<{ ok: boolean; backup: string | null }>("DELETE", `/api/p/${pid}/sessions/${sid}`),

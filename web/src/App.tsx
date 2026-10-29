@@ -1,8 +1,8 @@
 import type { JSX } from "react";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { Archive, ArchiveRestore, FileDiff, Files, FolderOpen, GitBranch, LayoutDashboard, MessageSquare, PanelRightClose, Plug, Unplug } from "lucide-react";
-import { api } from "./api";
+import { Archive, ArchiveRestore, ArrowLeft, ChevronRight, FileDiff, Files, FolderOpen, GitBranch, LayoutDashboard, MessageSquare, PanelRightClose, Plug, Unplug } from "lucide-react";
+import { api, SessionRow } from "./api";
 import { Panel, useApp } from "./store";
 import { clsx, displayName } from "./util";
 import { Rail, liveLabel, statusClass } from "./components/Rail";
@@ -11,6 +11,8 @@ import { ProjectPicker } from "./components/Dialogs";
 import { useFullscreenElement } from "./components/ui";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { ChatView } from "./chat/ChatView";
+import { SubagentView } from "./chat/SubagentView";
+import { SUBAGENT_STATUS, SubagentAvatar, subagentLabel } from "./components/Subagents";
 import { BoardPanel } from "./panels/BoardPanel";
 import { FilesPanel } from "./panels/FilesPanel";
 import { ChangesPanel } from "./panels/ChangesPanel";
@@ -95,6 +97,38 @@ function SessionHeader() {
   );
 }
 
+/** Parent › subagent; the way back is the parent's name or the arrow. */
+function SubagentHeader({ parent, aid }: { parent: SessionRow | undefined; aid: string }) {
+  const selectSession = useApp((s) => s.selectSession);
+  const sub = parent?.subagents?.find((a) => a.id === aid);
+  const back = () => parent && selectSession(parent.id);
+  return (
+    <div className="topbar bordered">
+      <div className="t-name">
+        <button className="icon-btn sm" title="Back to the parent agent" onClick={back}>
+          <ArrowLeft size={15} />
+        </button>
+        {parent && (
+          <>
+            <button className="crumb ellipsis" onClick={back}>
+              {displayName(parent)}
+            </button>
+            <ChevronRight size={14} className="faint" style={{ flex: "none" }} />
+          </>
+        )}
+        {sub && parent && <SubagentAvatar a={sub} harness={parent.harness} size={22} />}
+        <span className="ellipsis" title={sub?.description}>
+          {sub ? subagentLabel(sub) : "Subagent"}
+        </span>
+        {sub && <span className={clsx("dot", SUBAGENT_STATUS[sub.status].dot)} title={SUBAGENT_STATUS[sub.status].label} />}
+      </div>
+      <div className="actions">
+        <CloseChat />
+      </div>
+    </div>
+  );
+}
+
 /** The project's name; hover shows the full path, click copies it. */
 function ProjectPath({ path, name }: { path: string; name: string }) {
   const toast = useApp((s) => s.toast);
@@ -148,7 +182,7 @@ function Workspace() {
 
 /** The selected agent's conversation, or the new-agent composer — right of the workspace. */
 function ChatColumn() {
-  const { project, sessionId, sessions, chatWidth, setChatWidth } = useApp();
+  const { project, sessionId, subagentId, sessions, chatWidth, setChatWidth } = useApp();
   const [drag, setDrag] = useState(false);
   useEffect(() => {
     if (!drag) return;
@@ -170,7 +204,12 @@ function ChatColumn() {
   return (
     <section className="chatcol" style={{ width: chatWidth }}>
       <div className={clsx("resizer", drag && "drag")} onMouseDown={() => setDrag(true)} />
-      {sessionId ? (
+      {sessionId && subagentId ? (
+        <>
+          <SubagentHeader parent={current} aid={subagentId} />
+          <SubagentView key={`${sessionId}/${subagentId}`} pid={project.id} sid={sessionId} aid={subagentId} cwd={current?.cwd ?? project.path} />
+        </>
+      ) : sessionId ? (
         <>
           <SessionHeader />
           <ChatView key={sessionId} pid={project.id} sid={sessionId} cwd={current?.cwd ?? project.path} />
