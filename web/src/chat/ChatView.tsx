@@ -192,7 +192,8 @@ export function Transcript({ blocks, results, running, cwd, forks, onFork }: {
 
 /** Info line; a subagent's end links to it (it can land turns after its Agent row, which has a link of its own). */
 function SystemLine({ item }: { item: SystemItem }) {
-  const open = useOpenSubagent(item.subtype === "task_done" ? (item.tool_use_id ?? null) : null);
+  const done = item.subtype === "task_done";
+  const open = useOpenSubagent(done ? (item.tool_use_id ?? null) : null, done && item.agent_id ? [item.agent_id] : undefined);
   return (
     <div className="msg-system">
       <Info size={12} style={{ flex: "none" }} />

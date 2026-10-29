@@ -50,8 +50,9 @@ SANDBOX_POLICY = {
     "danger-full-access": {"type": "dangerFullAccess"},
 }
 SOURCE_KINDS = ["cli", "vscode", "exec", "appServer", "unknown"]
-SUBAGENT_SOURCE_KINDS = ["subAgentThreadSpawn"]  # threads spawned by another thread (review / compaction threads are internal)
 SUBAGENT_STATUS = {"active": "running", "systemError": "failed"}  # thread status -> subagent status (else done)
+# subAgentActivity kind -> subagent status
+SUBAGENT_ACTIVITY_STATUS = {"started": "running", "interacted": "running", "interrupted": "stopped", "completed": "done"}
 # Atrium namespace -> Codex dynamic-tool namespace ("web" is reserved by the Responses API)
 NS_ALIAS = {"web": "internet"}
 NS_UNALIAS = {v: k for k, v in NS_ALIAS.items()}
@@ -153,8 +154,9 @@ def tool_item(item: dict[str, Any]) -> Item | None:
     if t == "imageView":
         return {"kind": "tool", "id": iid, "name": "ViewImage", "input": {"file_path": item.get("path")}}
     if t == "collabAgentToolCall":
-        return {"kind": "tool", "id": iid, "name": "Agent", "input": {"description": short(item.get("prompt") or "", 200), "subagent_type": item.get("tool"),
-                                                                      "agent_ids": item.get("receiverThreadIds") or []}}
+        receivers = item.get("receiverThreadIds") or []
+        desc = short(item.get("prompt") or "", 200) or ("for sub-agents" if item.get("tool") == "wait" and not receivers else "")
+        return {"kind": "tool", "id": iid, "name": "Agent", "input": {"description": desc, "subagent_type": item.get("tool"), "agent_ids": receivers}}
     if t == "imageGeneration":
         return {"kind": "tool", "id": iid, "name": "ImageGen", "input": {"prompt": item.get("revisedPrompt") or "", "file_path": item.get("savedPath")}}
     return None
@@ -226,6 +228,7 @@ def turn_items(turn: dict[str, Any]) -> list[Item]:
             out.append(user_item(it))
             continue
         out += message_items(it)
+        out += subagent_items(it)
         tool = tool_item(it)
         if tool:
             out.append(tool)
@@ -238,6 +241,37 @@ def turn_items(turn: dict[str, Any]) -> list[Item]:
         out.append({"kind": "system", "id": f"turn-{turn.get('id')}", "subtype": "interrupted" if st == "interrupted" else "error",
                     "text": "Interrupted" if st == "interrupted" else f"Turn failed: {err.get('message') or 'unknown error'}"})
     return out
+
+
+def _task_name(agent_path: str | None) -> str:
+    """``/root/inspect_calc`` → ``inspect_calc`` (the task name the parent gave its sub-agent)."""
+    return (agent_path or "").rstrip("/").rsplit("/", 1)[-1] or "sub-agent"
+
+
+def subagent_items(item: dict[str, Any]) -> list[Item]:
+    """A ``subAgentActivity`` item: spawning a sub-agent or messaging it is shown like an Agent call,
+    its end as a line; both link to the sub-agent (``agent_ids`` / ``agent_id`` = its thread)."""
+    if item.get("type") != "subAgentActivity":
+        return []
+    iid, kind, aid, name = item.get("id"), item.get("kind"), item.get("agentThreadId"), _task_name(item.get("agentPath"))
+    if kind in ("started", "interacted"):
+        spawn = kind == "started"
+        return [
+            {"kind": "tool", "id": iid, "name": "Agent", "input": {"description": name, "subagent_type": "spawn" if spawn else "message", "agent_ids": [aid]}},
+            {"kind": "tool_result", "id": iid, "content": "Started." if spawn else "Sent.", "is_error": False},
+        ]
+    text = "Sub-agent interrupted" if kind == "interrupted" else "Sub-agent finished"
+    return [{"kind": "system", "id": iid, "subtype": "task_done", "text": f"{text}: {name}", "agent_id": aid}]
+
+
+def subagent_task(item: dict[str, Any]) -> Item | None:
+    """The live ``task`` item for a ``subAgentActivity`` (the sub-agent's status, ahead of discovery)."""
+    status = SUBAGENT_ACTIVITY_STATUS.get(item.get("kind") or "")
+    if item.get("type") != "subAgentActivity" or not status or not item.get("agentThreadId"):
+        return None
+    spawn = item.get("kind") == "started"
+    return {"kind": "task", "task_id": item["agentThreadId"], "tool_use_id": item.get("id") if spawn else None, "status": status,
+            "description": _task_name(item.get("agentPath"))}
 
 
 # --------------------------------------------------------------------------
@@ -402,8 +436,11 @@ class CodexLiveSession(LiveSession):
             item = params.get("item") or {}
             if item.get("type") == "userMessage":
                 return  # Atrium emitted the user item when it was sent
-            for it in message_items(item):
+            for it in message_items(item) + subagent_items(item):
                 self.emit(it)
+            task = subagent_task(item)
+            if task:
+                self.emit(task)
             tool = tool_item(item)
             if tool:
                 self.emit(tool)  # upsert: inputs such as the web query are final only now
@@ -533,7 +570,8 @@ class CodexHarness(Harness):
         self._cwd_cache: dict[str, str | None] = {}
         self._models: tuple[float, list[dict[str, Any]]] | None = None
         self._list_warned = False
-        self._subagent_threads: dict[tuple[str, ...], tuple[float, list[dict[str, Any]]]] = {}
+        self._spawns_cache: dict[str, tuple[int, list[tuple[str, str]]]] = {}  # rollout -> (size, [(sub-agent thread, spawn call)])
+        self._thread_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}  # thread/read, briefly
 
     @property
     def client(self) -> AppServerClient:
@@ -633,42 +671,69 @@ class CodexHarness(Harness):
         return out
 
     async def list_subagents(self, sessions: list[SessionSummary], roots: list[str]) -> dict[str, list[SubagentSummary]]:
-        ids = {s.id for s in sessions if s.harness == self.id}
-        if not ids or not self.available()[0]:
+        # thread/list doesn't return sub-agent threads: follow each thread's own spawn events instead
+        mine = [s for s in sessions if s.harness == self.id]
+        if not mine or not self.available()[0]:
             return {}
-        threads = await self._spawned_threads(_thread_cwds(roots))
-        by_id = {t["id"]: t for t in threads}
         out: dict[str, list[SubagentSummary]] = {}
-        for t in threads:  # nested sub-agents are listed under the top-level session
-            root, depth = t.get("parentThreadId"), 1
-            while root in by_id and depth < 16:
-                root, depth = by_id[root].get("parentThreadId"), depth + 1
-            if root in ids:
-                out.setdefault(root, []).append(_subagent_summary(t, depth))
+        for s in mine:
+            path = s.transcript or str(self.transcript_path(s.id, s.cwd or "") or "")
+            subs = await self._subagents_of(path, 1, set())
+            if subs:
+                out[s.id] = subs
         return out
 
-    async def _spawned_threads(self, cwds: list[str]) -> list[dict[str, Any]]:
-        key = tuple(cwds)
-        hit = self._subagent_threads.get(key)
+    async def _subagents_of(self, rollout: str | None, depth: int, seen: set[str]) -> list[SubagentSummary]:
+        """The sub-agents a thread spawned, then theirs (nested ones are listed under the top-level session)."""
+        out: list[SubagentSummary] = []
+        for aid, spawn_id in await asyncio.to_thread(self._spawns, rollout) if rollout else []:
+            if aid in seen or len(seen) >= 200:
+                continue
+            seen.add(aid)
+            t = await self._read_thread(aid)
+            if not t:
+                continue
+            out.append(_subagent_summary(t, depth, spawn_id))
+            if depth < 16:
+                out += await self._subagents_of(t.get("path"), depth + 1, seen)
+        return out
+
+    def _spawns(self, path: str) -> list[tuple[str, str]]:
+        """(sub-agent thread, spawning call) for each sub-agent a rollout started, in order."""
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            return []
+        hit = self._spawns_cache.get(path)
+        if hit and hit[0] == size:
+            return hit[1]
+        out: list[tuple[str, str]] = []
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if '"SubAgentActivity"' not in line:
+                    continue
+                try:
+                    it = (json.loads(line).get("payload") or {}).get("item") or {}
+                except (json.JSONDecodeError, AttributeError):
+                    continue
+                if it.get("type") == "SubAgentActivity" and it.get("kind") == "started" and it.get("agent_thread_id"):
+                    out.append((it["agent_thread_id"], it.get("id") or ""))
+        self._spawns_cache[path] = (size, out)
+        return out
+
+    async def _read_thread(self, thread_id: str) -> dict[str, Any] | None:
+        hit = self._thread_cache.get(thread_id)
         if hit and time.time() - hit[0] < 2:
             return hit[1]
-        threads: list[dict[str, Any]] = []
-        cursor = None
-        for _ in range(10):
-            params: dict[str, Any] = {"cwd": cwds, "sourceKinds": SUBAGENT_SOURCE_KINDS, "limit": 100}
-            if cursor:
-                params["cursor"] = cursor
-            try:
-                res = await self.client.request("thread/list", params, timeout=30)
-            except Exception as e:
-                log.debug("codex thread/list (sub-agents) failed: %s", e)
-                break
-            threads += [t for t in res.get("data") or [] if t.get("id")]
-            cursor = res.get("nextCursor")
-            if not cursor:
-                break
-        self._subagent_threads[key] = (time.time(), threads)
-        return threads
+        try:
+            t = (await self.client.request("thread/read", {"threadId": thread_id}, timeout=15)).get("thread")
+        except Exception as e:
+            log.debug("codex thread/read %s failed: %s", thread_id, e)
+            t = None
+        if t and t.get("path"):
+            self._paths[thread_id] = t["path"]
+        self._thread_cache[thread_id] = (time.time(), t)
+        return t
 
     async def load_subagent_history(self, session_id: str, agent_id: str, cwd: str) -> list[Item]:
         return await self.load_history(agent_id, cwd)  # a sub-agent is a thread of its own
@@ -902,7 +967,7 @@ def _thread_cwds(roots: list[str]) -> list[str]:
     return sorted(cwds)
 
 
-def _subagent_summary(t: dict[str, Any], depth: int) -> SubagentSummary:
+def _subagent_summary(t: dict[str, Any], depth: int, tool_use_id: str | None = None) -> SubagentSummary:
     source = t.get("source")
     spawn = source.get("subAgent") if isinstance(source, dict) else None
     spawn = (spawn.get("thread_spawn") if isinstance(spawn, dict) else None) or {}
@@ -910,10 +975,11 @@ def _subagent_summary(t: dict[str, Any], depth: int) -> SubagentSummary:
         id=t["id"],
         agent_type=t.get("agentRole") or spawn.get("agent_role"),
         name=t.get("agentNickname") or spawn.get("agent_nickname") or t.get("name"),
-        description=short(t.get("preview") or "", 120) or t.get("name") or "Sub-agent",
+        description=short(t.get("preview") or "", 120) or (_task_name(spawn["agent_path"]) if spawn.get("agent_path") else t.get("name") or "Sub-agent"),
         status=SUBAGENT_STATUS.get((t.get("status") or {}).get("type") or "", "done"),
         updated_at=float(t.get("updatedAt") or t.get("createdAt") or 0),
         created_at=float(t["createdAt"]) if t.get("createdAt") else None,
+        tool_use_id=tool_use_id or None,
         model=t.get("model"),
         depth=int(spawn.get("depth") or depth),
     )

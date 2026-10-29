@@ -187,7 +187,7 @@ export type Item =
       text?: string | null;
       terminal_reason?: string | null;
     }
-  | { kind: "system"; id: string; subtype: string; text: string; model?: string; permission_mode?: string; tool_use_id?: string | null }
+  | { kind: "system"; id: string; subtype: string; text: string; model?: string; permission_mode?: string; tool_use_id?: string | null; agent_id?: string | null }
   | { kind: "error"; id: string; text: string }
   | { kind: "delta"; text: string }
   | { kind: "state"; state: LiveState };

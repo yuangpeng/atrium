@@ -44,7 +44,8 @@ from typing import Any, Awaitable, Callable
 #   permission  {id, tool, input, title?, description?, can_remember}
 #   permission_resolved {id, decision}
 #   result      {id, subtype, is_error, duration_ms, cost_usd, turns, text?}
-#   system      {id, subtype, text}
+#   system      {id, subtype, text}            a subagent's end (subtype task_done) carries
+#                                               ``tool_use_id`` (its Agent call) or ``agent_id``
 #   error       {id, text}
 #   -- transient (not stored in history) --
 #   delta       {text}                          streaming assistant text
