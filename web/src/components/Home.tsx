@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowUp, FolderGit2, GitBranchPlus } from "lucide-react";
 import { api } from "../api";
 import { useApp } from "../store";
@@ -6,6 +6,7 @@ import { EMPTY_DRAFT, NewAgentDraft, Workspace, useDrafts } from "../drafts";
 import { clsx, relTo } from "../util";
 import { Popover, Spinner } from "./ui";
 import { AttachButton, AttachmentTray, EffortPicker, HarnessPicker, ModelChip, PendingUpload, PermissionPicker, effortOptions, useAttachments } from "../chat/Composer";
+import { mergeCommands, useSlashCommands, useSlashMenu } from "../chat/SlashMenu";
 
 export function Home() {
   const { project, meta, selectSession, toast, refreshSessions, refreshProject } = useApp();
@@ -35,6 +36,15 @@ export function Home() {
     el.style.height = Math.min(el.scrollHeight, 280) + "px";
   }, [prompt]);
 
+  // slash commands: those of the harness the agent gets, where it will work
+  const harnessId = draft.harness ?? (meta?.settings.defaults?.harness || "claude-code");
+  const draftWs = draft.ws;
+  const wsCwd = draftWs.kind === "worktree" && project?.worktrees.some((w) => w.path === draftWs.path) ? draftWs.path : project?.path;
+  const skills = harnessId === "codex";
+  const harnessCommands = useSlashCommands(pid, { harness: harnessId, cwd: wsCwd }, prompt.startsWith("/") || (skills && prompt.includes("$")));
+  const commands = useMemo(() => mergeCommands([], harnessCommands), [harnessCommands]);
+  const slash = useSlashMenu({ text: prompt, setText: (t) => patch({ prompt: t }), input: ref, skills, commands, onRun: (t) => void start(t) });
+
   if (!project || !meta) return null;
   // picks left unset follow the harness's defaults from ~/.atrium/settings.json
   const harness = meta.harnesses.find((h) => h.id === (draft.harness ?? (meta.settings.defaults?.harness || "claude-code"))) ?? meta.harnesses[0];
@@ -54,14 +64,16 @@ export function Home() {
   const efforts = effortOptions(harness, model || harness.config_model);
   const canStart = !!prompt.trim() && !busy && !att.uploading && harness.available;
 
-  const start = async () => {
-    if (!canStart) return;
+  // `override`: a slash command picked in the menu, sent instead of what's typed
+  const start = async (override?: string) => {
+    const text = (override ?? prompt).trim();
+    if (!text || busy || att.uploading || !harness.available) return;
     if (ws.kind === "new" && !ws.branch.trim()) return toast("Give the new worktree a branch name", "error");
     setBusy(true);
     try {
       const res = await api.createSession(project.id, {
         name: name.trim(),
-        prompt: prompt.trim(),
+        prompt: text,
         harness: harness.id,
         mode,
         model: model || undefined,
@@ -97,16 +109,19 @@ export function Home() {
       <div className="composer">
         <div className={clsx("composer-box", att.dragging && "dragging")} {...att.dropProps}>
           {att.picker}
+          {slash.menu}
           <input className="name-input" placeholder="Agent name (optional)" title="Leave empty and the Tracker names it" value={name} onChange={(e) => patch({ name: e.target.value })} />
           <textarea
             ref={ref}
             className="composer-input"
             rows={3}
-            placeholder="Describe the task"
+            placeholder="Describe the task, or / for commands"
             value={prompt}
             onChange={(e) => patch({ prompt: e.target.value })}
+            onSelect={slash.onSelect}
             onPaste={att.onPaste}
             onKeyDown={(e) => {
+              if (slash.onKeyDown(e)) return;
               if (e.key === "Enter" && (e.metaKey || e.ctrlKey || !e.shiftKey) && !e.nativeEvent.isComposing) {
                 e.preventDefault();
                 void start();

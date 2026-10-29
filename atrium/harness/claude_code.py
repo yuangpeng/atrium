@@ -48,7 +48,7 @@ from claude_agent_sdk import (
 
 from .. import gitops
 from ..config import UPLOADS_DIR
-from .base import Attachment, Compaction, Emit, FileEdit, ForkPoint, Harness, Item, LiveSession, LiveSpec, SessionSummary, SubagentSummary, ToolSpec
+from .base import Attachment, Compaction, Emit, FileEdit, ForkPoint, Harness, Item, LiveSession, LiveSpec, SessionSummary, SlashCommand, SubagentSummary, ToolSpec
 from .util import TailScan, attachment_note, hhmm, iso_to_epoch, parse_json_loose, split_attachment_note, tail_scan
 
 log = logging.getLogger("atrium.claude")
@@ -61,6 +61,14 @@ CLI_DEFAULT_EFFORT = "medium"  # what Claude Code sends when nothing sets an eff
 AGENT_TASKS = (None, "local_agent", "remote_agent")  # task types that are subagents (None: older CLIs)
 TASK_STATUS = {"completed": "done", "failed": "failed", "stopped": "stopped", "killed": "stopped"}
 SUBAGENT_STALE = 300  # a subagent mid-turn whose transcript sat still this long (seconds) is presumed stopped
+SYNTHETIC = "<synthetic>"  # the model of messages the CLI writes itself (slash command output, API errors)
+SLASH_RE = re.compile(r"/([^\s/]+)(?:\s+(.*))?", re.S)  # "/name args"
+# /clear (aliases /reset, /new) switches the CLI to a new session id that Atrium wouldn't follow
+RESET_COMMANDS = {"clear", "reset", "new"}
+HIDDEN_COMMANDS = {"workflow-launch-exec"}  # only for sessions a server launched (as are the "__" ones)
+# commands whose interface is the CLI's terminal; live sessions report the current list (init message)
+TERMINAL_COMMANDS = {"doctor", "color", "focus", "reload-plugins"}
+COMMANDS_TTL = 300  # seconds a probed command list stays fresh
 COMPACT_SUMMARY = "This session is being continued from a previous conversation"  # how a compaction's summary starts
 
 
@@ -142,16 +150,44 @@ def _clip(s: str, n: int = MAX_RESULT_CHARS) -> str:
 
 
 _CMD_RE = re.compile(r"<(command-name|command-message|command-args|local-command-stdout|local-command-stderr)>(.*?)</\1>", re.S)
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+_SOURCE_RE = re.compile(r"\s*\(([^()]+)\)$")  # where a custom command is defined, at the end of its description
 
 
-def _user_text_item(uid: str, text: str, ts: str | None = None) -> Item:
-    """User-role text, recognising CLI command wrappers, interrupt markers and compaction summaries."""
+def _slash_commands(raw: list[dict[str, Any]], terminal: set[str]) -> list[SlashCommand]:
+    """The CLI's commands (initialize response) that work in Atrium."""
+    out = []
+    for c in raw:
+        name = c.get("name") or ""
+        if not name or name.startswith("__") or name in HIDDEN_COMMANDS or name in terminal:
+            continue
+        desc, source = (c.get("description") or "").strip(), None
+        m = None if c.get("builtin") else _SOURCE_RE.search(desc)
+        if m:  # "Say hello (project)", "… (user)", "… (plugin-name)"
+            desc, source = desc[: m.start()], m.group(1)
+        out.append(SlashCommand(name=name, description=desc, argument_hint=c.get("argumentHint") or "", aliases=list(c.get("aliases") or []), source=source))
+    return out
+
+
+def _output_item(uid: str, text: str) -> Item | None:
+    text = _ANSI_RE.sub("", text).strip()
+    return {"kind": "command_output", "id": uid, "text": text} if text else None
+
+
+def _user_text_item(uid: str, text: str, ts: str | None = None) -> Item | None:
+    """User-role text, recognising slash commands and their output, compaction summaries and interrupt
+    markers. None for nothing to show (a command that printed nothing)."""
     stripped = text.strip()
     if stripped.startswith("<command-") or stripped.startswith("<local-command"):
         parts = {m.group(1): m.group(2).strip() for m in _CMD_RE.finditer(stripped)}
-        label = parts.get("command-name") or ""
-        out = parts.get("local-command-stdout") or parts.get("local-command-stderr") or parts.get("command-args") or ""
-        return {"kind": "system", "id": uid, "subtype": "command", "text": f"{label} {out}".strip() or stripped}
+        if parts.get("command-name"):  # the command as typed ("/name" + args)
+            cmd: Item = {"kind": "user", "id": uid, "text": f"{parts['command-name']} {parts.get('command-args') or ''}".strip(), "command": True}
+            if ts:
+                cmd["ts"] = ts
+            return cmd
+        if "local-command-stdout" in parts or "local-command-stderr" in parts:
+            return _output_item(uid, parts.get("local-command-stdout") or parts.get("local-command-stderr") or "")
+        return {"kind": "system", "id": uid, "subtype": "command", "text": stripped}
     if stripped.startswith("[Request interrupted by user"):
         return {"kind": "system", "id": uid, "subtype": "interrupted", "text": "Interrupted by user"}
     if stripped.startswith(COMPACT_SUMMARY):
@@ -211,6 +247,8 @@ class ClaudeLiveSession(LiveSession):
         self._error: str | None = None
         self._task: asyncio.Task | None = None
         self._stderr_tail: list[str] = []
+        self._commands: list[dict[str, Any]] | None = None  # the CLI's slash commands (initialize response)
+        self._command_names: set[str] = set()  # their names and aliases, plus what init messages list
 
     # ---- public API --------------------------------------------------------
     async def start(self) -> None:
@@ -222,6 +260,9 @@ class ClaudeLiveSession(LiveSession):
             raise RuntimeError(self._error or "Claude Code did not start in time")
 
     async def send(self, text: str, attachments: list[Attachment] | None = None) -> None:
+        m = SLASH_RE.fullmatch(text.strip())
+        if m and m.group(1) in RESET_COMMANDS:
+            raise RuntimeError(f"/{m.group(1)} would switch Claude Code to a new session that Atrium doesn't follow. Start a new agent instead.")
         await self._call("send", (text, attachments or []))
 
     async def interrupt(self) -> None:
@@ -245,6 +286,13 @@ class ClaudeLiveSession(LiveSession):
 
     def pending_permissions(self) -> list[str]:
         return list(self._pending)
+
+    def commands(self) -> list[SlashCommand] | None:
+        return None if self._commands is None else _slash_commands(self._commands, TERMINAL_COMMANDS)
+
+    def is_command(self, text: str) -> bool:
+        m = SLASH_RE.fullmatch(text.strip())
+        return bool(m) and m.group(1) in self._command_names
 
     async def close(self) -> None:
         if self._task and not self._task.done():
@@ -309,6 +357,8 @@ class ClaudeLiveSession(LiveSession):
     async def _run(self) -> None:
         try:
             async with ClaudeSDKClient(self._options()) as client:
+                self._commands = list((await client.get_server_info() or {}).get("commands") or [])
+                self._command_names = {n for c in self._commands for n in [c.get("name"), *(c.get("aliases") or [])] if n}
                 self._set_state("idle")
                 self._ready.set()
                 reader = asyncio.create_task(self._read_loop(client))
@@ -371,8 +421,14 @@ class ClaudeLiveSession(LiveSession):
         last: AssistantMessage | None = None
         async for msg in client.receive_messages():
             try:
-                if isinstance(msg, AssistantMessage) and msg.parent_tool_use_id is None and msg.usage:
-                    last = msg
+                if isinstance(msg, AssistantMessage) and msg.parent_tool_use_id is None and msg.usage and msg.model != SYNTHETIC:
+                    last = msg  # not slash command output: its usage is all zeros
+                if isinstance(msg, SystemMessage) and msg.subtype == "init":
+                    d = msg.data or {}
+                    self._command_names |= set(d.get("slash_commands") or [])
+                    if "terminal_slash_commands" in d:
+                        TERMINAL_COMMANDS.clear()
+                        TERMINAL_COMMANDS.update(d["terminal_slash_commands"] or [])
                 if isinstance(msg, ResultMessage) and last:
                     self.emit(context_item(last, msg))  # ahead of the result, which saves it with the session
                 for item in live_message_items(msg, tasks):
@@ -461,7 +517,9 @@ def live_message_items(msg: Any, tasks: dict[str, str | None] | None = None) -> 
             iid = f"{base}:{i}"
             it: Item | None = None
             if isinstance(b, TextBlock):
-                if parent is None and b.text.strip():
+                if parent is None and msg.model == SYNTHETIC and not msg.error:  # what a slash command printed
+                    it = _output_item(iid, b.text)
+                elif parent is None and b.text.strip():
                     it = {"kind": "text", "id": iid, "text": b.text}
             elif isinstance(b, ThinkingBlock):
                 if b.thinking.strip():
@@ -483,8 +541,8 @@ def live_message_items(msg: Any, tasks: dict[str, str | None] | None = None) -> 
                 kind = (msg.origin or {}).get("kind")
                 if kind and kind != "human":
                     items.append({"kind": "system", "id": msg.uuid or uuid.uuid4().hex, "subtype": kind, "text": _short(msg.content, 2000)})
-                else:
-                    items.append(_user_text_item(msg.uuid or uuid.uuid4().hex, msg.content))
+                elif it := _user_text_item(msg.uuid or uuid.uuid4().hex, msg.content):
+                    items.append(it)
         else:
             for i, b in enumerate(msg.content):
                 if isinstance(b, ToolResultBlock):
@@ -492,8 +550,8 @@ def live_message_items(msg: Any, tasks: dict[str, str | None] | None = None) -> 
                     if parent:
                         it["parent"] = parent
                     items.append(it)
-                elif isinstance(b, TextBlock) and b.text.strip() and not parent:
-                    items.append(_user_text_item(f"{msg.uuid}:{i}", b.text))
+                elif isinstance(b, TextBlock) and b.text.strip() and not parent and (it := _user_text_item(f"{msg.uuid}:{i}", b.text)):
+                    items.append(it)
         return items
     if isinstance(msg, ResultMessage):
         items.append(
@@ -553,21 +611,24 @@ def live_message_items(msg: Any, tasks: dict[str, str | None] | None = None) -> 
     return items
 
 
-def history_items(messages: list[Any]) -> list[Item]:
-    """Normalize ``get_session_messages`` output."""
+def history_items(messages: list[Any], outputs: dict[str, list[tuple[str, str]]] | None = None) -> list[Item]:
+    """Normalize ``get_session_messages`` output; ``outputs`` is what slash commands printed (``_command_outputs``)."""
     items: list[Item] = []
     for m in messages:
         raw = m.message or {}
         content = raw.get("content")
         if m.type == "user":
             if isinstance(content, str):
-                if content.strip():
-                    items.append(_user_text_item(m.uuid, content))
+                if content.strip() and (it := _user_text_item(m.uuid, content)):
+                    items.append(it)
+                for oid, text in (outputs or {}).get(m.uuid, []):
+                    if out := _output_item(oid, text):
+                        items.append(out)
                 continue
             images = [b for b in content or [] if isinstance(b, dict) and b.get("type") == "image"]
             if images:  # one user bubble: text + attached images
                 text = "\n".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text")
-                it = _user_text_item(m.uuid, text)
+                it = _user_text_item(m.uuid, text) or {"kind": "user", "id": m.uuid, "text": ""}
                 it["attachments"] = [_image_attachment(b, i) for i, b in enumerate(images)] + it.get("attachments", [])
                 items.append(it)
                 continue
@@ -584,8 +645,8 @@ def history_items(messages: list[Any]) -> list[Item]:
                             "is_error": bool(b.get("is_error")),
                         }
                     )
-                elif t == "text" and b.get("text", "").strip():
-                    items.append(_user_text_item(f"{m.uuid}:{i}", b["text"]))
+                elif t == "text" and b.get("text", "").strip() and (it := _user_text_item(f"{m.uuid}:{i}", b["text"])):
+                    items.append(it)
         elif m.type == "assistant":
             for i, b in enumerate(content or []):
                 if not isinstance(b, dict):
@@ -607,6 +668,17 @@ def _compact_item(cid: str, trigger: str | None) -> Item:
     """Where a compaction cut the conversation; ``compaction`` opens the part it closed."""
     text = "Context full: conversation compacted" if trigger == "auto" else "Conversation compacted"
     return {"kind": "system", "id": cid, "subtype": "compact", "text": text, "compaction": cid}
+
+
+def _command_outputs(entries: list[dict[str, Any]]) -> dict[str, list[tuple[str, str]]]:
+    """What slash commands printed: a transcript's ``local_command`` entries, which the SDK's conversations
+    leave out (they hold user and assistant messages), as (entry uuid, text) by the uuid of the command's entry."""
+    out: dict[str, list[tuple[str, str]]] = {}
+    for e in entries:
+        if e.get("type") == "system" and e.get("subtype") == "local_command" and e.get("parentUuid"):
+            parts = {m.group(1): m.group(2) for m in _CMD_RE.finditer(e.get("content") or "")}
+            out.setdefault(e["parentUuid"], []).append((e["uuid"], parts.get("local-command-stdout") or parts.get("local-command-stderr") or ""))
+    return out
 
 
 def to_sdk_server(server_name: str, specs: list[ToolSpec]) -> Any:
@@ -658,11 +730,24 @@ class ClaudeCodeHarness(Harness):
         self._subagent_lock = threading.Lock()  # list_subagents runs in worker threads
         self._compaction_cache: dict[str, _CompactionScan] = {}  # transcript path -> what's read of it
         self._compaction_lock = threading.Lock()
+        self._commands_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}  # cwd -> (when, probed commands)
+        self._probe_locks: dict[str, asyncio.Lock] = {}
 
     async def catalog(self) -> dict[str, Any]:
         d = self.describe()
         d["config_model"], d["config_effort"] = config_defaults()
         return d
+
+    async def slash_commands(self, cwd: str, live: LiveSession | None = None) -> list[SlashCommand]:
+        known = live.commands() if live else None
+        if known is not None:
+            return known
+        key = os.path.realpath(cwd)
+        async with self._probe_locks.setdefault(key, asyncio.Lock()):  # one probe per directory at a time
+            hit = self._commands_cache.get(key)
+            if not hit or time.time() - hit[0] > COMMANDS_TTL:
+                hit = self._commands_cache[key] = (time.time(), await asyncio.wait_for(_probe_commands(cwd), timeout=60))
+        return _slash_commands(hit[1], TERMINAL_COMMANDS)
 
     def config_files(self, project_dir: str | None) -> list[Any]:
         from ..configfiles import ConfigFile
@@ -980,6 +1065,16 @@ class ClaudeCodeHarness(Harness):
         return data, usage
 
 
+async def _probe_commands(cwd: str) -> list[dict[str, Any]]:
+    """The slash commands Claude Code offers in ``cwd`` (its skills and custom commands included), asked
+    of a CLI started just for that: no prompt is sent, hooks are off and no MCP server is started."""
+    opts = ClaudeAgentOptions(cwd=cwd, settings=json.dumps({"disableAllHooks": True}), strict_mcp_config=True)
+    info: dict[str, Any] | None = None
+    async with ClaudeSDKClient(opts) as client:
+        info = await client.get_server_info()
+    return list((info or {}).get("commands") or [])
+
+
 def _ts_epoch(ts: Any) -> float | None:
     if not isinstance(ts, str):
         return None
@@ -1142,7 +1237,7 @@ def _conversation_items(session_id: str, entries: list[dict[str, Any]]) -> list[
     # boundary has no parent) and puts back the tool calls and results of parallel turns
     msgs = asyncio.run(get_session_messages_from_store(cast(SessionStore, _Entries(entries)), session_id))
     opening = [_compact_item(boundary["uuid"], (boundary.get("compactMetadata") or {}).get("trigger"))] if boundary else []
-    return opening + history_items(msgs)
+    return opening + history_items(msgs, _command_outputs(entries))
 
 
 def _resumed(entries: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:

@@ -569,6 +569,8 @@ class SessionManager:
         item: Item = {"kind": "user", "id": f"u-{uuid.uuid4().hex[:12]}", "text": text, "ts": time.time()}
         if attachments:
             item["attachments"] = [{"name": a.name, "path": a.path, "mime": a.mime, "url": upload_url(a.path)} for a in attachments]
+        if h.session and h.session.is_command(text):
+            item["command"] = True
         if h.state == "idle":
             await self._snapshot(h, "start")
         self._emitter(h)(item)
@@ -578,6 +580,17 @@ class SessionManager:
             a = project.board.agent(sid)
             if not a or a.get("status") in (None, "idle", "done"):
                 project.board.update_agent(sid, status="working", doing=_short(text, 80) or "Working…", source="atrium")
+
+    async def commands(self, project: Project, *, sid: str | None = None, harness_id: str | None = None, cwd: str | None = None) -> list[dict[str, Any]]:
+        """The slash commands for a session (its own list while it runs), or for a new one of ``harness_id`` in ``cwd``."""
+        h = self.handle(sid) if sid else None
+        if h:
+            return [asdict(c) for c in await get_harness(h.harness_id).slash_commands(h.cwd, h.session)]
+        if sid:
+            cwd, harness_id = await self.session_info(project, sid)
+        cwd = os.path.realpath(cwd or project.path)
+        project.resolve(".", root=cwd)  # cwd belongs to the project
+        return [asdict(c) for c in await get_harness(harness_id or config.get("defaults.harness")).slash_commands(cwd)]
 
     def handle(self, sid: str) -> LiveHandle | None:
         h = self.live.get(sid)

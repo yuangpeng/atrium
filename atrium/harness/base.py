@@ -31,8 +31,11 @@ from typing import Any, Awaitable, Callable
 # --------------------------------------------------------------------------
 # Every item is a dict with a ``kind`` and (except transient kinds) an ``id``:
 #
-#   user        {id, text, ts?, attachments?: [{name, path, mime, url?}]}
+#   user        {id, text, ts?, attachments?: [{name, path, mime, url?}], command?}
+#                                               ``command``: a slash command the harness ran rather
+#                                               than a prompt (no turn to fork from)
 #   text        {id, text}                      assistant prose (markdown)
+#   command_output {id, text}                   what a slash command printed (markdown)
 #   thinking    {id, text}
 #   tool        {id, name, input, parent?}      a tool call; names follow Claude Code
 #                                               (Bash, Edit, Write, …), Atrium tools are
@@ -160,6 +163,19 @@ class Attachment:
 
 
 @dataclass
+class SlashCommand:
+    """A command the composer offers when a message starts with "/": the harness's built-ins, custom
+    commands, skills… Sent as typed ("/name args"); the harness runs it instead of prompting the model."""
+
+    name: str  # without the prefix
+    description: str = ""
+    argument_hint: str = ""
+    aliases: list[str] = field(default_factory=list)
+    source: str | None = None  # where a custom one is defined: project, user, a plugin, skill… (None: built in)
+    prefix: str = "/"  # what invokes it: "/", or "$" for Codex skills (mentioned anywhere in a message)
+
+
+@dataclass
 class ForkPoint:
     """Where a fork cuts a conversation: everything up to ``cut`` is kept.
 
@@ -216,6 +232,15 @@ class LiveSession(ABC):
 
     @abstractmethod
     def resolve_permission(self, request_id: str, decision: dict[str, Any]) -> bool: ...
+
+    def commands(self) -> list[SlashCommand] | None:
+        """The slash commands this session accepts, if it knows them (None: ``Harness.slash_commands`` finds out)."""
+        return None
+
+    def is_command(self, text: str) -> bool:
+        """Whether sending ``text`` runs a slash command rather than prompting the model: the message is
+        then shown as a command, and it opens no turn to fork from."""
+        return False
 
     @abstractmethod
     async def close(self) -> None: ...
@@ -312,6 +337,11 @@ class Harness(ABC):
 
     def on_config_saved(self, file_id: str) -> None:
         """Hook after one of ``config_files`` was saved from the UI."""
+
+    async def slash_commands(self, cwd: str, live: LiveSession | None = None) -> list[SlashCommand]:
+        """What the composer offers after "/" for a session working in ``cwd`` (``live``: that session,
+        when it runs). Commands the UI can't use (bound to the CLI's terminal) are left out."""
+        return []
 
     # ---- execution ---------------------------------------------------------
     @abstractmethod

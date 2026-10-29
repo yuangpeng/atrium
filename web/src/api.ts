@@ -22,6 +22,16 @@ export interface Harness {
   config_effort?: string | null;
 }
 
+/** A slash command the composer offers: the harness's built-ins, custom commands, skills… or Atrium's own. */
+export interface SlashCommand {
+  name: string; // without the prefix
+  description: string;
+  argument_hint: string;
+  aliases: string[];
+  source: string | null; // where a custom one is defined (project, user, a plugin, skill, Atrium); null = built in
+  prefix: string; // "/", or "$" for Codex skills (mentioned anywhere in a message)
+}
+
 export interface HarnessDefaults {
   permission_mode?: string;
   model?: string;
@@ -172,8 +182,9 @@ export type ForkWorkspace = { kind: "same" } | { kind: "worktree"; path: string 
 export type ForkFiles = "fork-point" | "current" | "committed";
 
 export type Item =
-  | { kind: "user"; id: string; text: string; ts?: number; attachments?: Attachment[] }
+  | { kind: "user"; id: string; text: string; ts?: number; attachments?: Attachment[]; command?: boolean } // command: a slash command, not a prompt
   | { kind: "text"; id: string; text: string }
+  | { kind: "command_output"; id: string; text: string } // what a slash command printed
   | { kind: "thinking"; id: string; text: string; parent?: string }
   | { kind: "tool"; id: string; name: string; input: Record<string, any>; parent?: string }
   | { kind: "tool_result"; id: string; content: string; is_error: boolean; parent?: string }
@@ -485,6 +496,7 @@ export const api = {
       `/api/p/${pid}/sessions/${sid}/fork`,
       body,
     ),
+  commands: (pid: string, where: { sid?: string; harness?: string; cwd?: string }) => req<SlashCommand[]>("GET", `/api/p/${pid}/commands${q(where)}`),
   send: (pid: string, sid: string, text: string, attachments: string[] = []) =>
     req("POST", `/api/p/${pid}/sessions/${sid}/send`, { text, attachments }),
   attach: (pid: string, sid: string) => req("POST", `/api/p/${pid}/sessions/${sid}/attach`, {}),

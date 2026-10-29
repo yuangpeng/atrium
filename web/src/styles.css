@@ -297,8 +297,12 @@ a { color: var(--accent-strong); }
 .msg-compact > span { min-width: 0; text-align: center; }
 .msg-compact::before { margin-right: 4px; }
 .msg-compact::after { margin-left: 4px; }
+/* slash commands: the command as sent, then what it printed (column-aligned text keeps its spacing) */
+.msg-user.command .cmd-name { font-family: var(--font-mono); font-size: 0.92em; font-weight: 600; color: var(--accent-strong); }
 .msg-output { border-left: 2px solid var(--border-strong); padding: 2px 0 2px 12px; color: var(--text-2); font: 12.5px/1.55 var(--font-mono); overflow-x: auto; }
 .msg-output .md p { white-space: pre-wrap; }
+.msg-output .md h1, .msg-output .md h2, .msg-output .md h3, .msg-output .md h4 { font-family: var(--font-ui); font-size: 13.5px; margin: 0.9em 0 0.4em; }
+.msg-output .md table { font-size: 12.5px; }
 /* an info line with more to read: a compaction's summary */
 .msg-system-detail { align-self: stretch; }
 .msg-system-detail > summary { list-style: none; cursor: pointer; justify-content: center; }
@@ -352,9 +356,22 @@ a { color: var(--accent-strong); }
 .composer { padding: 0 14px 14px; flex: none; }
 .chat.compact .composer { padding: 0 10px 10px; }
 .composer-box {
-  max-width: 780px; margin: 0 auto; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 18px;
+  position: relative; max-width: 780px; margin: 0 auto; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 18px;
   box-shadow: var(--shadow); padding: 12px 12px 8px 16px; transition: border-color 0.15s;
 }
+/* the slash command menu, over the composer */
+.slash-menu {
+  position: absolute; left: 0; right: 0; bottom: calc(100% + 6px); z-index: 40; max-height: min(340px, 50vh); overflow-y: auto;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow-lg); padding: 5px;
+}
+.slash-item { display: block; width: 100%; padding: 6px 10px; border: 0; border-radius: 8px; background: transparent; text-align: left; cursor: pointer; color: inherit; }
+.slash-item.on { background: var(--active); }
+.slash-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.slash-name { flex: none; font: 600 13px var(--font-mono); }
+.slash-hint { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 12px var(--font-mono); color: var(--muted); }
+.slash-src { flex: none; margin-left: auto; padding: 0 6px; border-radius: 6px; background: var(--surface-2); font-size: 11px; line-height: 18px; color: var(--muted); }
+.slash-desc { margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); }
+.slash-empty { display: flex; align-items: center; gap: 8px; padding: 8px 10px; font-size: 12.5px; color: var(--muted); }
 .composer-box:focus-within { border-color: color-mix(in srgb, var(--accent) 55%, var(--border-strong)); }
 .composer-input { width: 100%; border: 0; outline: none; resize: none; background: transparent; font-size: 15px; line-height: 1.5; max-height: 280px; min-height: 24px; padding: 2px 0; }
 /* chips wrap on the left; effort + send stay at the bottom right however narrow the column */

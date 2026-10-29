@@ -362,6 +362,12 @@ async def send(pid: str, sid: str, body: dict[str, Any] = Body(...)):
     return {"ok": True}
 
 
+@app.get("/api/p/{pid}/commands")
+async def slash_commands(pid: str, sid: str | None = None, harness: str | None = None, cwd: str | None = None):
+    """Slash commands for the composer: a session's, or a new agent's (``harness`` in ``cwd``)."""
+    return await sessions.commands(P(pid), sid=sid, harness_id=harness, cwd=cwd)
+
+
 @app.post("/api/p/{pid}/sessions/{sid}/attach")
 async def attach(pid: str, sid: str, body: dict[str, Any] = Body(default={})):
     h = await sessions.ensure_live(P(pid), sid, model=body.get("model"), mode=body.get("mode"))

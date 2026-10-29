@@ -17,6 +17,7 @@ import json
 import logging
 import mimetypes
 import os
+import re
 import shlex
 import threading
 import time
@@ -26,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import config
-from .base import Attachment, Compaction, Emit, FileEdit, ForkPoint, Harness, Item, LiveSession, LiveSpec, SessionSummary, SubagentSummary, ToolSpec
+from .base import Attachment, Compaction, Emit, FileEdit, ForkPoint, Harness, Item, LiveSession, LiveSpec, SessionSummary, SlashCommand, SubagentSummary, ToolSpec
 from .codex_rpc import AppServerClient, RpcError
 from .util import TailScan, attachment_note, clip, hhmm, iso_to_epoch, parse_json_loose, short, split_attachment_note, strict_schema, tail_scan, upload_url
 
@@ -61,6 +62,65 @@ NS_ALIAS = {"web": "internet"}
 NS_UNALIAS = {v: k for k, v in NS_ALIAS.items()}
 DEFAULT_EFFORTS = ["low", "medium", "high", "xhigh"]
 SKIP_DIGEST_ACTIONS = {"read", "listFiles", "search", "list_files"}
+# The Codex TUI's slash commands that Atrium runs through the app-server, in the TUI's words. The TUI
+# handles slash commands itself; sent to a thread as text they'd only reach the model.
+COMMANDS = [
+    SlashCommand("init", "create an AGENTS.md file with instructions for Codex"),
+    SlashCommand("compact", "summarize conversation to prevent hitting the context limit"),
+    SlashCommand("review", "review my current changes and find issues", argument_hint="[instructions]"),
+    SlashCommand("status", "show current session configuration and token usage"),
+    SlashCommand("mcp", "list configured MCP tools"),
+    SlashCommand("skills", "list skills; mention one with $name to use it"),
+]
+LOCAL_COMMANDS = {"status", "mcp", "skills"}  # answered by Atrium, no turn
+TURN_COMMANDS = {"compact", "review"}  # turns of their own, started by their own app-server methods
+SLASH_RE = re.compile(r"/([^\s/]+)(?:\s+(.*))?", re.S)
+SKILL_RE = re.compile(r"(?<![\w$])\$([A-Za-z0-9][\w.:-]*)")  # "$name" mentions a skill
+SKILLS_TTL = 60  # seconds a skills/list answer is reused
+# the prompt Codex records for a review of uncommitted changes (a turn of its own, beside the review's)
+REVIEW_UNCOMMITTED = "Review the current code changes (staged, unstaged, and untracked files) and provide prioritized findings."
+# What the TUI's /init sends (codex-cli 0.160)
+INIT_PROMPT = """Generate a file named AGENTS.md that serves as a contributor guide for this repository.
+Before writing, check whether AGENTS.md already exists in the current working directory. If it does, do not overwrite or modify it.
+Your goal is to produce a clear, concise, and well-structured document with descriptive headings and actionable explanations for each section.
+Follow the outline below, but adapt as needed — add sections if relevant, and omit those that do not apply to this project.
+
+Document Requirements
+
+- Title the document "Repository Guidelines".
+- Use Markdown headings (#, ##, etc.) for structure.
+- Keep the document concise. 200-400 words is optimal.
+- Keep explanations short, direct, and specific to this repository.
+- Provide examples where helpful (commands, directory paths, naming patterns).
+- Maintain a professional, instructional tone.
+
+Recommended Sections
+
+Project Structure & Module Organization
+
+- Outline the project structure, including where the source code, tests, and assets are located.
+
+Build, Test, and Development Commands
+
+- List key commands for building, testing, and running locally (e.g., npm test, make build).
+- Briefly explain what each command does.
+
+Coding Style & Naming Conventions
+
+- Specify indentation rules, language-specific style preferences, and naming patterns.
+- Include any formatting or linting tools used.
+
+Testing Guidelines
+
+- Identify testing frameworks and coverage requirements.
+- State test naming conventions and how to run tests.
+
+Commit & Pull Request Guidelines
+
+- Summarize commit message conventions found in the project’s Git history.
+- Outline pull request requirements (descriptions, linked issues, screenshots, etc.).
+
+(Optional) Add other sections if relevant, such as Security & Configuration Tips, Architecture Overview, or Agent-Specific Instructions."""
 
 
 def codex_home() -> Path:
@@ -112,13 +172,21 @@ def _attachment(path: str | None) -> dict[str, Any]:
     return att
 
 
+def _skill_summary(skill: dict[str, Any]) -> str:
+    return (skill.get("interface") or {}).get("shortDescription") or skill.get("shortDescription") or skill.get("description") or ""
+
+
+def _tokens(n: int) -> str:
+    return f"{n / 1e6:.1f}M" if n >= 1e6 else f"{round(n / 1e3)}k" if n >= 1e3 else str(n)
+
+
 # --------------------------------------------------------------------------
 # Item normalization (app-server v2 items, shared by live events and history)
 # --------------------------------------------------------------------------
 
 
 def user_item(item: dict[str, Any]) -> Item:
-    texts, atts = [], []
+    texts, atts, refs = [], [], []
     for c in item.get("content") or []:
         t = c.get("type")
         if t == "text":
@@ -128,8 +196,11 @@ def user_item(item: dict[str, Any]) -> Item:
         elif t == "image":
             atts.append({"name": "image", "mime": "image/*", "url": c.get("url")})
         elif t in ("mention", "skill"):
-            texts.append(f"@{c.get('name') or c.get('path')}")
-    text, files = split_attachment_note("\n".join(texts))
+            refs.append(f"{'$' if t == 'skill' else '@'}{c.get('name') or c.get('path')}")
+    # skills and files the text doesn't name already ("$skill" mentions do)
+    text, files = split_attachment_note("\n".join(texts + [r for r in refs if not any(r in x for x in texts)]))
+    if text.startswith(INIT_PROMPT):  # sent by /init
+        text = f"/init {text[len(INIT_PROMPT):].strip()}".strip()
     it: Item = {"kind": "user", "id": item["id"], "text": text}
     if atts or files:
         it["attachments"] = atts + files
@@ -212,8 +283,10 @@ def message_items(item: dict[str, Any]) -> list[Item]:
         return [{"kind": "text", "id": iid, "text": item.get("text") or ""}]
     if t == "contextCompaction":
         return [{"kind": "system", "id": iid, "subtype": "compact", "text": "Conversation compacted", "compaction": iid}]
-    if t in ("enteredReviewMode", "exitedReviewMode"):
-        return [{"kind": "system", "id": iid, "subtype": t, "text": f"{'Entered' if t.startswith('entered') else 'Exited'} review mode"}]
+    if t == "enteredReviewMode":
+        return [{"kind": "system", "id": iid, "subtype": t, "text": f"Reviewing {item.get('review') or 'changes'}"}]
+    if t == "exitedReviewMode":  # the review itself also comes as an agent message
+        return [{"kind": "system", "id": iid, "subtype": t, "text": "Exited review mode"}]
     return []
 
 
@@ -224,7 +297,21 @@ def plan_items(turn_id: str, plan: list[dict[str, Any]]) -> list[Item]:
     return [{"kind": "tool", "id": tid, "name": "TodoWrite", "input": {"todos": todos}}, {"kind": "tool_result", "id": tid, "content": "", "is_error": False}]
 
 
-def turn_items(turn: dict[str, Any]) -> list[Item]:
+def review_prompts(turns: list[dict[str, Any]]) -> set[int]:
+    """Turns that only hold a review's prompt, which Codex records beside the review's turn: the /review
+    that asked for it, not a prompt of the user's."""
+    def reviewing(i: int) -> bool:
+        return 0 <= i < len(turns) and any(it.get("type") == "enteredReviewMode" for it in turns[i].get("items") or [])
+
+    return {i for i, t in enumerate(turns) if [it.get("type") for it in t.get("items") or []] == ["userMessage"] and (reviewing(i - 1) or reviewing(i + 1))}
+
+
+def turn_items(turn: dict[str, Any], review: bool = False) -> list[Item]:
+    """``review``: the turn holds a review's prompt only (``review_prompts``), shown as the /review command."""
+    if review:
+        it = user_item(turn["items"][0])
+        text = it["text"].strip()
+        return [{**it, "text": "/review" if text == REVIEW_UNCOMMITTED else f"/review {text}", "command": True}]
     out: list[Item] = []
     for it in turn.get("items") or []:
         if it.get("type") == "userMessage":
@@ -293,6 +380,8 @@ class CodexLiveSession(LiveSession):
         self.model = spec.model or None
         self.effort = spec.effort or None
         self._config_effort: str | None = None  # the thread's effort from config.toml, reported when it starts
+        self._thread_model: str | None = None  # the model the thread started with
+        self._usage: dict[str, Any] = {}  # the last context-window reading (used, max)
         self.mode = spec.permission_mode or "full-access"
         self._mode_dirty = False
         self.turn_id: str | None = None
@@ -323,6 +412,7 @@ class CodexLiveSession(LiveSession):
         self.client.add_thread(self.session_id, self._on_event, self._on_request)
         self.harness.live_threads.add(self.session_id)
         model = res.get("model") or thread.get("model") or "?"
+        self._thread_model = model if model != "?" else None
         effort = self._config_effort = res.get("reasoningEffort") or thread.get("reasoningEffort")
         mode = next((m["label"] for m in PERMISSION_MODES if m["id"] == self.mode), self.mode)
         self.emit({
@@ -334,9 +424,20 @@ class CodexLiveSession(LiveSession):
 
     async def send(self, text: str, attachments: list[Attachment] | None = None) -> None:
         attachments = attachments or []
+        cmd = SLASH_RE.fullmatch(text.strip())
+        name, args = (cmd.group(1), (cmd.group(2) or "").strip()) if cmd else ("", "")
+        if name in LOCAL_COMMANDS:
+            self.emit({"kind": "command_output", "id": f"cmd-{uuid.uuid4().hex[:12]}", "text": await self._local_command(name)})
+            return
+        if name in TURN_COMMANDS:
+            await self._turn_command(name, args)
+            return
+        if name == "init":
+            text = f"{INIT_PROMPT}\n\n{args}" if args else INIT_PROMPT
         files = [a for a in attachments if not a.is_image]
         inp: list[dict[str, Any]] = [{"type": "text", "text": text + attachment_note(files), "text_elements": []}]
         inp += [{"type": "localImage", "path": a.path} for a in attachments if a.is_image]
+        inp += await self._skill_inputs(text)
         if self.turn_id and self.state in ("running", "waiting"):
             try:  # mid-turn messages steer the running turn
                 await self.client.request("turn/steer", {"threadId": self.session_id, "expectedTurnId": self.turn_id, "input": inp})
@@ -384,6 +485,10 @@ class CodexLiveSession(LiveSession):
         fut.set_result(decision)
         return True
 
+    def is_command(self, text: str) -> bool:
+        m = SLASH_RE.fullmatch(text.strip())
+        return bool(m) and m.group(1) in LOCAL_COMMANDS | TURN_COMMANDS  # /init is a prompt
+
     async def close(self) -> None:
         if self._closed:
             return
@@ -407,6 +512,76 @@ class CodexLiveSession(LiveSession):
         if state != self.state:
             self.state = state
             self.emit({"kind": "state", "state": state})
+
+    async def _turn_command(self, name: str, args: str) -> None:
+        """/compact and /review: turns of their own, started by their app-server methods."""
+        if self.turn_id and self.state in ("running", "waiting"):
+            raise RuntimeError(f"/{name} has to wait until the current turn ends (or stop it)")
+        self._set_state("running")
+        try:
+            if name == "compact":
+                await self.client.request("thread/compact/start", {"threadId": self.session_id})
+            else:  # the TUI's review presets, short of a picker: uncommitted changes, or what the arguments ask for
+                target = {"type": "custom", "instructions": args} if args else {"type": "uncommittedChanges"}
+                res = await self.client.request("review/start", {"threadId": self.session_id, "target": target, "delivery": "inline"})
+                self.turn_id = (res.get("turn") or {}).get("id") or self.turn_id
+        except Exception:
+            self._set_state("idle")
+            raise
+        self._turn_started = time.time()
+
+    async def _local_command(self, name: str) -> str:
+        """/status, /mcp and /skills, answered from what Atrium and the app-server know (markdown)."""
+        if name == "status":
+            mode = next((m["label"] for m in PERMISSION_MODES if m["id"] == self.mode), self.mode)
+            effort = self.effort or self._config_effort
+            lines = [
+                f"Model: `{self.model or self._thread_model or 'default'}`" + (f" · reasoning effort {effort}" if effort else ""),
+                f"Permissions: {mode}" + (" (from the next turn)" if self._mode_dirty else ""),
+                f"Directory: `{self.spec.cwd}`",
+                f"Thread: `{self.session_id}`",
+            ]
+            used, mx = self._usage.get("used"), self._usage.get("max")
+            if used and mx:
+                lines.append(f"Context window: {round(100 * used / mx)}% used ({_tokens(used)} / {_tokens(mx)} tokens)")
+            return "\n".join(f"- {x}" for x in lines)
+        if name == "mcp":
+            servers: list[dict[str, Any]] = []
+            cursor = None
+            for _ in range(10):
+                res = await self.client.request("mcpServerStatus/list", {"threadId": self.session_id, "detail": "toolsAndAuthOnly", "cursor": cursor}, timeout=60)
+                servers += res.get("data") or []
+                cursor = res.get("nextCursor")
+                if not cursor:
+                    break
+            if not servers:
+                return "No MCP servers are configured. Add them under `[mcp_servers.<name>]` in `~/.codex/config.toml`."
+            out = []
+            for sv in servers:
+                tools = sorted(sv.get("tools") or {})
+                line = f"- **{sv.get('name')}** · {sv.get('runtimeStatus') or 'not started'}"
+                line += f" · {len(tools)} tool{'s' if len(tools) != 1 else ''}" + (f": {', '.join(f'`{t}`' for t in tools)}" if tools else "")
+                if sv.get("toolsError"):
+                    line += f" · error: {sv['toolsError']}"
+                out.append(line)
+            return "\n".join(out)
+        skills = await self.harness.skills(self.spec.cwd)
+        if not skills:
+            return "No skills found. Codex looks for `SKILL.md` files in `~/.codex/skills`, `~/.agents/skills` and the repository's `.agents/skills`."
+        rows = [f"- **${sk['name']}** — {_skill_summary(sk)}" + (f" ({sk['scope']})" if sk.get("scope") else "") for sk in skills]
+        return "Mention a skill with `$name` in a message to use it.\n\n" + "\n".join(rows)
+
+    async def _skill_inputs(self, text: str) -> list[dict[str, Any]]:
+        """The skills a message mentions ("$name"), as the input items Codex loads them from."""
+        names = set(SKILL_RE.findall(text))
+        if not names:
+            return []
+        try:
+            skills = await self.harness.skills(self.spec.cwd)
+        except Exception as e:
+            log.debug("skills/list failed: %s", e)
+            return []
+        return [{"type": "skill", "name": sk["name"], "path": sk["path"]} for sk in skills if sk.get("name") in names and sk.get("path")]
 
     def _dynamic_tools(self) -> list[dict[str, Any]]:
         out = []
@@ -456,7 +631,8 @@ class CodexLiveSession(LiveSession):
                 self.emit(it)
         elif method == "thread/tokenUsage/updated":
             u = params.get("tokenUsage") or {}
-            self.emit({"kind": "usage", "id": "usage", "used": (u.get("last") or {}).get("totalTokens"), "max": u.get("modelContextWindow")})
+            self._usage = {"used": (u.get("last") or {}).get("totalTokens"), "max": u.get("modelContextWindow")}
+            self.emit({"kind": "usage", "id": "usage", **self._usage})
         elif method == "turn/completed":
             turn = params.get("turn") or {}
             st = turn.get("status")
@@ -580,6 +756,7 @@ class CodexHarness(Harness):
         self._thread_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}  # thread/read, briefly
         self._compaction_cache: dict[str, _CompactionScan] = {}  # rollout path -> what's read of it
         self._compaction_lock = threading.Lock()
+        self._skills_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}  # cwd -> (when, skills/list)
 
     @property
     def client(self) -> AppServerClient:
@@ -618,6 +795,7 @@ class CodexHarness(Harness):
 
     def on_config_saved(self, file_id: str) -> None:
         self._models = None
+        self._skills_cache.clear()
         if self._client and self._client.alive and not self.live_threads:
             asyncio.get_running_loop().create_task(self._client.close())  # restarted with the new config on next use
 
@@ -634,6 +812,25 @@ class CodexHarness(Harness):
             except Exception as e:
                 d["catalog_error"] = str(e)
         return d
+
+    async def skills(self, cwd: str) -> list[dict[str, Any]]:
+        """The enabled skills a thread in ``cwd`` can use (``skills/list``), briefly cached."""
+        hit = self._skills_cache.get(cwd)
+        if hit and time.time() - hit[0] < SKILLS_TTL:
+            return hit[1]
+        res = await self.client.request("skills/list", {"cwds": [cwd]}, timeout=30)
+        skills = [sk for e in res.get("data") or [] for sk in e.get("skills") or [] if sk.get("enabled", True)]
+        self._skills_cache[cwd] = (time.time(), skills)
+        return skills
+
+    async def slash_commands(self, cwd: str, live: LiveSession | None = None) -> list[SlashCommand]:
+        skills: list[dict[str, Any]] = []
+        if self.available()[0]:
+            try:
+                skills = await self.skills(cwd)
+            except Exception as e:
+                log.debug("skills/list failed: %s", e)
+        return COMMANDS + [SlashCommand(sk["name"], _skill_summary(sk), source="skill", prefix="$") for sk in skills if sk.get("name")]
 
     async def _model_list(self) -> list[dict[str, Any]]:
         if self._models and time.time() - self._models[0] < 600:
@@ -860,7 +1057,8 @@ class CodexHarness(Harness):
         turns = await self._turns(session_id)
         at = _turn_of(turns, anchor) if anchor else None
         if at is None and user_index:
-            starts = [i for i, t in enumerate(turns) if any(it.get("type") == "userMessage" for it in t.get("items") or [])]
+            reviews = review_prompts(turns)  # shown as commands, which don't count
+            starts = [i for i, t in enumerate(turns) if i not in reviews and any(it.get("type") == "userMessage" for it in t.get("items") or [])]
             if user_index < len(starts):
                 at = starts[user_index] - 1
         if at is None or at < 0:
@@ -908,7 +1106,9 @@ class CodexHarness(Harness):
         return turns
 
     async def _thread_items(self, session_id: str) -> list[Item]:
-        return [it for turn in await self._turns(session_id) for it in turn_items(turn)]
+        turns = await self._turns(session_id)
+        reviews = review_prompts(turns)
+        return [it for i, turn in enumerate(turns) for it in turn_items(turn, i in reviews)]
 
     async def load_history(self, session_id: str, cwd: str) -> list[Item]:
         items, marks = await self._parts(session_id, cwd)

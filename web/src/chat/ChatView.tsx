@@ -10,6 +10,7 @@ import { Markdown, Spinner } from "../components/ui";
 import { useOpenCompaction } from "../components/Compactions";
 import { BoardToolRow, PermissionCard, ToolRow, isBoardTool, useOpenSubagent } from "./ToolViews";
 import { AttachButton, AttachmentTray, ContextRing, EffortPicker, HarnessChip, MessageAttachments, ModelChip, PendingUpload, PermissionPicker, WorkspaceChip, effortOptions, useAttachments } from "./Composer";
+import { mergeCommands, useAtriumCommands, useSlashCommands, useSlashMenu } from "./SlashMenu";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
 type ResultItem = Extract<Item, { kind: "tool_result" }>;
@@ -106,7 +107,7 @@ function forkPoints(items: Item[]): Map<string, ForkAt> {
   let anchor: string | null = null;
   let n = 0;
   for (const it of items) {
-    if (it.kind === "user") {
+    if (it.kind === "user" && !it.command) {
       if (n > 0) out.set(it.id, { anchor, user_index: n });
       n++;
     } else if ((it.kind === "text" || it.kind === "thinking" || it.kind === "tool") && !("parent" in it && it.parent)) {
@@ -148,9 +149,9 @@ export function Transcript({ blocks, results, running, cwd, forks, onFork }: {
                     <GitFork size={13} />
                   </button>
                 )}
-                <div className="msg-user">
+                <div className={clsx("msg-user", it.command && "command")}>
                   {it.attachments?.length ? <MessageAttachments items={it.attachments} /> : null}
-                  {it.text}
+                  {it.command ? <CommandText text={it.text} /> : it.text}
                 </div>
               </div>
             );
@@ -158,6 +159,12 @@ export function Transcript({ blocks, results, running, cwd, forks, onFork }: {
           case "text":
             return (
               <div className="msg-text" key={b.key}>
+                <Markdown text={it.text} />
+              </div>
+            );
+          case "command_output":
+            return (
+              <div className="msg-output" key={b.key}>
                 <Markdown text={it.text} />
               </div>
             );
@@ -195,6 +202,17 @@ export function Transcript({ blocks, results, running, cwd, forks, onFork }: {
     [blocks, results, running, cwd, forks, onFork],
   );
   return <>{rendered}</>;
+}
+
+/** A slash command as sent: the command, then its arguments. */
+function CommandText({ text }: { text: string }) {
+  const cut = text.search(/\s/);
+  return (
+    <>
+      <span className="cmd-name">{cut < 0 ? text : text.slice(0, cut)}</span>
+      {cut < 0 ? "" : text.slice(cut)}
+    </>
+  );
 }
 
 /** Info line; a subagent's end links to it (it can land turns after its Agent row, which has a link of its own).
@@ -353,9 +371,11 @@ export function ChatView({ pid, sid, cwd, compact, forkable, placeholder, emptyH
   const harness = meta?.harnesses.find((h) => h.id === (harnessId ?? "claude-code")) ?? meta?.harnesses[0];
   const canSend = (!!text.trim() || att.ids.length > 0) && !att.uploading && !sending;
 
-  const send = useCallback(async () => {
-    const t = text.trim();
-    if (!canSend) return;
+  // `override`: a slash command picked in the menu, sent instead of what's typed
+  const send = async (override?: string) => {
+    const t = (override ?? text).trim();
+    if (!(t || att.ids.length) || att.uploading || sending) return;
+    if (forkable && atrium.run(t)) return setText(""); // an agent's chat (not the Git agent's)
     setSending(true);
     stick.current = true;
     try {
@@ -368,14 +388,16 @@ export function ChatView({ pid, sid, cwd, compact, forkable, placeholder, emptyH
       setSending(false);
       inputRef.current?.focus();
     }
-  }, [text, canSend, pid, sid, toast, att]);
+  };
 
   const setEffort = async (effort: string) => {
     try {
       await api.setEffort(pid, sid, effort);
       setSettings((x) => ({ ...x, effort }));
+      return true;
     } catch (e: any) {
       toast(e.message, "error");
+      return false;
     }
   };
 
@@ -407,6 +429,12 @@ export function ChatView({ pid, sid, cwd, compact, forkable, placeholder, emptyH
   const efforts = effortOptions(harness, shownModel || null);
   const baseEffort = defaults.effort || st.effort || harness?.config_effort; // in effect while no effort is picked
   const pendingList = Object.values(st.pending);
+  // slash commands: Atrium's own in an agent's chat, then the harness's
+  const atrium = useAtriumCommands({ pid, sid, harness: harness?.id, cwd, running, efforts, effort: settings.effort || baseEffort || "", setEffort });
+  const skills = harness?.id === "codex";
+  const harnessCommands = useSlashCommands(pid, { sid }, text.startsWith("/") || (skills && text.includes("$")));
+  const commands = useMemo(() => mergeCommands(forkable ? atrium.commands : [], harnessCommands), [forkable, atrium.commands, harnessCommands]);
+  const slash = useSlashMenu({ text, setText, input: inputRef, skills, commands, onRun: (t) => void send(t) });
 
   return (
     <div className={clsx("chat", compact && "compact")}>
@@ -441,16 +469,19 @@ export function ChatView({ pid, sid, cwd, compact, forkable, placeholder, emptyH
       <div className="composer">
         <div className={clsx("composer-box", att.dragging && "dragging")} {...att.dropProps}>
           {att.picker}
+          {slash.menu}
           <AttachmentTray items={att.items} onRemove={att.remove} />
           <textarea
             ref={inputRef}
             className="composer-input"
             rows={1}
-            placeholder={placeholder ?? (running ? (harnessId === "codex" ? "Steer the running turn…" : "Queue a follow-up…") : "Reply…")}
+            placeholder={placeholder ?? (running ? (harnessId === "codex" ? "Steer the running turn…" : "Queue a follow-up…") : "Reply, or / for commands")}
             value={text}
             onChange={(e) => setText(e.target.value)}
+            onSelect={slash.onSelect}
             onPaste={att.onPaste}
             onKeyDown={(e) => {
+              if (slash.onKeyDown(e)) return;
               if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault();
                 void send();
