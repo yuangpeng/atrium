@@ -262,9 +262,13 @@ class Harness(ABC):
         holds chat item ``anchor`` — the last item shown before that message — and all before it."""
         raise NotImplementedError(f"{self.label} sessions can't be forked from an earlier message")
 
-    async def fork_session(self, session_id: str, cwd: str, point: ForkPoint, *, target_cwd: str, title: str) -> str:
+    async def fork_session(self, session_id: str, cwd: str, point: ForkPoint, *, target_cwd: str, title: str, note: str = "") -> str:
         """Copy the conversation up to ``point`` into a new session that works in ``target_cwd``.
-        Returns the new id; the copy is not started — it resumes like any other session."""
+        Returns the new id; the copy is not started — it resumes like any other session.
+
+        ``note`` tells the fork's model where it comes from and where it now works. Atrium also
+        appends it to the system prompt each time the session starts; a harness that doesn't
+        apply a changed system prompt on resume (Codex) must put it into the copy's history."""
         raise NotImplementedError(f"{self.label} sessions can't be forked")
 
     def config_files(self, project_dir: str | None) -> list[Any]:

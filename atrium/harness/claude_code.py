@@ -771,7 +771,8 @@ class ClaudeCodeHarness(Harness):
             raise FileNotFoundError(f"transcript of session {session_id}")
         return await asyncio.to_thread(_fork_point, path, anchor, user_index)
 
-    async def fork_session(self, session_id: str, cwd: str, point: ForkPoint, *, target_cwd: str, title: str) -> str:
+    async def fork_session(self, session_id: str, cwd: str, point: ForkPoint, *, target_cwd: str, title: str, note: str = "") -> str:
+        # ``note`` reaches the model through the system prompt, which Claude Code re-applies on resume
         def fork() -> str:
             try:
                 new_id = sdk_fork_session(session_id, directory=cwd, up_to_message_id=point.cut, title=title).session_id

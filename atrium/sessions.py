@@ -455,7 +455,8 @@ class SessionManager:
             history = _history_snapshots(meta, point)
             if created:
                 files = await asyncio.to_thread(self._carry, history, point, src_cwd, created["path"]) if carry else "committed"
-            new_sid = await harness.fork_session(sid, src_cwd, point, target_cwd=target, title=title)
+            note = _fork_note({"name": src_name, "cwd": src_cwd, "files": files}, target)
+            new_sid = await harness.fork_session(sid, src_cwd, point, target_cwd=target, title=title, note=note)
         except BaseException:
             if created:  # nothing refers to it yet
                 await gitops.run_git(project.path, "worktree", "remove", "--force", created["path"], check=False)

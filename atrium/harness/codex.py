@@ -748,7 +748,7 @@ class CodexHarness(Harness):
         nxt = turns[at + 1] if at + 1 < len(turns) else None
         return ForkPoint(cut=turns[at].get("id"), cut_ts=_epoch(turns[at].get("completedAt")), next_ts=_epoch((nxt or {}).get("startedAt")))
 
-    async def fork_session(self, session_id: str, cwd: str, point: ForkPoint, *, target_cwd: str, title: str) -> str:
+    async def fork_session(self, session_id: str, cwd: str, point: ForkPoint, *, target_cwd: str, title: str, note: str = "") -> str:
         params: dict[str, Any] = {"threadId": session_id, "cwd": target_cwd, "excludeTurns": True}
         if point.cut:
             params["lastTurnId"] = point.cut
@@ -757,6 +757,12 @@ class CodexHarness(Harness):
         tid = thread["id"]
         if thread.get("path"):
             self._paths[tid] = thread["path"]
+        if note:  # thread/resume doesn't show the model changed developerInstructions, so the note goes into the history
+            item = {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": note}]}
+            try:
+                await self.client.request("thread/inject_items", {"threadId": tid, "items": [item]}, timeout=15)
+            except Exception as e:
+                log.warning("couldn't add the fork note to thread %s: %s", tid, e)
         try:  # loaded again (thread/resume) when the fork is first used
             await self.client.request("thread/unsubscribe", {"threadId": tid}, timeout=5)
         except Exception:
