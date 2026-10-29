@@ -1,14 +1,14 @@
 import type { JSX } from "react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowUp, ArrowUpRight, Brain, ChevronRight, GitFork, Info, Sparkle, Square } from "lucide-react";
-import { api, ForkAt, Item, LiveState, SessionSettings } from "../api";
+import { api, ForkAt, Item, LiveState, SessionRow, SessionSettings } from "../api";
 import { socket } from "../ws";
 import { useApp } from "../store";
 import { EMPTY_REPLY, useDrafts } from "../drafts";
 import { clsx, fmtDuration } from "../util";
 import { Markdown, Spinner } from "../components/ui";
 import { BoardToolRow, PermissionCard, ToolRow, isBoardTool, useOpenSubagent } from "./ToolViews";
-import { AttachButton, AttachmentTray, ContextRing, EffortPicker, MessageAttachments, ModelChip, PendingUpload, PermissionPicker, effortOptions, useAttachments } from "./Composer";
+import { AttachButton, AttachmentTray, ContextRing, EffortPicker, HarnessChip, MessageAttachments, ModelChip, PendingUpload, PermissionPicker, WorkspaceChip, effortOptions, useAttachments } from "./Composer";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
 type ResultItem = Extract<Item, { kind: "tool_result" }>;
@@ -217,10 +217,15 @@ function SystemLine({ item }: { item: SystemItem }) {
 
 export function ChatView({ pid, sid, cwd, compact, forkable, placeholder, emptyHint }: { pid: string; sid: string; cwd: string; compact?: boolean; forkable?: boolean; placeholder?: string; emptyHint?: JSX.Element }) {
   const meta = useApp((s) => s.meta);
+  const project = useApp((s) => s.project);
   const toast = useApp((s) => s.toast);
   const setForkRequest = useApp((s) => s.setForkRequest);
   const [st, setSt] = useState<ChatState>(empty);
-  const [harnessId, setHarnessId] = useState<string | null>(null);
+  // the session's row: the store's, else the one loaded with the conversation (the store leaves archived ones out)
+  const listed = useApp((s) => s.sessions.find((x) => x.id === sid));
+  const [loadedRow, setLoadedRow] = useState<SessionRow | null>(null);
+  const row = listed ?? loadedRow;
+  const harnessId = row?.harness ?? null;
   const [settings, setSettings] = useState<SessionSettings>({ model: "", effort: "", mode: "" });
   // what's typed here is the session's draft, kept outside this component (../drafts)
   const draft = useDrafts((s) => s.bySession[sid]) ?? EMPTY_REPLY;
@@ -244,6 +249,7 @@ export function ChatView({ pid, sid, cwd, compact, forkable, placeholder, emptyH
     let ready = false;
     const buffer: Item[] = [];
     setSt(empty());
+    setLoadedRow(null);
     setLoading(true);
     stick.current = true;
     const unsub = socket.subscribe(`session:${sid}`, (msg) => {
@@ -266,7 +272,7 @@ export function ChatView({ pid, sid, cwd, compact, forkable, placeholder, emptyH
           s.state = snap.live ? snap.state : null;
           if (!s.model && snap.settings?.model) s.model = snap.settings.model;
           setSt(s);
-          setHarnessId(snap.session?.harness ?? null);
+          setLoadedRow(snap.session);
           if (snap.settings) setSettings(snap.settings);
           ready = true;
           buffer.length = 0;
@@ -424,7 +430,10 @@ export function ChatView({ pid, sid, cwd, compact, forkable, placeholder, emptyH
           <div className="composer-bar">
             <div className="bar-chips">
             <AttachButton onClick={att.open} />
+            {/* the new-agent page's chips, in its order; harness and workspace can't change any more */}
+            {harness && !compact && (meta?.harnesses.length ?? 0) > 1 && <HarnessChip harness={harness} />}
             {harness && <PermissionPicker harness={harness} value={shownMode} onChange={(m) => void setMode(m)} detached={!st.mode} />}
+            {project && row && !compact && <WorkspaceChip project={project} session={row} />}
             {harness && !compact && <ModelChip harness={harness} model={shownModel} faded={!st.model} />}
             </div>
             <div className="bar-end">

@@ -1,13 +1,14 @@
 // Composer building blocks shared by the chat view and the new-agent page:
 // attachments (paste / drop / pick → uploaded to ~/.atrium/uploads), the icon-only harness / permission-mode
-// pickers, the read-only model chip, the reasoning-effort slider and the context gauge.
+// pickers, the read-only model chip (and a started agent's harness and workspace), the reasoning-effort slider
+// and the context gauge.
 import type { CSSProperties } from "react";
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import type { LucideIcon } from "lucide-react";
-import { Check, ChevronDown, ClipboardList, FilePen, FileText, Hand, Paperclip, RotateCcw, Shield, ShieldAlert, ShieldCheck, X, createLucideIcon } from "lucide-react";
-import { api, Attachment, Harness, Upload } from "../api";
+import { Check, ChevronDown, ClipboardList, FilePen, FileText, FolderGit2, Hand, Paperclip, RotateCcw, Shield, ShieldAlert, ShieldCheck, X, createLucideIcon } from "lucide-react";
+import { api, Attachment, Harness, ProjectInfo, SessionRow, Upload } from "../api";
 import { useApp } from "../store";
-import { clsx } from "../util";
+import { clsx, relTo, shortPath } from "../util";
 import { Popover, Spinner, useTip } from "../components/ui";
 import { HarnessIcon, ModelIcon } from "../components/BrandIcons";
 
@@ -321,7 +322,7 @@ export function ModelChip({ harness, model, faded }: { harness: Harness; model: 
     return () => ro.disconnect();
   }, [name]);
   return (
-    <span ref={ref} className={clsx("chip model-chip", !roomy && "icon-chip", faded && "faded")} aria-label={`Model: ${name}`} {...tipProps}>
+    <span ref={ref} className={clsx("chip model-chip fixed", !roomy && "icon-chip", faded && "faded")} aria-label={`Model: ${name}`} {...tipProps}>
       <ModelIcon model={maker} />
       {roomy && <span>{name}</span>}
       <span ref={full} className="chip model-chip measure" aria-hidden>
@@ -402,6 +403,52 @@ export function HarnessPicker({ harnesses, value, onChange }: { harnesses: Harne
         ))
       }
     </Popover>
+  );
+}
+
+/** A started agent's harness, read-only: what the picker showed when it started. */
+export function HarnessChip({ harness }: { harness: Harness }) {
+  const [tipProps, tip] = useTip(
+    <>
+      <div>
+        <span className="k">Harness:</span> {harness.label}
+      </div>
+      <div className="k">set when the agent started</div>
+    </>,
+  );
+  return (
+    <span className="chip icon-chip fixed" aria-label={`Harness: ${harness.label}`} {...tipProps}>
+      <HarnessIcon id={harness.id} />
+      {tip}
+    </span>
+  );
+}
+
+/** Where a started agent works, read-only, labelled like the new-agent page's picker: the branch, or ⎇ a worktree's. */
+export function WorkspaceChip({ project, session }: { project: ProjectInfo; session: SessionRow }) {
+  const worktree = project.is_git && session.worktree;
+  const branch = session.branch || project.worktrees.find((w) => w.main)?.branch || "HEAD";
+  const label = !project.is_git ? project.name : worktree ? `⎇ ${session.branch ?? relTo(project.path, session.cwd)}` : branch;
+  const [tipProps, tip] = useTip(
+    <>
+      <div>
+        <span className="k">Works in:</span> {worktree ? "Worktree" : "Project directory"}
+      </div>
+      {worktree ? (
+        <div className="k mono">{relTo(project.path, session.cwd)}</div>
+      ) : project.is_git ? (
+        <div className="k">{branch} · shares the working tree</div>
+      ) : (
+        <div className="k mono">{shortPath(project.path)}</div>
+      )}
+      <div className="k">set when the agent started</div>
+    </>,
+  );
+  return (
+    <span className="chip fixed" aria-label={`Works in: ${label}`} {...tipProps}>
+      <FolderGit2 size={13} /> <span className="ellipsis" style={{ maxWidth: 160 }}>{label}</span>
+      {tip}
+    </span>
   );
 }
 

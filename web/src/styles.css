@@ -364,9 +364,11 @@ a { color: var(--accent-strong); }
 .composer-bar .chip.open { background: var(--active); }
 .composer-bar .chip.danger, .pick-item.danger { --danger: color-mix(in srgb, var(--err) 60%, var(--warn)); color: var(--danger); }
 .composer-bar .chip.danger { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
-/* the model is shown, not picked: no border; the hidden copy measures the width its name needs */
-.composer-bar .chip.model-chip { border-color: transparent; padding: 0 6px; color: var(--muted); cursor: default; }
-.composer-bar .chip.model-chip:hover { background: transparent; }
+/* shown, not picked (the model; a started agent's harness and workspace): no border */
+.composer-bar .chip.fixed { border-color: transparent; color: var(--muted); cursor: default; }
+.composer-bar .chip.fixed:hover { background: transparent; }
+/* the hidden copy measures the width the model's name needs */
+.composer-bar .chip.model-chip { padding: 0 6px; }
 .composer-bar .chip.measure { position: absolute; left: 0; top: 0; visibility: hidden; pointer-events: none; }
 /* reasoning effort: a pill opening a slider (after Codex's) */
 .composer-bar .chip.effort-chip { border-color: transparent; background: var(--surface-2); border-radius: 99px; padding: 0 7px 0 10px; gap: 3px; }
