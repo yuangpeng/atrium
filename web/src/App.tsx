@@ -1,13 +1,14 @@
 import type { JSX } from "react";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { Archive, ArchiveRestore, ArrowLeft, ChevronRight, FileDiff, Files, FolderOpen, GitBranch, LayoutDashboard, MessageSquare, PanelRightClose, Plug, Unplug } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowLeft, ChevronRight, FileDiff, Files, FolderOpen, GitBranch, GitFork, LayoutDashboard, MessageSquare, PanelRightClose, Plug, Unplug } from "lucide-react";
 import { api, SessionRow } from "./api";
 import { Panel, useApp } from "./store";
 import { clsx, displayName } from "./util";
 import { Rail, liveLabel, statusClass } from "./components/Rail";
 import { Home } from "./components/Home";
 import { ProjectPicker } from "./components/Dialogs";
+import { ForkDialog } from "./components/ForkDialog";
 import { useFullscreenElement } from "./components/ui";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { ChatView } from "./chat/ChatView";
@@ -38,7 +39,7 @@ function CloseChat() {
 }
 
 function SessionHeader() {
-  const { project, sessions, sessionId, toast, refreshSessions, reviewChanges, selectSession } = useApp();
+  const { project, sessions, sessionId, toast, refreshSessions, reviewChanges, selectSession, setForkRequest } = useApp();
   const s = sessions.find((x) => x.id === sessionId);
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState("");
@@ -49,6 +50,7 @@ function SessionHeader() {
     await api.patchSession(project.id, sessionId, { name: name.trim() }).catch((e) => toast(e.message, "error"));
     void refreshSessions();
   };
+  const busy = s?.live === "running" || s?.live === "waiting" || s?.live === "starting";
   return (
     <div className="topbar bordered">
       <div className="t-name">
@@ -66,8 +68,27 @@ function SessionHeader() {
             ⎇ {s.branch}
           </span>
         )}
+        {s?.forked_from && (
+          <button
+            className="pill fork-pill"
+            disabled={!s.forked_from.exists}
+            title={`Forked from “${s.forked_from.name || "another agent"}”${s.forked_from.exists ? " — open it" : " (deleted since)"}`}
+            onClick={() => selectSession(s.forked_from!.session)}
+          >
+            <GitFork size={11} />
+            <span className="hide-narrow ellipsis">{s.forked_from.name || "fork"}</span>
+          </button>
+        )}
       </div>
       <div className="actions">
+        <button
+          className="icon-btn"
+          disabled={busy}
+          onClick={() => setForkRequest({ sid: sessionId, at: null })}
+          title={busy ? "Fork — wait for the turn to end (or stop it); or fork from an earlier message" : "Fork this conversation (try another idea in parallel)"}
+        >
+          <GitFork size={15} />
+        </button>
         <button className="icon-btn" onClick={() => reviewChanges(sessionId)} title="Review this agent's changes">
           <FileDiff size={15} />
         </button>
@@ -212,7 +233,7 @@ function ChatColumn() {
       ) : sessionId ? (
         <>
           <SessionHeader />
-          <ChatView key={sessionId} pid={project.id} sid={sessionId} cwd={current?.cwd ?? project.path} />
+          <ChatView key={sessionId} pid={project.id} sid={sessionId} cwd={current?.cwd ?? project.path} forkable />
         </>
       ) : (
         <>
@@ -282,6 +303,7 @@ export function App() {
       <Rail />
       {pickerOpen && <ProjectPicker />}
       {settingsOpen && <SettingsDialog />}
+      <ForkDialog />
       <Toasts />
     </div>
   );

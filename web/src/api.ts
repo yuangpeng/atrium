@@ -142,7 +142,20 @@ export interface SessionRow {
   created_by: "atrium" | "external";
   effort: string;
   subagents: SubagentRow[]; // oldest first, nested ones included
+  forked_from: { session: string; name: string | null; exists: boolean } | null;
 }
+
+/** Fork before a user message: keep everything up to the turn holding chat item `anchor`
+ *  (the last harness item shown before it); `user_index` is the message's position among user messages. */
+export interface ForkAt {
+  anchor: string | null;
+  user_index: number;
+}
+
+export type ForkWorkspace = { kind: "same" } | { kind: "worktree"; path: string } | { kind: "new"; branch: string };
+
+/** What a forked worktree's files are: as at the fork point, the source's current files, or just the commit. */
+export type ForkFiles = "fork-point" | "current" | "committed";
 
 export type Item =
   | { kind: "user"; id: string; text: string; ts?: number; attachments?: Attachment[] }
@@ -433,6 +446,16 @@ export const api = {
   patchSession: (pid: string, sid: string, body: { name?: string; archived?: boolean }) =>
     req("PATCH", `/api/p/${pid}/sessions/${sid}`, body),
   deleteSession: (pid: string, sid: string) => req<{ ok: boolean; backup: string | null }>("DELETE", `/api/p/${pid}/sessions/${sid}`),
+  forkSession: (
+    pid: string,
+    sid: string,
+    body: { at: ForkAt | null; workspace: ForkWorkspace; carry: boolean; name: string; prompt: string; archive_source: boolean },
+  ) =>
+    req<{ id: string; cwd: string; files: ForkFiles | null; worktree: { path: string; branch: string } | null; error?: string }>(
+      "POST",
+      `/api/p/${pid}/sessions/${sid}/fork`,
+      body,
+    ),
   send: (pid: string, sid: string, text: string, attachments: string[] = []) =>
     req("POST", `/api/p/${pid}/sessions/${sid}/send`, { text, attachments }),
   attach: (pid: string, sid: string) => req("POST", `/api/p/${pid}/sessions/${sid}/attach`, {}),

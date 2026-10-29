@@ -75,6 +75,16 @@ A project-centric workbench for coding agents — Claude Code and Codex side by 
    (name, task, attachments, workspace / harness / mode / model / effort) in the browser's
    localStorage: open another agent, hide the chat or reload, and it's still there until the agent
    starts; a dot on the rail's new-agent button says one is waiting.
+7. **Fork a conversation** to try several ideas in parallel — from the latest point (⑂ in the chat
+   header) or from before any of your messages (hover it; the message is offered again, to edit).
+   The fork is a new agent that remembers the conversation up to there and works in a **new
+   worktree** (a branch from the original's commit, with the files of that moment — taken from the
+   turn snapshots, uncommitted changes included), an existing worktree, or the same directory.
+   This is also how a conversation changes worktree: a running agent stays bound to its directory
+   (its process, its transcript, the paths in its history, the uncommitted edits it made there), so
+   it is copied rather than moved — tick *Archive the original* to move it. Forks are native to both
+   harnesses (Claude: `fork_session`, the transcript moved under the new directory; Codex:
+   `thread/fork`); the fork's Changes and the Tracker only count what happened after the fork.
 
 ## Quick start
 
@@ -140,8 +150,8 @@ atrium/
   harness/codex.py       Codex via `codex app-server`: threads, approvals, dynamic tools, history,
                          rollout digests and patches
   harness/codex_rpc.py   the shared JSON-RPC client for `codex app-server`
-  sessions.py            live session manager (start/resume, streaming, permissions, idle reaping,
-                         turn snapshots)
+  sessions.py            live session manager (start/resume, forks, streaming, permissions, idle
+                         reaping, turn snapshots)
   notify.py              desktop notifications (approval requests, finished turns) unless watched
   config.py, configfiles.py  Atrium settings; the raw config-file editor (validate, conflict, backup)
   snapshots.py           turn snapshots as git tree objects
@@ -170,6 +180,8 @@ Implement `atrium.harness.base.Harness` and register it in `atrium/harness/__ini
   transcript fallback for diff review;
 * `create_live(spec, emit)` → a `LiveSession` (send with attachments / interrupt / set mode, model,
   effort / resolve permission);
+* `fork_point` / `fork_session` (optional) — cut a conversation before a user message and copy it
+  into a new session working in another directory;
 * `config_files(project_dir)` — the harness's own config files for the Settings editor;
 * `complete_json` — one-shot structured completion (used by the tracker when it is set to this harness).
 

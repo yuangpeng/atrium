@@ -1,7 +1,7 @@
 import type { JSX } from "react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, ArrowUpRight, Brain, ChevronRight, Info, Sparkle, Square } from "lucide-react";
-import { api, Item, LiveState, SessionSettings } from "../api";
+import { ArrowUp, ArrowUpRight, Brain, ChevronRight, GitFork, Info, Sparkle, Square } from "lucide-react";
+import { api, ForkAt, Item, LiveState, SessionSettings } from "../api";
 import { socket } from "../ws";
 import { useApp } from "../store";
 import { clsx, fmtDuration } from "../util";
@@ -92,7 +92,32 @@ export function toBlocks(items: Item[]): Block[] {
   return out;
 }
 
-export function Transcript({ blocks, results, running, cwd }: { blocks: Block[]; results: Record<string, ResultItem>; running: boolean; cwd: string }) {
+/** Where "fork from here" cuts before each user message (but the first): after the last item the
+ *  harness produced before it — its id points into the transcript. Subagent steps don't count. */
+function forkPoints(items: Item[]): Map<string, ForkAt> {
+  const out = new Map<string, ForkAt>();
+  let anchor: string | null = null;
+  let n = 0;
+  for (const it of items) {
+    if (it.kind === "user") {
+      if (n > 0) out.set(it.id, { anchor, user_index: n });
+      n++;
+    } else if ((it.kind === "text" || it.kind === "thinking" || it.kind === "tool") && !("parent" in it && it.parent)) {
+      anchor = it.id;
+    }
+  }
+  return out;
+}
+
+/** The conversation; with `forks` and `onFork`, user messages get a "fork from here" button. */
+export function Transcript({ blocks, results, running, cwd, forks, onFork }: {
+  blocks: Block[];
+  results: Record<string, ResultItem>;
+  running: boolean;
+  cwd: string;
+  forks?: Map<string, ForkAt> | null;
+  onFork?: (at: ForkAt, text: string) => void;
+}) {
   const rendered = useMemo(
     () =>
       blocks.map((b) => {
@@ -107,13 +132,22 @@ export function Transcript({ blocks, results, running, cwd }: { blocks: Block[];
         if (b.type === "board") return <BoardToolRow key={b.key} tool={b.tool} />;
         const it = b.item;
         switch (it.kind) {
-          case "user":
+          case "user": {
+            const at = forks?.get(it.id);
             return (
-              <div className="msg-user" key={b.key}>
-                {it.attachments?.length ? <MessageAttachments items={it.attachments} /> : null}
-                {it.text}
+              <div className="msg-user-row" key={b.key}>
+                {at && onFork && (
+                  <button className="icon-btn sm msg-fork" title="Fork from here: a new agent that remembers everything before this message" onClick={() => onFork(at, it.text)}>
+                    <GitFork size={13} />
+                  </button>
+                )}
+                <div className="msg-user">
+                  {it.attachments?.length ? <MessageAttachments items={it.attachments} /> : null}
+                  {it.text}
+                </div>
               </div>
             );
+          }
           case "text":
             return (
               <div className="msg-text" key={b.key}>
@@ -151,7 +185,7 @@ export function Transcript({ blocks, results, running, cwd }: { blocks: Block[];
             return null;
         }
       }),
-    [blocks, results, running, cwd],
+    [blocks, results, running, cwd, forks, onFork],
   );
   return <>{rendered}</>;
 }
@@ -174,9 +208,10 @@ function SystemLine({ item }: { item: SystemItem }) {
   );
 }
 
-export function ChatView({ pid, sid, cwd, compact, placeholder, emptyHint }: { pid: string; sid: string; cwd: string; compact?: boolean; placeholder?: string; emptyHint?: JSX.Element }) {
+export function ChatView({ pid, sid, cwd, compact, forkable, placeholder, emptyHint }: { pid: string; sid: string; cwd: string; compact?: boolean; forkable?: boolean; placeholder?: string; emptyHint?: JSX.Element }) {
   const meta = useApp((s) => s.meta);
   const toast = useApp((s) => s.toast);
+  const setForkRequest = useApp((s) => s.setForkRequest);
   const [st, setSt] = useState<ChatState>(empty);
   const [harnessId, setHarnessId] = useState<string | null>(null);
   const [settings, setSettings] = useState<SessionSettings>({ model: "", effort: "", mode: "" });
@@ -255,6 +290,8 @@ export function ChatView({ pid, sid, cwd, compact, placeholder, emptyHint }: { p
 
   const running = st.state === "running" || st.state === "starting" || st.state === "waiting";
   const blocks = useMemo(() => toBlocks(st.items), [st.items]);
+  const forks = useMemo(() => (forkable ? forkPoints(st.items) : null), [st.items, forkable]);
+  const onFork = useCallback((at: ForkAt, text: string) => setForkRequest({ sid, at, text }), [sid, setForkRequest]);
   const harness = meta?.harnesses.find((h) => h.id === (harnessId ?? "claude-code")) ?? meta?.harnesses[0];
   const { efforts, fallback } = effortOptions(harness, settings.model || null);
   const canSend = (!!text.trim() || att.ids.length > 0) && !att.uploading && !sending;
@@ -335,7 +372,7 @@ export function ChatView({ pid, sid, cwd, compact, placeholder, emptyHint }: { p
             </div>
           )}
           {!loading && blocks.length === 0 && emptyHint}
-          <Transcript blocks={blocks} results={st.results} running={running} cwd={cwd} />
+          <Transcript blocks={blocks} results={st.results} running={running} cwd={cwd} forks={forks} onFork={onFork} />
           {st.streaming && (
             <div className="msg-text stream-cursor">
               <Markdown text={st.streaming} />

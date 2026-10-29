@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import config
-from .base import Attachment, Emit, FileEdit, Harness, Item, LiveSession, LiveSpec, SessionSummary, SubagentSummary, ToolSpec
+from .base import Attachment, Emit, FileEdit, ForkPoint, Harness, Item, LiveSession, LiveSpec, SessionSummary, SubagentSummary, ToolSpec
 from .codex_rpc import AppServerClient, RpcError
 from .util import attachment_note, clip, hhmm, parse_json_loose, short, split_attachment_note, strict_schema, upload_url
 
@@ -719,7 +719,12 @@ class CodexHarness(Harness):
         return cwd
 
     async def delete_session(self, session_id: str, cwd: str) -> None:
-        await self.client.request("thread/delete", {"threadId": session_id}, timeout=30)
+        try:
+            await self.client.request("thread/delete", {"threadId": session_id}, timeout=30)
+        except RpcError as e:
+            if "forked history" in str(e):  # a fork reads the start of its history from this thread's rollout
+                raise ValueError("Forks of this conversation still read its history: delete them first, or archive this one instead") from e
+            raise
         self._paths.pop(session_id, None)
 
     async def rename_session(self, session_id: str, title: str, cwd: str) -> None:
@@ -728,21 +733,54 @@ class CodexHarness(Harness):
         except Exception as e:
             log.debug("thread/name/set(%s) failed: %s", session_id, e)
 
+    # ---- forks -------------------------------------------------------------
+    async def fork_point(self, session_id: str, cwd: str, anchor: str | None, user_index: int | None) -> ForkPoint:
+        turns = await self._turns(session_id)
+        at = _turn_of(turns, anchor) if anchor else None
+        if at is None and user_index:
+            starts = [i for i, t in enumerate(turns) if any(it.get("type") == "userMessage" for it in t.get("items") or [])]
+            if user_index < len(starts):
+                at = starts[user_index] - 1
+        if at is None or at < 0:
+            raise ValueError("Couldn't find that point of the conversation in the thread")
+        if turns[at].get("status") == "inProgress":
+            raise ValueError("That turn is still running")
+        nxt = turns[at + 1] if at + 1 < len(turns) else None
+        return ForkPoint(cut=turns[at].get("id"), cut_ts=_epoch(turns[at].get("completedAt")), next_ts=_epoch((nxt or {}).get("startedAt")))
+
+    async def fork_session(self, session_id: str, cwd: str, point: ForkPoint, *, target_cwd: str, title: str) -> str:
+        params: dict[str, Any] = {"threadId": session_id, "cwd": target_cwd, "excludeTurns": True}
+        if point.cut:
+            params["lastTurnId"] = point.cut
+        res = await self.client.request("thread/fork", params, timeout=60)
+        thread = res.get("thread") or {}
+        tid = thread["id"]
+        if thread.get("path"):
+            self._paths[tid] = thread["path"]
+        try:  # loaded again (thread/resume) when the fork is first used
+            await self.client.request("thread/unsubscribe", {"threadId": tid}, timeout=5)
+        except Exception:
+            pass
+        await self.rename_session(tid, title, target_cwd)
+        return tid
+
     # ---- content -----------------------------------------------------------
-    async def load_history(self, session_id: str, cwd: str) -> list[Item]:
-        items: list[Item] = []
+    async def _turns(self, session_id: str) -> list[dict[str, Any]]:
+        turns: list[dict[str, Any]] = []
         cursor = None
         for _ in range(100):
             params: dict[str, Any] = {"threadId": session_id, "itemsView": "full", "sortDirection": "asc", "limit": 50}
             if cursor:
                 params["cursor"] = cursor
             res = await self.client.request("thread/turns/list", params, timeout=60)
-            for turn in res.get("data") or []:
-                items += turn_items(turn)
+            turns += res.get("data") or []
             cursor = res.get("nextCursor")
             if not cursor:
                 break
-        return items
+        return turns
+
+    async def load_history(self, session_id: str, cwd: str) -> list[Item]:
+        return [it for turn in await self._turns(session_id) for it in turn_items(turn)]
 
     def digest_lines(self, lines: list[str]) -> list[str]:
         out: list[str] = []
@@ -873,6 +911,24 @@ def _subagent_summary(t: dict[str, Any], depth: int) -> SubagentSummary:
         model=t.get("model"),
         depth=int(spawn.get("depth") or depth),
     )
+
+
+def _epoch(v: Any) -> float | None:
+    try:
+        return float(v) if v else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _turn_of(turns: list[dict[str, Any]], anchor: str) -> int | None:
+    """Index of the turn holding chat item ``anchor``: a thread item id, or one of the per-turn ids
+    Atrium makes up (``result-<turn>``, ``turn-<turn>``, ``plan-<turn>``)."""
+    for i, t in enumerate(turns):
+        if anchor in (f"result-{t.get('id')}", f"turn-{t.get('id')}", f"plan-{t.get('id')}"):
+            return i
+        if any(it.get("id") == anchor for it in t.get("items") or []):
+            return i
+    return None
 
 
 def _digest_item(it: dict[str, Any]) -> list[str]:

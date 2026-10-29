@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { api, Meta, Project, ProjectInfo, SessionRow } from "./api";
+import { api, ForkAt, Meta, Project, ProjectInfo, SessionRow } from "./api";
 import { socket } from "./ws";
 import { throttle } from "./util";
 
@@ -13,6 +13,13 @@ export interface FileTarget {
   column?: number;
   external?: boolean;
   content?: string;
+}
+
+/** The fork dialog: fork session `sid` from the latest point (`at` null) or before a user message. */
+export interface ForkRequest {
+  sid: string;
+  at: ForkAt | null;
+  text?: string; // that message, offered as the fork's first message
 }
 
 interface Toast {
@@ -35,6 +42,7 @@ interface AppState {
   showArchived: boolean;
   pickerOpen: boolean;
   settingsOpen: boolean;
+  forkRequest: ForkRequest | null;
   // cross-panel requests / change counters
   fileRequest: ({ root?: string; path: string; nonce: number } & FileTarget) | null;
   changesSession: string | null;
@@ -61,6 +69,7 @@ interface AppState {
   setShowArchived: (v: boolean) => void;
   setPickerOpen: (v: boolean) => void;
   setSettingsOpen: (v: boolean) => void;
+  setForkRequest: (r: ForkRequest | null) => void;
   openFile: (path: string, root?: string, target?: FileTarget) => void;
   reviewChanges: (sid: string | null) => void;
   toast: (text: string, kind?: Toast["kind"]) => void;
@@ -104,6 +113,7 @@ export const useApp = create<AppState>((set, get) => {
     showArchived: false,
     pickerOpen: false,
     settingsOpen: false,
+    forkRequest: null,
     fileRequest: null,
     changesSession: null,
     boardVersion: 0,
@@ -153,7 +163,7 @@ export const useApp = create<AppState>((set, get) => {
       }
       const project = await api.project(pid);
       localStorage.setItem("atrium.project", pid);
-      set({ project, sessions: [], sessionId: null, subagentId: null, changesSession: null, fileRequest: null });
+      set({ project, sessions: [], sessionId: null, subagentId: null, changesSession: null, fileRequest: null, forkRequest: null });
       syncUrl(pid, null);
       unsubProject = socket.subscribe(`project:${pid}`, (msg) => {
         switch (msg.type) {
@@ -242,6 +252,7 @@ export const useApp = create<AppState>((set, get) => {
     },
     setPickerOpen: (v) => set({ pickerOpen: v }),
     setSettingsOpen: (v) => set({ settingsOpen: v }),
+    setForkRequest: (r) => set({ forkRequest: r }),
     openFile: (path, root, target) => {
       set({ fileRequest: { path, root, ...target, nonce: Date.now() } });
       get().setPanel("files");

@@ -138,6 +138,20 @@ class Attachment:
 
 
 @dataclass
+class ForkPoint:
+    """Where a fork cuts a conversation: everything up to ``cut`` is kept.
+
+    ``cut`` is harness-specific (Claude: the last kept transcript entry; Codex: the last kept
+    turn); None keeps the whole conversation. The timestamps (epoch seconds) bracket the moment
+    of the fork, to find the turn snapshot with the files as they were then.
+    """
+
+    cut: str | None = None
+    cut_ts: float | None = None  # when the kept part ended
+    next_ts: float | None = None  # when the first dropped message was sent (None: nothing dropped)
+
+
+@dataclass
 class LiveSpec:
     session_id: str | None  # None = new session, id assigned by the harness
     resume: bool
@@ -242,6 +256,16 @@ class Harness(ABC):
     async def delete_session(self, session_id: str, cwd: str) -> None:
         """Remove the session from the harness's own store (so its CLI no longer lists it either)."""
         raise NotImplementedError(f"{self.label} sessions can't be deleted from Atrium")
+
+    async def fork_point(self, session_id: str, cwd: str, anchor: str | None, user_index: int | None) -> ForkPoint:
+        """Resolve "fork before the ``user_index``-th user message" (0-based): keep the turn that
+        holds chat item ``anchor`` — the last item shown before that message — and all before it."""
+        raise NotImplementedError(f"{self.label} sessions can't be forked from an earlier message")
+
+    async def fork_session(self, session_id: str, cwd: str, point: ForkPoint, *, target_cwd: str, title: str) -> str:
+        """Copy the conversation up to ``point`` into a new session that works in ``target_cwd``.
+        Returns the new id; the copy is not started — it resumes like any other session."""
+        raise NotImplementedError(f"{self.label} sessions can't be forked")
 
     def config_files(self, project_dir: str | None) -> list[Any]:
         """The harness's own settings files (``configfiles.ConfigFile``), edited raw in the UI."""

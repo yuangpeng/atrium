@@ -77,6 +77,7 @@ class Tracker:
         self._turn_due: float | None = None
         self.running = False
         self._edits_cache: dict[str, tuple[tuple[int, int], int]] = {}  # transcript -> ((size, snapshots), files_changed)
+        self._skip: dict[str, int] = {}  # transcript -> offset to start from (forks: the copied history)
         self.cwd = str(RUNTIME_DIR / "tracker")
         os.makedirs(self.cwd, exist_ok=True)
 
@@ -98,6 +99,17 @@ class Tracker:
         delay = float(config.get("tracker.after_turn_seconds") or 45)
         self._turn_due = time.time() + delay
         self._wake.set()
+
+    def skip_existing(self, transcript: str) -> None:
+        """Treat what a transcript holds now as already tracked (a fork's copy of its source)."""
+        try:
+            size = os.path.getsize(transcript)
+        except OSError:
+            return
+        self._skip[transcript] = size  # kept in memory too: a run in flight saves offsets without it
+        st = self.project.tracker_state()
+        st.setdefault("offsets", {})[transcript] = size
+        self.project.save_tracker_state(st)
 
     @staticmethod
     def _harness() -> Any:
@@ -219,6 +231,9 @@ class Tracker:
         project = self.project
         state = project.tracker_state()
         offsets: dict[str, int] = dict(state.get("offsets", {}))
+        for path, off in self._skip.items():
+            offsets.setdefault(path, off)
+        self._skip.clear()
         sessions = [s for s in await self.sessions.list_sessions(project) if s["role"] == "worker"]
         board = project.board
 

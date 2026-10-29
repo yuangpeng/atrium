@@ -11,14 +11,14 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable
 
-from . import snapshots
-from .board.prompts import GIT_AGENT_APPEND, SESSION_AGENT_APPEND
+from . import gitops, snapshots
+from .board.prompts import FORK_FILES, FORK_MOVED_APPEND, FORK_SAME_DIR_APPEND, GIT_AGENT_APPEND, SESSION_AGENT_APPEND
 from .board.tools import BOARD_SERVER, board_toolset
 from .config import UPLOADS_DIR, config
 from .events import hub
 from .gitagent import GIT_AGENT_ALLOWED_TOOLS, GIT_SERVER, git_toolset
 from .harness import all_harnesses, get_harness
-from .harness.base import Attachment, Item, LiveSession, LiveSpec, SessionSummary, SubagentSummary
+from .harness.base import Attachment, ForkPoint, Item, LiveSession, LiveSpec, SessionSummary, SubagentSummary
 from .harness.util import upload_url
 from .mcp.web import WEB_SERVER, web_toolset
 from .notify import notifier
@@ -118,6 +118,9 @@ class SessionManager:
         else:
             toolsets[BOARD_SERVER] = board_toolset(project, lambda: sid_box[0])
             append = SESSION_AGENT_APPEND.format(name=name, project=project.name, path=project.path, cwd=cwd)
+            fork = project.session_meta(sid).get("forked_from") if sid else None
+            if fork:
+                append += "\n\n" + _fork_note(fork, cwd)
         modes = [m["id"] for m in get_harness(harness_id).permission_modes]
         default_mode = ("read-only" if "read-only" in modes else "default") if role == "git" else hdef.get("permission_mode")
         mode = mode or default_mode or (modes[0] if modes else "default")
@@ -271,6 +274,9 @@ class SessionManager:
             if h and h.alive:
                 updated = max(updated, h.last_activity)
             real = os.path.realpath(cwd) if cwd else ""
+            fork = m.get("forked_from")
+            if fork:  # the copied transcript starts with the source's timestamps
+                created = m.get("created_at") or created
             return {
                 "id": sid,
                 "harness": harness,
@@ -292,6 +298,7 @@ class SessionManager:
                 "created_by": m.get("created_by", "external"),
                 "effort": (h.effort if h else None) or m.get("effort") or "",
                 "transcript": transcript,
+                "forked_from": {"session": fork.get("session"), "name": fork.get("name")} if fork else None,
             }
 
         for s in summaries:
@@ -299,7 +306,17 @@ class SessionManager:
             out.append(row(s.id, s.harness, s.title, s.cwd or project.path, s.updated_at, s.created_at, s.git_branch, s.first_prompt, s.transcript))
         for sid, h in self.live.items():
             if h.project.id == project.id and sid not in seen:
+                seen.add(sid)
                 out.append(row(sid, h.harness_id, h.name, h.cwd, h.last_activity, h.started_at, None, None, None))
+        for sid, m in meta.items():  # forks the harness doesn't list yet (Codex: until their first turn)
+            fork = m.get("forked_from")
+            if fork and sid not in seen and m.get("cwd"):
+                title = m.get("name") or f"{fork.get('name') or 'Agent'} (fork)"
+                out.append(row(sid, m.get("harness") or "claude-code", title, m["cwd"], m.get("forked_at") or 0, m.get("created_at"), None, None, None))
+        ids = {r["id"] for r in out}
+        for r in out:
+            if r["forked_from"]:
+                r["forked_from"]["exists"] = r["forked_from"]["session"] in ids  # the original may have been deleted since
         if not include_archived:
             out = [r for r in out if not r["archived"]]
         roots = [project.path] + [w["path"] for w in wts if w["path"] != project.path and not w.get("bare")]
@@ -391,6 +408,109 @@ class SessionManager:
             await self.send(project, sid, prompt or "", attachments)
         return sid
 
+    async def fork(self, project: Project, sid: str, *, at: dict[str, Any] | None = None, workspace: dict[str, Any] | None = None,
+                   carry: bool = True, name: str = "", prompt: str | None = None, attachments: list[Attachment] | None = None,
+                   archive_source: bool = False) -> dict[str, Any]:
+        """Copy a conversation into a new session — in the same directory or in a worktree.
+
+        ``at`` = {anchor, user_index}: fork before that user message (``Harness.fork_point``); None
+        keeps the whole conversation. ``workspace``: {"kind": "same"} (default), {"kind":
+        "worktree", "path"} or {"kind": "new", "branch"} — a new worktree branches from the
+        source's commit and, with ``carry``, gets the source's files as they were at the fork point.
+        """
+        src_cwd, harness_id = await self.session_info(project, sid)
+        harness = get_harness(harness_id)
+        h = self.handle(sid)
+        point = ForkPoint()
+        if at:
+            point = await harness.fork_point(sid, src_cwd, at.get("anchor") or None, int(at.get("user_index") or 0) or None)
+        if point.next_ts is None and h and h.state in ("starting", "running", "waiting"):  # the kept part ends with the turn in progress
+            raise ValueError("The agent is still working on that turn: wait for it to end (or stop it), or fork from an earlier message")
+        meta = project.session_meta(sid)
+        summary = None if meta.get("name") else await self.find_summary(project, sid)
+        src_name = meta.get("name") or (summary.title if summary else None) or "Agent"
+        name = name.strip()
+        title = name or f"{src_name} (fork)"  # unnamed forks keep it until the Tracker names them
+
+        target, created, files = src_cwd, None, None
+        ws = workspace or {}
+        kind = ws.get("kind") or "same"
+        if kind != "same":
+            src_root = gitops.repo_root(src_cwd)
+            if not src_root:
+                raise ValueError("Forking into a worktree needs a git repository")
+            if kind == "new":
+                branch = str(ws.get("branch") or "").strip()
+                if not branch:
+                    raise ValueError("Give the new worktree a branch name")
+                head = (await gitops.run_git(src_root, "rev-parse", "HEAD")).strip()
+                created = await gitops.add_worktree(project.path, branch, base=head)
+                root = created["path"]
+            else:
+                root = os.path.realpath(str(ws.get("path") or ""))
+            sub = os.path.join(root, os.path.relpath(src_cwd, src_root))  # the same subdirectory, if the agent works in one
+            target = os.path.realpath(sub if os.path.isdir(sub) else root)
+        try:
+            project.resolve(".", root=target)  # must belong to the project
+            history = _history_snapshots(meta, point)
+            if created:
+                files = await asyncio.to_thread(self._carry, history, point, src_cwd, created["path"]) if carry else "committed"
+            new_sid = await harness.fork_session(sid, src_cwd, point, target_cwd=target, title=title)
+        except BaseException:
+            if created:  # nothing refers to it yet
+                await gitops.run_git(project.path, "worktree", "remove", "--force", created["path"], check=False)
+                await gitops.run_git(project.path, "branch", "-D", created["branch"], check=False)
+            raise
+
+        now = time.time()
+        project.set_session_meta(
+            new_sid, name=name or None, name_source="user" if name else None, harness=harness_id, role="worker",
+            created_by="atrium", cwd=target, created_at=now, forked_at=now,
+            model=(h.model if h else None) or meta.get("model") or None, effort=(h.effort if h else None) or meta.get("effort") or None,
+            mode=(h.mode if h else None) or meta.get("mode") or None,
+            forked_from={"session": sid, "name": src_name, "cwd": src_cwd, "files": files, "user_index": (at or {}).get("user_index")},
+            fork_snapshots=history or None,
+        )
+        branch = _branch_of(target)
+        starting = bool(prompt or attachments)
+        project.board.update_agent(
+            new_sid, name=title, status="working" if starting else "idle", progress=0, doing="Starting…" if starting else "", source="atrium",
+            stats={"branch": branch, "worktree": target != project.path, "harness": harness_id, "live": None, "forked_from": sid},
+        )
+        project.board.log(new_sid, f"Forked from {src_name}" + (f" into worktree {branch}" if created else ""), source="atrium")
+        transcript = harness.transcript_path(new_sid, target)
+        if transcript and project.tracker:
+            project.tracker.skip_existing(str(transcript))  # the copied history was tracked as the source's
+        if archive_source:  # "move": the fork carries on, the original is put away
+            project.set_session_meta(sid, archived=True)
+            if project.board.agent(sid):
+                project.board.update_agent(sid, stats={"archived": True})
+            await self.close(sid)
+        self.invalidate(project)
+        hub.publish(f"project:{project.id}", {"type": "sessions_changed"})
+        out: dict[str, Any] = {"id": new_sid, "cwd": target, "files": files, "worktree": created}
+        if starting:
+            try:
+                await self.send(project, new_sid, prompt or "", attachments)
+            except Exception as e:  # the fork exists either way; let the UI open it and show why
+                log.exception("first message to fork %s failed", new_sid)
+                out["error"] = str(e) or type(e).__name__
+        return out
+
+    @staticmethod
+    def _carry(snaps: list[dict[str, Any]], point: ForkPoint, src_cwd: str, dest_root: str) -> str:
+        """Give a forked worktree its source's files at the fork point. Returns what it got:
+        "fork-point", "current" (that moment has no snapshot) or "committed" (no snapshot at all)."""
+        snap, files = None, "fork-point"
+        if point.next_ts is not None:  # forking before a later message: the files back then
+            snap = _snapshot_at(snaps, point, dest_root)
+            files = "fork-point" if snap else "current"
+        snap = snap or snapshots.take(src_cwd, "fork")
+        if not snap:
+            return "committed"
+        snapshots.restore(dest_root, snap["tree"])
+        return files
+
     async def ensure_live(self, project: Project, sid: str, *, model: str | None = None, mode: str | None = None) -> LiveHandle:
         async with self._lock(sid):
             h = self.live.get(sid)
@@ -402,11 +522,13 @@ class SessionManager:
             cwd = meta.get("cwd") or (summary.cwd if summary else None) or project.path
             if not os.path.isdir(cwd):
                 raise FileNotFoundError(f"session directory no longer exists: {cwd}")
-            name = meta.get("name") or (summary.title if summary else "Agent")
+            fork = meta.get("forked_from")
+            name = meta.get("name") or (summary.title if summary else None) or (f"{fork.get('name') or 'Agent'} (fork)" if fork else "Agent")
             role = meta.get("role", "worker")
             harness = get_harness(harness_id)
-            preload = await harness.load_history(sid, cwd) if summary else (h.items if h else [])
-            return await self._start(project, sid, resume=summary is not None, harness_id=harness_id, cwd=cwd, name=name, role=role,
+            known = summary is not None or bool(fork)  # a fork exists before discovery lists it
+            preload = await harness.load_history(sid, cwd) if known else (h.items if h else [])
+            return await self._start(project, sid, resume=known, harness_id=harness_id, cwd=cwd, name=name, role=role,
                                      model=model or meta.get("model"), effort=meta.get("effort"), mode=mode or meta.get("mode"), preload=preload)
 
     async def send(self, project: Project, sid: str, text: str, attachments: list[Attachment] | None = None) -> None:
@@ -506,10 +628,10 @@ class SessionManager:
             return {"live": True, "state": h.state, "items": h.items, "pending": list(h.pending), "settings": h.settings()}
         settings = {"model": meta.get("model") or "", "effort": meta.get("effort") or "", "mode": meta.get("mode") or ""}
         summary = await self.find_summary(project, sid)
-        if not summary:  # never reached the transcript (e.g. failed to start): show what we have
+        if not summary and not meta.get("forked_from"):  # never reached the transcript (e.g. failed to start): show what we have
             return {"live": False, "state": h.state if h else None, "items": h.items if h else [], "pending": [], "settings": settings}
-        harness = get_harness(meta.get("harness") or summary.harness)
-        items = await harness.load_history(sid, summary.cwd or project.path)
+        harness = get_harness(meta.get("harness") or (summary.harness if summary else "claude-code"))
+        items = await harness.load_history(sid, (summary.cwd if summary else None) or meta.get("cwd") or project.path)
         return {"live": False, "state": None, "items": items, "pending": [], "settings": settings}
 
 
@@ -548,6 +670,34 @@ def attachment_from_upload(name: str) -> Attachment:
 def _short(s: str, n: int) -> str:
     s = " ".join(s.split())
     return s if len(s) <= n else s[: n - 1] + "…"
+
+
+def _history_snapshots(meta: dict[str, Any], point: ForkPoint) -> list[dict[str, Any]]:
+    """The turn snapshots of a session's history up to a fork point: its own and those it inherited
+    as a fork, so a fork of a fork can restore files from before it existed. A fork keeps them as
+    ``fork_snapshots``, apart from ``snapshots`` (its own turns, what its Changes count)."""
+    end = (point.next_ts if point.next_ts is not None else time.time()) + 1
+    snaps = [s for s in (meta.get("fork_snapshots") or []) + (meta.get("snapshots") or []) if s.get("tree") and (s.get("ts") or 0) <= end]
+    return sorted(snaps, key=lambda s: s.get("ts") or 0)[-MAX_SNAPSHOTS:]
+
+
+def _snapshot_at(snaps: list[dict[str, Any]], point: ForkPoint, repo: str) -> dict[str, Any] | None:
+    """The turn snapshot with the files at a fork point: the last one taken after the kept part
+    ended and before the first dropped message was sent (± 1 s: Codex times are whole seconds)."""
+    lo, hi = (point.cut_ts or 0) - 1, (point.next_ts or time.time()) + 1
+    found = [s for s in snaps if s.get("tree") and lo <= (s.get("ts") or 0) <= hi]
+    if found and snapshots.tree_exists(repo, found[-1]["tree"]):  # every checkout of the repository has its objects
+        return found[-1]
+    return None
+
+
+def _fork_note(fork: dict[str, Any], cwd: str) -> str:
+    """System-prompt note for a forked session: where it comes from and which files it has."""
+    source = fork.get("name") or "another agent"
+    old = fork.get("cwd") or cwd
+    if os.path.realpath(old) == os.path.realpath(cwd):
+        return FORK_SAME_DIR_APPEND.format(source=source)
+    return FORK_MOVED_APPEND.format(source=source, old=old, cwd=cwd, files=FORK_FILES.get(fork.get("files") or "", FORK_FILES[""]))
 
 
 def _branch_of(cwd: str) -> str | None:

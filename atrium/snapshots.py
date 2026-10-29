@@ -96,6 +96,14 @@ def tree_exists(root: str, tree: str) -> bool:
         return False
 
 
+def restore(root: str, tree: str) -> None:
+    """Make the files of the checkout at ``root`` match a snapshot (a forked worktree starts from
+    its source's files). Index and HEAD are left alone: the differences show up as changes."""
+    r = _git(root, "restore", f"--source={tree}", "--worktree", "--", ".", timeout=120)
+    if r.returncode != 0:
+        raise RuntimeError(f"couldn't restore the files: {r.stderr.strip()[:300]}")
+
+
 def changed_paths(root: str, a: str, b: str) -> list[str]:
     """Paths (absolute) that differ between two snapshot trees."""
     try:

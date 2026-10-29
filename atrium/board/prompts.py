@@ -42,6 +42,28 @@ your file changes as diffs, so keep edits focused and explain non-obvious ones o
 """.strip()
 
 
+# Appended for sessions forked from another one (see SessionManager.fork).
+FORK_MOVED_APPEND = """
+# Forked conversation
+This conversation was forked from the agent "{source}", which worked in {old}. You now work in
+{cwd}, a separate checkout. {files} Earlier messages and tool calls refer to files under {old}:
+the same relative paths exist under {cwd} — read and edit only there, never under {old}.
+""".strip()
+
+FORK_SAME_DIR_APPEND = """
+# Forked conversation
+This conversation was forked from the agent "{source}" and shares its working directory, so that
+agent may still be changing the same files. Re-read a file before you edit it.
+""".strip()
+
+FORK_FILES = {
+    "fork-point": "Its files were restored to how they were at the fork point, uncommitted changes included.",
+    "current": "Its files are a copy of the original checkout's files when the fork was made (their state at the fork point was not recorded).",
+    "committed": "It only has the committed files: uncommitted changes from the original checkout were not copied.",
+    "": "It has its own files, which may differ from what the earlier conversation saw — re-read before editing.",
+}
+
+
 TRACKER_SYSTEM = """
 You are the Tracker Agent of Atrium, a workbench where several coding agents work on the same
 project. You never touch code. You keep the project's shared board accurate so a human can see

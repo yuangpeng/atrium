@@ -302,9 +302,27 @@ async def get_subagent(pid: str, sid: str, aid: str):
 async def delete_session(pid: str, sid: str):
     try:
         backup = await sessions.delete(P(pid), sid)
-    except NotImplementedError as e:
+    except (NotImplementedError, ValueError) as e:
         raise HTTPException(400, str(e))
     return {"ok": True, "backup": backup}
+
+
+@app.post("/api/p/{pid}/sessions/{sid}/fork")
+async def fork_session(pid: str, sid: str, body: dict[str, Any] = Body(default={})):
+    p = P(pid)
+    attachments = [attachment_from_upload(a) for a in body.get("attachments") or []]
+    try:
+        res = await sessions.fork(
+            p, sid, at=body.get("at") or None, workspace=body.get("workspace") or None, carry=body.get("carry") is not False,
+            name=body.get("name") or "", prompt=(body.get("prompt") or "").strip() or None, attachments=attachments,
+            archive_source=bool(body.get("archive_source")),
+        )
+    except (ValueError, NotImplementedError) as e:
+        raise HTTPException(400, str(e))
+    if res.get("worktree"):
+        transcript_watcher.add_project(p)
+        hub.publish(f"project:{pid}", {"type": "git_changed"})
+    return res
 
 
 @app.patch("/api/p/{pid}/sessions/{sid}")

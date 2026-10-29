@@ -36,6 +36,7 @@ from claude_agent_sdk import (
     UserMessage,
     create_sdk_mcp_server,
     delete_session as sdk_delete_session,
+    fork_session as sdk_fork_session,
     get_session_messages,
     list_sessions,
     project_key_for_directory,
@@ -46,8 +47,8 @@ from claude_agent_sdk import (
 
 from .. import gitops
 from ..config import UPLOADS_DIR
-from .base import Attachment, Emit, FileEdit, Harness, Item, LiveSession, LiveSpec, SessionSummary, SubagentSummary, ToolSpec
-from .util import attachment_note, hhmm, parse_json_loose, split_attachment_note
+from .base import Attachment, Emit, FileEdit, ForkPoint, Harness, Item, LiveSession, LiveSpec, SessionSummary, SubagentSummary, ToolSpec
+from .util import attachment_note, hhmm, iso_to_epoch, parse_json_loose, split_attachment_note
 
 log = logging.getLogger("atrium.claude")
 
@@ -763,6 +764,26 @@ class ClaudeCodeHarness(Harness):
         except Exception as e:  # transcript may not exist yet
             log.debug("rename_session(%s) skipped: %s", session_id, e)
 
+    # ---- forks -------------------------------------------------------------
+    async def fork_point(self, session_id: str, cwd: str, anchor: str | None, user_index: int | None) -> ForkPoint:
+        path = self.transcript_path(session_id, cwd)
+        if not path:
+            raise FileNotFoundError(f"transcript of session {session_id}")
+        return await asyncio.to_thread(_fork_point, path, anchor, user_index)
+
+    async def fork_session(self, session_id: str, cwd: str, point: ForkPoint, *, target_cwd: str, title: str) -> str:
+        def fork() -> str:
+            try:
+                new_id = sdk_fork_session(session_id, directory=cwd, up_to_message_id=point.cut, title=title).session_id
+            except FileNotFoundError:  # transcript outside the cwd's project key: search them all
+                new_id = sdk_fork_session(session_id, up_to_message_id=point.cut, title=title).session_id
+            path = self.transcript_path(new_id, cwd)
+            if path and path.parent.name != project_key_for_directory(target_cwd):
+                _move_transcript(path, cwd, target_cwd)
+            return new_id
+
+        return await asyncio.to_thread(fork)
+
     # ---- content -----------------------------------------------------------
     async def load_history(self, session_id: str, cwd: str) -> list[Item]:
         def load() -> list[Item]:
@@ -984,3 +1005,90 @@ def _edit_from_result(tur: dict[str, Any], ts: str | None) -> FileEdit | None:
         kind = "create" if tur.get("type") == "create" else "update"
         return FileEdit(path=fp, tool="Write", ts=ts, before=tur.get("originalFile"), after=tur.get("content"), kind=kind)
     return None
+
+
+# --------------------------------------------------------------------------
+# Forks
+# --------------------------------------------------------------------------
+_TRANSCRIPT_TYPES = ("user", "assistant", "attachment", "system", "progress")  # what the SDK's fork copies
+
+
+def _is_prompt(entry: dict[str, Any]) -> bool:
+    """A message that opens a user turn (not a tool result, CLI command or interrupt marker)."""
+    if entry.get("type") != "user" or entry.get("isMeta") or entry.get("isCompactSummary"):
+        return False
+    content = (entry.get("message") or {}).get("content")
+    if isinstance(content, str):
+        text = content.strip()
+    else:
+        blocks = [b for b in content or [] if isinstance(b, dict)]
+        if any(b.get("type") == "tool_result" for b in blocks):
+            return False
+        if any(b.get("type") == "image" for b in blocks):
+            return True
+        text = "\n".join(b.get("text") or "" for b in blocks if b.get("type") == "text").strip()
+    return bool(text) and not text.startswith(("<command-", "<local-command", "[Request interrupted"))
+
+
+def _find_entry(entries: list[dict[str, Any]], anchor: str) -> int | None:
+    """Index of the transcript entry behind a chat item id ("<uuid>:<block>", or a tool call id)."""
+    key = anchor.split(":", 1)[0]
+    found = None
+    for i, e in enumerate(entries):
+        if e["uuid"] == key:
+            return i
+        content = (e.get("message") or {}).get("content")
+        if isinstance(content, list) and any(isinstance(b, dict) and anchor in (b.get("id"), b.get("tool_use_id")) for b in content):
+            found = i  # the call, then its result: keep the last
+    return found
+
+
+def _fork_point(path: Path, anchor: str | None, user_index: int | None) -> ForkPoint:
+    entries: list[dict[str, Any]] = []
+    with path.open(encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            try:
+                d = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(d, dict) and d.get("type") in _TRANSCRIPT_TYPES and isinstance(d.get("uuid"), str) and not d.get("isSidechain"):
+                entries.append(d)
+    prompts = [i for i, e in enumerate(entries) if _is_prompt(e)]
+    at = _find_entry(entries, anchor) if anchor else None
+    if at is None and user_index and user_index < len(prompts):  # items shown live may not carry transcript ids
+        at = prompts[user_index] - 1
+    if at is None or at < 0:
+        raise ValueError("Couldn't find that point of the conversation in the transcript")
+    nxt = next((i for i in prompts if i > at), None)
+    cut = entries[nxt - 1] if nxt is not None else entries[-1]
+    return ForkPoint(
+        cut=cut["uuid"],
+        cut_ts=iso_to_epoch(cut.get("timestamp")),
+        next_ts=iso_to_epoch(entries[nxt].get("timestamp")) if nxt is not None else None,
+    )
+
+
+def _move_transcript(path: Path, cwd: str, target_cwd: str) -> None:
+    """Move a fork's transcript under ``target_cwd``'s project key — where Claude Code looks for
+    sessions started there — and point the entries' ``cwd`` at it (session listings read it)."""
+    olds = {cwd, os.path.realpath(cwd)}
+    new = os.path.realpath(target_cwd)
+    lines = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            d = json.loads(line)
+        except json.JSONDecodeError:
+            lines.append(line)
+            continue
+        c = d.get("cwd") if isinstance(d, dict) else None
+        if isinstance(c, str):
+            old = next((o for o in olds if c == o or c.startswith(o + os.sep)), None)
+            if old:
+                d["cwd"] = new + c[len(old):]
+        lines.append(json.dumps(d, ensure_ascii=False, separators=(",", ":")))
+    dest = _claude_projects_dir() / project_key_for_directory(new)
+    dest.mkdir(parents=True, exist_ok=True)
+    tmp = dest / f".{path.name}.tmp"
+    tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.replace(tmp, dest / path.name)
+    path.unlink()

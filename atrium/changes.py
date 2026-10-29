@@ -115,9 +115,12 @@ def _inside(path: str, root: str) -> bool:
 
 def _collect(project: Project, sid: str, cwd: str, harness_id: str) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
     files: dict[str, dict[str, Any]] = {}
+    inherited = project.session_meta(sid).get("forked_at")  # a fork's transcript opens with its source's edits
     for e in _edits(sid, cwd, harness_id):
-        f = files.get(e.path)
         ts = iso_to_epoch(e.ts)
+        if inherited and (ts is None or ts <= inherited):
+            continue
+        f = files.get(e.path)
         if f is None:
             files[e.path] = f = {"path": e.path, "edits": [], "tools": set(), "first": ts, "last": ts, "detected": False}
         f["edits"].append(e)
