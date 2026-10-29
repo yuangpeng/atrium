@@ -761,7 +761,7 @@ class CodexHarness(Harness):
 
     @property
     def client(self) -> AppServerClient:
-        binary = config.get("harnesses.codex.binary") or "codex"
+        binary = config.get("harnesses.codex.binary") or ""
         if self._client is None or (self._client.binary != binary and not self._client.alive):
             self._client = AppServerClient(binary)
         return self._client
@@ -770,7 +770,7 @@ class CodexHarness(Harness):
         if not config.get("harnesses.codex.enabled", True):
             return False, "Disabled in Atrium settings (harnesses.codex.enabled)."
         if not self.client.resolve_binary():
-            return False, f"Codex CLI not found ({self.client.binary}). Install it, or set harnesses.codex.binary in Atrium settings."
+            return False, self.client.not_found()
         return True, None
 
     async def shutdown(self) -> None:

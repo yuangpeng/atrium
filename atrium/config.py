@@ -37,9 +37,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     },
     # Per-harness defaults for new sessions. model/effort "" = the harness's own default
     # (i.e. whatever ~/.claude/settings.json or ~/.codex/config.toml says). Agents start with full access.
+    # Codex's binary "" = the one bundled with Atrium (openai-codex-cli-bin); a command or path = your own.
     "harnesses": {
         "claude-code": {"permission_mode": "bypassPermissions", "model": "", "effort": ""},
-        "codex": {"enabled": True, "binary": "codex", "permission_mode": "full-access", "model": "", "effort": ""},
+        "codex": {"enabled": True, "binary": "", "permission_mode": "full-access", "model": "", "effort": ""},
     },
     "sessions": {"idle_close_minutes": 30},
     # Desktop notifications when an agent asks for approval or finishes a turn — skipped while its

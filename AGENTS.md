@@ -6,6 +6,8 @@ running inside the app you are editing.
 ## Run
 
 - Setup: `make install`, then `make build` (builds the UI into `atrium/static`).
+  The Claude Code and Codex CLIs come from the venv (`claude-agent-sdk`, `openai-codex-cli-bin`),
+  not from `PATH`; run `make install` again after changing their versions in `pyproject.toml`.
 - Start: `make run` (port 8787; if it is taken, `make run PORT=8790`).
   Development: `make dev-backend` + `make dev-web` (Vite on 5173).
 - Check: `curl -s --noproxy '*' http://127.0.0.1:<port>/api/meta` lists each harness and

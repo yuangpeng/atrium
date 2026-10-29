@@ -29,9 +29,21 @@ class RpcError(RuntimeError):
         self.data = error.get("data")
 
 
+def bundled_codex() -> tuple[str, str | None] | None:
+    """The Codex CLI that comes with Atrium (the ``openai-codex-cli-bin`` wheel) and the directory of
+    its helper tools (``rg``), or None when that package isn't installed."""
+    try:
+        from codex_cli_bin import bundled_codex_path, bundled_path_dir
+
+        path_dir = bundled_path_dir()
+        return str(bundled_codex_path()), str(path_dir) if path_dir else None
+    except (ImportError, FileNotFoundError):
+        return None
+
+
 class AppServerClient:
-    def __init__(self, binary: str = "codex", extra_args: list[str] | None = None):
-        self.binary = binary
+    def __init__(self, binary: str = "", extra_args: list[str] | None = None):
+        self.binary = binary  # "" = the bundled Codex (else the one on PATH); or a command / path
         self.extra_args = extra_args or []
         self.proc: asyncio.subprocess.Process | None = None
         self._next_id = 0
@@ -52,10 +64,18 @@ class AppServerClient:
         return self.proc is not None and self.proc.returncode is None
 
     def resolve_binary(self) -> str | None:
+        if not self.binary:
+            bundled = bundled_codex()
+            return bundled[0] if bundled else shutil.which("codex")
         b = os.path.expanduser(self.binary)
         if os.path.isabs(b):
             return b if os.access(b, os.X_OK) else None
         return shutil.which(b)
+
+    def not_found(self) -> str:
+        if not self.binary:
+            return "Codex CLI not found: the bundled one (openai-codex-cli-bin) isn't installed (run make install) and there is no codex on PATH."
+        return f"Codex CLI not found ({self.binary}). Install it, or clear harnesses.codex.binary in Atrium settings to use the bundled one."
 
     async def ensure_started(self) -> None:
         async with self._lock:
@@ -63,11 +83,15 @@ class AppServerClient:
                 return
             path = self.resolve_binary()
             if not path:
-                raise FileNotFoundError(f"Codex CLI not found ({self.binary}). Install it or set harnesses.codex.binary in Atrium settings.")
+                raise FileNotFoundError(self.not_found())
+            env = None
+            bundled = bundled_codex()
+            if bundled and bundled[1] and path == bundled[0]:  # its helper tools go first on PATH, as in OpenAI's own SDK
+                env = {**os.environ, "PATH": os.pathsep.join(p for p in (bundled[1], os.environ.get("PATH")) if p)}
             self.proc = await asyncio.create_subprocess_exec(
                 path, "app-server", *self.extra_args,
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                limit=64 * 1024 * 1024,
+                env=env, limit=64 * 1024 * 1024,
             )
             self._reader = asyncio.create_task(self._read_loop(), name="codex-rpc-reader")
             self._stderr_task = asyncio.create_task(self._stderr_loop(), name="codex-rpc-stderr")

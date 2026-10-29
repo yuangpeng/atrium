@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "claude-agent-sdk>=0.2.170",
+    "openai-codex-cli-bin==0.160.0",  # the Codex CLI, one wheel per platform (pinned: app-server's protocol moves fast)
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "httpx>=0.27",
