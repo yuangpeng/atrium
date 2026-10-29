@@ -101,6 +101,9 @@ export JINA_API_KEY=...     # optional: higher rate limits for web.fetch
 make run              # → http://127.0.0.1:8787   (or: .venv/bin/atrium ~/code/myproject)
 ```
 
+Port 8787 taken? `make run PORT=8790`. To check that the server is up,
+`curl -s http://127.0.0.1:8787/api/meta` lists each harness and whether it is available.
+
 Development: `make dev-backend` (auto-reload, port 8787) and `make dev-web` (Vite on 5173,
 proxying `/api` and `/ws`).
 
