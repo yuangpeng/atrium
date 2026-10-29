@@ -9,6 +9,7 @@ import { clsx, fmtDuration } from "../util";
 import { Markdown, Spinner } from "../components/ui";
 import { useOpenCompaction } from "../components/Compactions";
 import { BoardToolRow, PermissionCard, ToolRow, isBoardTool, useOpenSubagent } from "./ToolViews";
+import { ReviewToolBlock, isReviewTool } from "./ReviewCards";
 import {
   AttachButton, AttachmentTray, ContextRing, EffortPicker, HarnessChip, MessageAttachments, ModelChip, NewWorktreeFields, PendingUpload, PermissionPicker,
   WorkspaceChip, effortOptions, useAttachments,
@@ -82,6 +83,7 @@ export function apply(st: ChatState, it: Item): ChatState {
 export type Block =
   | { type: "tools"; key: string; tools: ToolItem[] }
   | { type: "board"; key: string; tool: ToolItem }
+  | { type: "review"; key: string; tool: ToolItem; latest: boolean } // latest: the last report of its round
   | { type: "item"; key: string; item: Item };
 
 export function toBlocks(items: Item[]): Block[] {
@@ -93,12 +95,25 @@ export function toBlocks(items: Item[]): Block[] {
         out.push({ type: "board", key: it.id, tool: it });
         continue;
       }
+      if (isReviewTool(it.name)) {
+        out.push({ type: "review", key: it.id, tool: it, latest: true });
+        continue;
+      }
       const last = out[out.length - 1];
       if (last?.type === "tools") last.tools.push(it);
       else out.push({ type: "tools", key: it.id, tools: [it] });
     } else if ("id" in it && it.kind !== "permission" && it.kind !== "permission_resolved") {
       out.push({ type: "item", key: it.id, item: it });
     }
+  }
+  // a round's findings show once, live, at its last report; earlier reports of it were revised
+  const reported = new Set<string>();
+  for (let i = out.length - 1; i >= 0; i--) {
+    const b = out[i];
+    if (b.type !== "review" || !b.tool.name.endsWith("__report")) continue;
+    const round = String(b.tool.input?.round);
+    if (reported.has(round)) out[i] = { ...b, latest: false };
+    reported.add(round);
   }
   return out;
 }
@@ -141,6 +156,7 @@ export function Transcript({ blocks, results, running, cwd, forks, onFork }: {
             </div>
           );
         if (b.type === "board") return <BoardToolRow key={b.key} tool={b.tool} />;
+        if (b.type === "review") return <ReviewToolBlock key={b.key} tool={b.tool} result={results[b.tool.id]} latest={b.latest} />;
         const it = b.item;
         switch (it.kind) {
           case "user": {
@@ -266,7 +282,16 @@ function SystemLine({ item }: { item: SystemItem }) {
   );
 }
 
-export function ChatView({ pid, sid, cwd, compact, forkable, placeholder, emptyHint }: { pid: string; sid: string; cwd: string; compact?: boolean; forkable?: boolean; placeholder?: string; emptyHint?: JSX.Element }) {
+export function ChatView({ pid, sid, cwd, compact, forkable, modeLocked, placeholder, emptyHint }: {
+  pid: string;
+  sid: string;
+  cwd: string;
+  compact?: boolean;
+  forkable?: boolean;
+  modeLocked?: boolean; // the session's permissions can't change (the Review agent is read-only)
+  placeholder?: string;
+  emptyHint?: JSX.Element;
+}) {
   const meta = useApp((s) => s.meta);
   const project = useApp((s) => s.project);
   const toast = useApp((s) => s.toast);
@@ -524,7 +549,7 @@ export function ChatView({ pid, sid, cwd, compact, forkable, placeholder, emptyH
             {/* the new-agent page's chips, in its order; harness and workspace can't change any more (the
                 workspace can once it's gone) */}
             {harness && !compact && (meta?.harnesses.length ?? 0) > 1 && <HarnessChip harness={harness} />}
-            {harness && <PermissionPicker harness={harness} value={shownMode} onChange={(m) => void setMode(m)} detached={!st.mode} />}
+            {harness && !modeLocked && <PermissionPicker harness={harness} value={shownMode} onChange={(m) => void setMode(m)} detached={!st.mode} />}
             {project && row && !compact && <WorkspaceChip project={project} session={row} pick={ws} onPick={pickWs} />}
             {harness && !compact && <ModelChip harness={harness} model={shownModel} faded={!st.model} />}
             </div>

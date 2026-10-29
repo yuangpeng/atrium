@@ -277,6 +277,20 @@ def file_change(project: Project, sid: str, cwd: str, harness_id: str, path: str
     }
 
 
+def contents(project: Project, sid: str, cwd: str, harness_id: str, paths: list[str]) -> dict[str, dict[str, Any]]:
+    """Before the session (None: it didn't exist) and now, for some of a session's files; ``known`` is
+    False when the content before is unknown."""
+    files, snaps = _collect(project, sid, cwd, harness_id)
+    gone_roots = _gone_roots(project, sid, cwd, snaps)
+    out = {}
+    for path in paths:
+        if path in files:
+            r = _resolve(files[path], snaps, gone_roots)
+            known = r["baseline"] is not _UNKNOWN
+            out[path] = {"before": r["baseline"] if known else None, "after": r["current"], "known": known}
+    return out
+
+
 def revert(project: Project, sid: str, cwd: str, harness_id: str, path: str) -> dict[str, Any]:
     """Restore the file to its content before this session first touched it."""
     project.resolve(path)  # must be inside the project

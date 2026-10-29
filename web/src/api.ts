@@ -47,6 +47,7 @@ export interface Settings {
   sessions: { idle_close_minutes: number };
   tracker: { enabled: boolean; harness: string; model: string; effort: string; interval_seconds: number; after_turn_seconds: number };
   git_agent: { harness: string; model: string };
+  review_agent?: { auto: boolean; harness: string; model: string; effort: string; language: string; delay_seconds: number; max_concurrent: number };
   web: { serper_api_key: boolean; jina_api_key: boolean; replace_builtin_web_tools: boolean };
   ui: { theme: "system" | "light" | "dark" };
   _error?: string | null;
@@ -149,7 +150,7 @@ export interface SessionRow {
   harness: string;
   name: string | null;
   title: string;
-  role: "worker" | "git";
+  role: "worker" | "git" | "review";
   cwd: string;
   worktree: boolean;
   branch: string | null;
@@ -345,6 +346,65 @@ export interface AgentChanges {
   removed: number;
 }
 
+/** A Code Review Agent finding: the human adopts or dismisses it; adopted ones are sent to the agent. */
+export interface ReviewFinding {
+  id: string; // "1", "2"… within its round
+  severity: "P0" | "P1" | "P2" | "P3";
+  title: string;
+  file: string; // relative to the agent's directory
+  line: number | null;
+  end_line: number | null;
+  problem: string;
+  suggestion: string;
+  status: "open" | "adopted" | "dismissed" | "sent";
+}
+
+export interface ReviewRound {
+  n: number;
+  state: "queued" | "running" | "done" | "stopped" | "failed";
+  trigger: "auto" | "manual" | "chat";
+  reason: string;
+  scope?: "new" | "all";
+  files?: { rel: string; status: string; added: number; removed: number }[];
+  summary: string;
+  findings: ReviewFinding[];
+  created_at: number;
+  started_at?: number;
+  ended_at?: number;
+  error?: string;
+}
+
+/** A message for the agent drafted by the reviewer: nothing is sent until the human presses Send. */
+export interface ReviewDraft {
+  id: number;
+  text: string;
+  at: number;
+  status: "pending" | "sent" | "cancelled" | "replaced";
+  round: number | null;
+  sent_text?: string;
+}
+
+export interface ReviewView {
+  worker: string;
+  session: string | null; // the review session (role "review")
+  auto: boolean;
+  auto_own: boolean | null; // this agent's own choice; null = the setting
+  rounds: ReviewRound[]; // oldest first
+  drafts: ReviewDraft[];
+  outbox: { text: string; at: number } | null; // waiting for the agent's turn to end
+}
+
+/** Per agent, for the review inbox. */
+export interface ReviewSummary {
+  session: string | null;
+  state: ReviewRound["state"] | null;
+  round: number;
+  open: number; // findings of the last round still to send (open or adopted)
+  findings: number;
+  outbox: boolean;
+  auto: boolean;
+}
+
 export interface Commit {
   sha: string;
   parents: string[];
@@ -527,6 +587,18 @@ export const api = {
   reviewChange: (pid: string, sid: string, path: string, reviewed: boolean) =>
     req("POST", `/api/p/${pid}/sessions/${sid}/changes/review`, { path, reviewed }),
   projectChanges: (pid: string) => req<AgentChanges[]>("GET", `/api/p/${pid}/changes`),
+
+  reviews: (pid: string) => req<Record<string, ReviewSummary>>("GET", `/api/p/${pid}/reviews`),
+  review: (pid: string, wsid: string) => req<ReviewView>("GET", `/api/p/${pid}/reviews/${wsid}`),
+  reviewRun: (pid: string, wsid: string) => req<ReviewRound | { skipped: string }>("POST", `/api/p/${pid}/reviews/${wsid}/run`),
+  reviewFindings: (pid: string, wsid: string, round: number, ids: string[], status: "open" | "adopted" | "dismissed") =>
+    req("POST", `/api/p/${pid}/reviews/${wsid}/findings`, { round, ids, status }),
+  reviewSend: (pid: string, wsid: string, body: { text: string; round?: number | null; draft?: number | null }) =>
+    req<{ queued: boolean }>("POST", `/api/p/${pid}/reviews/${wsid}/send`, body),
+  reviewCancelDraft: (pid: string, wsid: string, did: number) => req("POST", `/api/p/${pid}/reviews/${wsid}/drafts/${did}/cancel`),
+  reviewDeliver: (pid: string, wsid: string) => req("POST", `/api/p/${pid}/reviews/${wsid}/outbox`),
+  reviewCancelOutbox: (pid: string, wsid: string) => req("DELETE", `/api/p/${pid}/reviews/${wsid}/outbox`),
+  reviewAuto: (pid: string, wsid: string, auto: boolean | null) => req("POST", `/api/p/${pid}/reviews/${wsid}/auto`, { auto }),
 
   board: (pid: string) => req<{ agents: Record<string, BoardAgent> }>("GET", `/api/p/${pid}/board`),
   boardHtmlUrl: (pid: string) => `/api/p/${pid}/board.html`,

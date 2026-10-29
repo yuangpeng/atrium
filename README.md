@@ -51,6 +51,14 @@ A project-centric workbench for coding agents — Claude Code and Codex side by 
      before / after headers, previous / next change (⌥F5) and file (↑ / ↓ in the tree), and toggles
      for collapsing unchanged lines, ignoring whitespace and wrapping — remembered across reloads.
      The review can go full screen.
+     Under the diffs, the **Code Review Agent** (a chat drawer) reviews each agent's work in a
+     read-only session of its own, in the agent's directory: automatically after a turn in which the
+     agent reports its task `done` or `waiting` for you (`board.status`), or with *Review*. Each
+     round gets the task, the agent's last reply and the diff since the previous round (between turn
+     snapshots), and records findings — severity, `file:line`, problem, fix — as cards: adopt or
+     dismiss them, jump to the line in the diff, discuss them in the chat. Nothing reaches the agent
+     until you press *Send* on a message (put together from the adopted findings, or drafted by the
+     reviewer); a busy agent gets it when its turn ends. The next round checks those first.
    * **Git** — commit graph with lanes (pick a commit: its files as a tree, each one diffed side by
      side against the first parent, renames followed); *Smart* / *All* / *Custom* branch sets, and an
      **Agent view**: the **Git Agent** (a chat drawer) investigates with read-only git and drives
@@ -128,13 +136,14 @@ Atrium binds to `127.0.0.1` and has **no authentication** — don't expose it.
 
 | Path | What |
 |---|---|
-| `~/.atrium/settings.json` | Atrium settings: defaults per harness (mode / model / effort), tracker, Git Agent, desktop notifications, web keys (`chmod 600`; env vars take precedence), extra MCP servers |
+| `~/.atrium/settings.json` | Atrium settings: defaults per harness (mode / model / effort), tracker, Git Agent, Code Review Agent (`review_agent`: auto, harness / model / effort, language), desktop notifications, web keys (`chmod 600`; env vars take precedence), extra MCP servers |
 | `~/.atrium/config.json` | the project list |
 | `~/.atrium/uploads/` | composer attachments |
 | `~/.atrium/backups/` | the previous versions of config files saved from Settings (last 20 each) |
 | `<project>/.atrium/board.html` | the board (generated from `board.json`) |
 | `<project>/.atrium/agents.json` | session → agent name / role / harness / mode / model / effort / turn snapshots |
 | `<project>/.atrium/tracker.json` | tracker transcript offsets + run log |
+| `<project>/.atrium/code_review.json` | per agent: its review session, rounds with their findings, drafts, a message waiting to be delivered |
 | `<project>/.atrium/worktrees/` | worktrees created from Atrium |
 | `<project>/.atrium/worktrees.json` | every worktree seen, removed ones too, so their agents stay listed |
 | `<project>/.atrium/trash/` | files deleted or reverted from the UI |
@@ -177,6 +186,7 @@ atrium/
   board/                 board store + HTML template, board tools, system prompts
   tracker.py             the per-project Tracker Agent
   gitagent.py            graph.set_view tool for the Git Agent
+  review.py              the Code Review Agent: when to review, review rounds and findings, the review.* tools
   lsp.py                 language servers for the editor, shared by all tabs over /ws/lsp
   gitops.py, fs.py       git plumbing, sandboxed file access
   changes.py             per-session change sets (diff review)

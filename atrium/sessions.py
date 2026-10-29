@@ -13,7 +13,8 @@ from typing import Any, Callable
 
 from . import gitops, snapshots
 from .board.prompts import (
-    FORK_FILES, FORK_MOVED_APPEND, FORK_SAME_DIR_APPEND, GIT_AGENT_APPEND, MOVED_APPEND, SESSION_AGENT_APPEND, WORKTREE_APPEND,
+    FORK_FILES, FORK_MOVED_APPEND, FORK_SAME_DIR_APPEND, GIT_AGENT_APPEND, MOVED_APPEND, REVIEW_AGENT_APPEND, SESSION_AGENT_APPEND,
+    WORKTREE_APPEND,
 )
 from .board.tools import BOARD_SERVER, board_toolset
 from .config import UPLOADS_DIR, config
@@ -25,6 +26,7 @@ from .harness.util import upload_url
 from .mcp.web import WEB_SERVER, web_toolset
 from .notify import notifier
 from .project import Project
+from .review import REVIEW_AGENT_ALLOWED_TOOLS, REVIEW_AGENT_DISALLOWED_TOOLS, REVIEW_SERVER, review_language, review_toolset
 
 log = logging.getLogger("atrium.sessions")
 
@@ -63,6 +65,7 @@ class LiveHandle:
     tasks: dict[str, dict[str, Any]] = field(default_factory=dict)  # subagents seen on the stream, by spawning tool call
     title_synced: bool = False
     released: bool = False  # stopped because its directory went away
+    reported: str | None = None  # the status the agent gave board.status during the current turn
 
     @property
     def alive(self) -> bool:
@@ -130,8 +133,13 @@ class SessionManager:
             toolsets[GIT_SERVER] = git_toolset(project)
             append = GIT_AGENT_APPEND.format(project=project.name, path=project.path)
             allowed += GIT_AGENT_ALLOWED_TOOLS
+        elif role == "review":
+            toolsets[REVIEW_SERVER] = review_toolset(project, lambda: sid_box[0])
+            append = REVIEW_AGENT_APPEND.format(project=project.name, path=project.path, cwd=cwd, language=review_language())
+            allowed += REVIEW_AGENT_ALLOWED_TOOLS
+            disallowed += REVIEW_AGENT_DISALLOWED_TOOLS
         else:
-            toolsets[BOARD_SERVER] = board_toolset(project, lambda: sid_box[0])
+            toolsets[BOARD_SERVER] = board_toolset(project, lambda: sid_box[0], on_status=lambda status: self._reported(sid_box[0], status))
             append = SESSION_AGENT_APPEND.format(name=name, project=project.name, path=project.path, cwd=cwd)
             meta = project.session_meta(sid) if sid else {}
             moved = (meta.get("moves") or [None])[-1]
@@ -144,7 +152,7 @@ class SessionManager:
                 append += "\n\n" + worktree
         harness = get_harness(harness_id)
         modes = [m["id"] for m in harness.permission_modes]
-        default_mode = harness.git_agent_mode if role == "git" else hdef.get("permission_mode")
+        default_mode = {"git": harness.git_agent_mode, "review": harness.review_agent_mode}.get(role) or hdef.get("permission_mode")
         mode = mode or default_mode or (modes[0] if modes else "default")
         spec = LiveSpec(
             session_id=sid,
@@ -198,6 +206,11 @@ class SessionManager:
 
         return emit
 
+    def _reported(self, sid: str | None, status: str) -> None:
+        h = self.live.get(sid or "")
+        if h:
+            h.reported = status
+
     def _track_task(self, h: LiveHandle, item: Item) -> None:
         """A subagent started / ended (harness ``task`` items): its status, ahead of the transcript."""
         key = item.get("tool_use_id")
@@ -247,6 +260,8 @@ class SessionManager:
                 await self._release(h)
 
     async def _snapshot(self, h: LiveHandle, phase: str) -> None:
+        if h.role == "review":
+            return  # it reads the agent's checkout and changes nothing there
         snap = await asyncio.to_thread(snapshots.take, h.cwd, phase)
         if not snap:
             return
@@ -737,6 +752,7 @@ class SessionManager:
         if h.session and h.session.is_command(text):
             item["command"] = True
         if h.state == "idle":
+            h.reported = None
             await self._snapshot(h, "start")
         self._emitter(h)(item)
         assert h.session
@@ -767,6 +783,8 @@ class SessionManager:
             await h.session.interrupt()
 
     async def set_mode(self, project: Project, sid: str, mode: str) -> None:
+        if project.session_meta(sid).get("role") == "review":
+            raise ValueError("The Review agent stays read-only")
         h = await self.ensure_live(project, sid, mode=mode)
         assert h.session
         await h.session.set_permission_mode(mode)
@@ -855,7 +873,9 @@ class SessionManager:
             return None
         root, branch = wt["path"], wt["branch"]
         kept = {"removed": False, "path": root, "branch": branch}
-        others = [r for r in await self.list_sessions(project) if r["id"] != sid and _inside(r["cwd"], root)]
+        # the agents working there keep it, and so does any session mid-turn there; an idle reviewer doesn't
+        others = [r for r in await self.list_sessions(project)
+                  if r["id"] != sid and _inside(r["cwd"], root) and (r["role"] == "worker" or r["live"] in BUSY)]
         if others:
             return {**kept, "reason": f"{_name(others[0])} still works there" if len(others) == 1 else f"{len(others)} other agents still work there"}
         if (await gitops.run_git(root, "status", "--porcelain")).strip():
@@ -866,6 +886,7 @@ class SessionManager:
         snap = await asyncio.to_thread(snapshots.take, root, "archive")
         project.set_session_meta(sid, released={"path": root, "branch": branch, "head": head, "tree": snap["tree"] if snap else None, "at": time.time()})
         await gitops.remove_worktree(project.path, root)
+        await self.release_gone(project)  # e.g. its reviewer, idle there
         deleted = bool(branch) and await gitops.git_ok(project.path, "branch", "-d", branch)  # -d: only when merged
         log.info("archived %s: removed its worktree %s%s", sid, root, f" and branch {branch}" if deleted else "")
         if project.board.agent(sid):

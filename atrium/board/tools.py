@@ -13,9 +13,11 @@ if TYPE_CHECKING:
 BOARD_SERVER = "board"
 
 
-def board_toolset(project: "Project", session_id: str | Callable[[], str | None]) -> list[ToolSpec]:
+def board_toolset(project: "Project", session_id: str | Callable[[], str | None],
+                  on_status: Callable[[str], None] | None = None) -> list[ToolSpec]:
     """Board tools bound to one session. ``session_id`` may be a callable when the
-    harness assigns the id only once the session has started (Codex threads)."""
+    harness assigns the id only once the session has started (Codex threads).
+    ``on_status`` hears the status the agent reports (done, waiting… — the review trigger)."""
     board = project.board
 
     def sid() -> str:
@@ -29,6 +31,8 @@ def board_toolset(project: "Project", session_id: str | Callable[[], str | None]
             doing=args.get("doing") or "",
             source="self",
         )
+        if on_status:
+            on_status(args.get("status") or "working")
         return "Status updated on the board."
 
     async def publish(args: dict[str, Any]) -> str:

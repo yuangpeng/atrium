@@ -195,7 +195,7 @@ class LiveSpec:
     resume: bool
     cwd: str
     name: str
-    role: str = "worker"  # worker | git
+    role: str = "worker"  # worker | git | review
     model: str | None = None
     effort: str | None = None
     permission_mode: str = "default"
@@ -251,6 +251,7 @@ class Harness(ABC):
     label: str
     permission_modes: list[dict[str, str]] = []
     git_agent_mode: str = "default"  # the Git agent's mode: reads freely, asks before anything else
+    review_agent_mode: str = "dontAsk"  # the Review agent's: its pre-approved read-only tools, nothing else, never asks
     models: list[dict[str, Any]] = []  # [{id, label, efforts?: [..], default_effort?}]
     efforts: list[str] = []  # reasoning-effort levels when a model does not list its own
 

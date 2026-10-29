@@ -131,6 +131,7 @@ export function DiffEditor({
   labels,
   onChange,
   onSave,
+  reveal,
 }: {
   id: string;
   original: string;
@@ -141,6 +142,8 @@ export function DiffEditor({
   labels?: { original: ReactNode; modified: ReactNode };
   onChange?: (v: string) => void;
   onSave?: () => void;
+  /** a line of the right (after) side to go to */
+  reveal?: Reveal;
 }) {
   const theme = useMonacoTheme();
   const prefs = useDiffPrefs();
@@ -148,6 +151,8 @@ export function DiffEditor({
   saveRef.current = onSave;
   const changeRef = useRef(onChange);
   changeRef.current = onChange;
+  const revealRef = useRef(reveal);
+  revealRef.current = reveal;
   const edRef = useRef<Monaco.editor.IStandaloneDiffEditor | null>(null);
   const [split, setSplit] = useState<number | null>(null); // left editor's width: the headers follow the sash
   const [changes, setChanges] = useState<{ n: number; at: number } | null>(null);
@@ -173,7 +178,16 @@ export function DiffEditor({
     mod.onDidChangeCursorPosition(count);
     orig.onDidLayoutChange((l) => setSplit(l.width));
     setSplit(orig.getLayoutInfo().width);
+    // a line asked for with the file: go there once the diff is computed (hiding unchanged regions scrolls)
+    const first = editor.onDidUpdateDiff(() => {
+      first.dispose();
+      if (revealRef.current) revealIn(mod, revealRef.current);
+    });
   };
+  useEffect(() => {
+    if (reveal && edRef.current) revealIn(edRef.current.getModifiedEditor(), reveal);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reveal?.nonce]);
   const go = (target: "next" | "previous") => {
     edRef.current?.goToDiff(target);
     edRef.current?.getModifiedEditor().focus();

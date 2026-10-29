@@ -590,7 +590,7 @@ class CodexLiveSession(LiveSession):
                 "type": "namespace",
                 "name": NS_ALIAS.get(ns, ns),
                 "description": {"board": "Atrium's shared project board", "web": "Web search (Serper) and page fetch (Jina Reader)",
-                                "graph": "Atrium's commit-graph view"}.get(ns, ns),
+                                "graph": "Atrium's commit-graph view", "review": "Atrium's code review: findings and drafts for the human"}.get(ns, ns),
                 "tools": [{"type": "function", "name": t.name, "description": t.description, "inputSchema": t.input_schema} for t in specs],
             })
         return out
@@ -742,6 +742,7 @@ class CodexHarness(Harness):
     label = "Codex"
     permission_modes = PERMISSION_MODES
     git_agent_mode = "read-only"
+    review_agent_mode = "read-only"
     models = [{"id": "", "label": "Default"}]
     efforts = DEFAULT_EFFORTS
 

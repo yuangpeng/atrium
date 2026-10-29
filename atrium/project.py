@@ -6,6 +6,7 @@
       board.json        board source of truth
       agents.json       session → agent name / role / harness
       reviews.json      per-session file review marks
+      code_review.json  the Code Review Agent: review sessions, rounds and findings per agent
       tracker.json      tracker offsets + run log
       git_view.json     the graph view chosen by the user or the Git Agent
       worktrees.json    every linked worktree seen, removed ones included (their sessions stay listed)
@@ -54,6 +55,7 @@ class Project:
 
         self.board = BoardStore(self)
         self.tracker: Any = None  # set by ProjectManager
+        self.review: Any = None  # the ReviewManager, set by ProjectManager
         self.deleted: set[str] = set()  # sessions deleted while running: late board writes are dropped
 
     def _ensure_state_dir(self) -> None:
@@ -128,6 +130,15 @@ class Project:
             path.unlink(missing_ok=True)
         else:
             _write_json(path, view)
+
+    # ---- code review state -------------------------------------------------
+    def code_review_state(self) -> dict[str, Any]:
+        with self._lock:
+            return _read_json(self.state_dir / "code_review.json", {})
+
+    def save_code_review_state(self, state: dict[str, Any]) -> None:
+        with self._lock:
+            _write_json(self.state_dir / "code_review.json", state)
 
     # ---- tracker state -----------------------------------------------------
     def tracker_state(self) -> dict[str, Any]:

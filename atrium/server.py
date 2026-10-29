@@ -22,6 +22,7 @@ from .events import Subscriber, hub
 from .gitagent import set_view
 from .harness import all_harnesses, get_harness
 from .project import Project, ProjectNotFound, projects
+from .review import ReviewManager
 from .sessions import WorkspaceGone, attachment_from_upload, sessions
 from .tracker import Tracker
 from .watch import ProjectWatcher, transcript_watcher
@@ -42,6 +43,7 @@ _watchers: dict[str, ProjectWatcher] = {}
 def _on_project_loaded(project: Project) -> None:
     project.tracker = Tracker(project, sessions)
     project.tracker.start()
+    project.review = ReviewManager(project, sessions)
     w = ProjectWatcher(project)
     w.start()
     _watchers[project.id] = w
@@ -55,6 +57,7 @@ async def lifespan(_app: FastAPI):
     hub.bind_loop(asyncio.get_running_loop())
     projects.on_create.append(_on_project_loaded)
     sessions.on_turn_end.append(lambda project, _sid: project.tracker and project.tracker.after_turn())
+    sessions.on_turn_end.append(lambda project, sid: project.review and project.review.turn_ended(sid))
     sessions.start_background()
     transcript_watcher.start()
     for p in config.projects():
@@ -310,10 +313,12 @@ async def get_compaction(pid: str, sid: str, cid: str):
 
 @app.delete("/api/p/{pid}/sessions/{sid}")
 async def delete_session(pid: str, sid: str):
+    p = P(pid)
     try:
-        backup = await sessions.delete(P(pid), sid)
+        backup = await sessions.delete(p, sid)
     except (NotImplementedError, ValueError) as e:
         raise HTTPException(400, str(e))
+    await p.review.forget(sid)  # its review session goes with it
     return {"ok": True, "backup": backup}
 
 
@@ -364,6 +369,7 @@ async def move_session(pid: str, sid: str, body: dict[str, Any] = Body(...)):
     except (ValueError, NotImplementedError) as e:
         raise HTTPException(400, str(e))
     transcript_watcher.add_project(p)  # watch where its transcript now goes
+    await p.review.follow(sid)  # its reviewer goes along
     if res.get("worktree"):
         hub.publish(f"project:{pid}", {"type": "git_changed"})
     return res
@@ -487,6 +493,69 @@ async def project_changes(pid: str):
         return out
 
     return await asyncio.to_thread(compute)
+
+
+# ---- code review -------------------------------------------------------------
+@app.get("/api/p/{pid}/reviews")
+async def reviews_summary(pid: str):
+    """Per agent: whether a review runs, findings left to decide on (the review inbox)."""
+    return P(pid).review.summary()
+
+
+@app.get("/api/p/{pid}/reviews/{wsid}")
+async def review_view(pid: str, wsid: str):
+    return P(pid).review.view(wsid)
+
+
+@app.post("/api/p/{pid}/reviews/{wsid}/run")
+async def review_run(pid: str, wsid: str):
+    try:
+        return await P(pid).review.run(wsid)
+    except (FileNotFoundError, RuntimeError, ValueError) as e:
+        raise HTTPException(400, str(e) or type(e).__name__)
+
+
+@app.post("/api/p/{pid}/reviews/{wsid}/findings")
+async def review_findings(pid: str, wsid: str, body: dict[str, Any] = Body(...)):
+    try:
+        return P(pid).review.set_status(wsid, int(body["round"]), [str(i) for i in body.get("ids") or []], body.get("status") or "")
+    except (KeyError, ValueError) as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/p/{pid}/reviews/{wsid}/send")
+async def review_send(pid: str, wsid: str, body: dict[str, Any] = Body(...)):
+    """Send review feedback to the agent (queued until its turn ends if it is busy)."""
+    try:
+        return await P(pid).review.send(wsid, body.get("text") or "", n=body.get("round"), draft=body.get("draft"))
+    except (FileNotFoundError, RuntimeError, ValueError) as e:
+        raise HTTPException(400, str(e) or type(e).__name__)
+
+
+@app.post("/api/p/{pid}/reviews/{wsid}/drafts/{did}/cancel")
+async def review_cancel_draft(pid: str, wsid: str, did: int):
+    P(pid).review.cancel_draft(wsid, did)
+    return {"ok": True}
+
+
+@app.post("/api/p/{pid}/reviews/{wsid}/outbox")
+async def review_deliver(pid: str, wsid: str):
+    """Send the queued feedback now, without waiting for the agent's turn to end."""
+    await P(pid).review.deliver_now(wsid)
+    return {"ok": True}
+
+
+@app.delete("/api/p/{pid}/reviews/{wsid}/outbox")
+async def review_cancel_outbox(pid: str, wsid: str):
+    P(pid).review.cancel_outbox(wsid)
+    return {"ok": True}
+
+
+@app.post("/api/p/{pid}/reviews/{wsid}/auto")
+async def review_auto(pid: str, wsid: str, body: dict[str, Any] = Body(...)):
+    """Automatic reviews for this agent: true / false, or null for the setting's default."""
+    P(pid).review.set_auto(wsid, body.get("auto"))
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------

@@ -56,6 +56,18 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "after_turn_seconds": 45,  # debounce: re-track shortly after a turn ends
     },
     "git_agent": {"harness": "claude-code", "model": ""},
+    # Code Review Agent: one read-only review session per agent. auto: review an agent's new changes
+    # when it reports its task done or waiting for the human (board.status); the Review button runs
+    # one any time. Nothing reaches the agent until the human sends it.
+    "review_agent": {
+        "auto": True,
+        "harness": "claude-code",
+        "model": "",
+        "effort": "",
+        "language": "",  # what the reviewer writes in; "" = the human's language
+        "delay_seconds": 15,  # after the turn ends; skipped if the agent is busy again by then
+        "max_concurrent": 2,  # automatic reviews running at once (the Review button doesn't wait)
+    },
     # Atrium's web tools (exposed to every agent as web.search / web.fetch)
     "web": {
         "serper_api_key": "",  # env SERPER_API_KEY wins

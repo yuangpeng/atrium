@@ -51,6 +51,7 @@ interface AppState {
   trackerVersion: number;
   gitVersion: number;
   fsVersion: number;
+  reviewVersion: number; // the Code Review Agent's rounds / findings changed
   fsPaths: string[];
   toasts: Toast[];
 
@@ -126,6 +127,7 @@ export const useApp = create<AppState>((set, get) => {
     trackerVersion: 0,
     gitVersion: 0,
     fsVersion: 0,
+    reviewVersion: 0,
     fsPaths: [],
     toasts: [],
 
@@ -188,6 +190,9 @@ export const useApp = create<AppState>((set, get) => {
             break;
           case "fs":
             set((s) => ({ fsVersion: s.fsVersion + 1, fsPaths: msg.paths || [] }));
+            break;
+          case "review":
+            set((s) => ({ reviewVersion: s.reviewVersion + 1 }));
             break;
           case "git_changed":
           case "git_view":

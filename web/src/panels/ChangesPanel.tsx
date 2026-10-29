@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, CheckCheck, CheckCircle2, Circle, ExternalLink, GitCommitHorizontal, Maximize2, Minimize2, Minus, Plus, RefreshCw, Undo2 } from "lucide-react";
-import { AgentChanges, api, ChangeDetail, ChangeFile, GitStatusFile, GitSummary } from "../api";
+import { AgentChanges, api, ChangeDetail, ChangeFile, GitStatusFile, GitSummary, ReviewSummary } from "../api";
 import { useApp } from "../store";
 import { agentColor, basename, clsx, displayName, languageFor, shortPath, throttle } from "../util";
 import { DiffEditor } from "../components/LazyEditors";
 import { DiffOptions } from "../components/DiffOptions";
 import { FileNav, FileTree, useFileTree } from "../components/FileTree";
+import { ReviewBadge, ReviewDrawer } from "../components/ReviewDrawer";
 import { Spinner, useFullscreen } from "../components/ui";
 
 const ST: Record<string, string> = { created: "A", modified: "M", deleted: "D", "created+deleted": "–" };
@@ -55,9 +56,11 @@ export function ChangesPanel() {
 
 // ---------------------------------------------------------------- per agent
 function AgentChangesView() {
-  const { project, sessions, sessionId, changesSession, fsVersion, toast, openFile } = useApp();
+  const { project, sessions, sessionId, changesSession, fsVersion, reviewVersion, toast, openFile } = useApp();
   const pid = project!.id;
   const [agents, setAgents] = useState<AgentChanges[] | null>(null);
+  const [reviews, setReviews] = useState<Record<string, ReviewSummary>>({});
+  const [reveal, setReveal] = useState<{ path: string; line: number; nonce: number } | null>(null); // a review finding's line
   const [sid, setSid] = useState<string | null>(changesSession ?? sessionId);
   const [files, setFiles] = useState<ChangeFile[] | null>(null);
   const [cwd, setCwd] = useState("");
@@ -95,6 +98,7 @@ function AgentChangesView() {
   }, [pid, sid, sel]);
 
   useEffect(() => void loadAgents(), [loadAgents]);
+  useEffect(() => void api.reviews(pid).then(setReviews).catch(() => setReviews({})), [pid, reviewVersion]);
   // nothing picked yet: start with the first agent that still has something to review
   useEffect(() => {
     if (!sid && agents?.length) setSid((agents.find((a) => a.unreviewed > 0) ?? agents[0]).session.id);
@@ -122,6 +126,22 @@ function AgentChangesView() {
 
   const cur = files?.find((f) => f.path === sel) ?? null;
   const row = sessions.find((s) => s.id === sid);
+  const pick = (path: string) => {
+    setSel(path);
+    setReveal(null);
+  };
+  // a review finding: its file in the diff when the agent changed it, else in the editor
+  const jump = useCallback(
+    (file: string, line: number | null) => {
+      const rel = file.replace(/^\.\//, "");
+      const abs = rel.startsWith("/") ? rel : `${cwd.replace(/\/$/, "")}/${rel}`;
+      const f = files?.find((x) => x.path === abs || x.rel === rel);
+      if (!f) return openFile(abs, cwd || undefined, line ? { line } : undefined);
+      setSel(f.path);
+      setReveal(line ? { path: f.path, line, nonce: Date.now() } : null);
+    },
+    [files, cwd, openFile],
+  );
 
   const review = async (fs: ChangeFile[], reviewed: boolean) => {
     // once the selected file is done, move on to the next one still to review (in tree order)
@@ -179,6 +199,7 @@ function AgentChangesView() {
             <span className="mono faint" style={{ fontSize: 11 }}>
               <span style={{ color: "var(--ok)" }}>+{a.added}</span> <span style={{ color: "var(--err)" }}>−{a.removed}</span>
             </span>
+            <ReviewBadge r={reviews[a.session.id]} />
             {a.unreviewed > 0 ? <span className="pill warn">{a.unreviewed}</span> : <CheckCircle2 size={14} style={{ color: "var(--ok)" }} />}
           </div>
         ))}
@@ -199,7 +220,7 @@ function AgentChangesView() {
             <FileTree
               nodes={tree.nodes}
               selected={cur ? changePath(cur) : null}
-              onSelect={(f) => setSel(f.path)}
+              onSelect={(f) => pick(f.path)}
               rowClass={(f) => !toReview(f) && "reviewed"}
               renderFile={(f, name) => (
                 <>
@@ -249,7 +270,7 @@ function AgentChangesView() {
                 </span>
               </div>
               <div className="r2">
-                <FileNav index={tree.order.indexOf(cur)} count={tree.order.length} onGo={(i) => setSel(tree.order[i].path)} />
+                <FileNav index={tree.order.indexOf(cur)} count={tree.order.length} onGo={(i) => pick(tree.order[i].path)} />
                 <span className="grow" />
                 {edited != null && (
                   <button className="btn btn-sm btn-primary" onClick={() => void saveEdit()}>
@@ -309,6 +330,7 @@ function AgentChangesView() {
                 }}
                 onChange={(v) => setEdited(v === (detail.current ?? "") ? null : v)}
                 onSave={() => void saveEdit()}
+                reveal={reveal?.path === cur.path ? reveal : undefined}
               />
             </div>
           </>
@@ -319,6 +341,7 @@ function AgentChangesView() {
             <div>Pick an agent and a file. Baselines come from git snapshots taken at every turn, falling back to the agent's transcript — so CLI sessions work too.</div>
           </div>
         )}
+        {sid && row?.role === "worker" && <ReviewDrawer pid={pid} wsid={sid} cwd={cwd || row.cwd} onJump={jump} />}
       </div>
     </div>
   );
