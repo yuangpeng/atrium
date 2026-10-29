@@ -44,8 +44,12 @@ from typing import Any, Awaitable, Callable
 #   permission  {id, tool, input, title?, description?, can_remember}
 #   permission_resolved {id, decision}
 #   result      {id, subtype, is_error, duration_ms, cost_usd, turns, text?}
-#   system      {id, subtype, text}            a subagent's end (subtype task_done) carries
-#                                               ``tool_use_id`` (its Agent call) or ``agent_id``
+#   system      {id, subtype, text, detail?}   a subagent's end (subtype task_done) carries
+#                                               ``tool_use_id`` (its Agent call) or ``agent_id``;
+#                                               a compaction (subtype compact) its id as ``compaction``
+#                                               (the part of the conversation it closed, see
+#                                               ``Compaction``); ``detail``: more text, shown folded
+#                                               (a compaction's summary, subtype compact_summary)
 #   error       {id, text}
 #   -- transient (not stored in history) --
 #   delta       {text}                          streaming assistant text
@@ -96,6 +100,23 @@ class SubagentSummary:
     tool_use_id: str | None = None  # the parent's tool call that spawned it
     model: str | None = None
     depth: int = 1
+
+
+@dataclass
+class Compaction:
+    """A compaction of a session's context: from then on the model sees the conversation before it
+    only as a summary.
+
+    The chat shows the conversation since the last compaction (as the harness itself does on resume).
+    The part each compaction closed is listed under its session, like a subagent, and opens read-only.
+    """
+
+    id: str  # Claude Code: its compact_boundary entry; Codex: its contextCompaction item
+    at: float | None  # when it happened (epoch seconds)
+    started_at: float | None = None  # when the part it closed began (the session's start, or the previous compaction)
+    trigger: str | None = None  # "manual" (asked for) or "auto" (the context filled up), when the harness records it
+    tokens: int | None = None  # the context's size just before
+    first_prompt: str = ""  # the first message the user sent in the part it closed
 
 
 @dataclass
@@ -234,7 +255,19 @@ class Harness(ABC):
 
     # ---- content -----------------------------------------------------------
     @abstractmethod
-    async def load_history(self, session_id: str, cwd: str) -> list[Item]: ...
+    async def load_history(self, session_id: str, cwd: str) -> list[Item]:
+        """The conversation since the last compaction, opening with its ``compact`` item: what the model
+        still sees. The parts before are ``load_compacted_history``'s."""
+
+    async def list_compactions(self, sessions: list[SessionSummary]) -> dict[str, list[Compaction]]:
+        """Compactions of these sessions (this harness's own), oldest first, keyed by session id. Called
+        on every session-list request, so implementations cache what is expensive to compute."""
+        return {}
+
+    async def load_compacted_history(self, session_id: str, compaction_id: str, cwd: str) -> list[Item]:
+        """The part of a conversation that a compaction closed: from the previous compaction (opening
+        with its ``compact`` item) or the start, up to this one. Raises FileNotFoundError if unknown."""
+        raise FileNotFoundError(f"no compaction {compaction_id} in session {session_id}")
 
     @abstractmethod
     def digest_lines(self, lines: list[str]) -> list[str]:

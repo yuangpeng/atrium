@@ -1,12 +1,13 @@
 import type { JSX } from "react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, ArrowUpRight, Brain, ChevronRight, GitFork, Info, Sparkle, Square } from "lucide-react";
+import { ArrowUp, ArrowUpRight, Brain, ChevronRight, FoldVertical, GitFork, Info, Sparkle, Square } from "lucide-react";
 import { api, ForkAt, Item, LiveState, SessionRow, SessionSettings } from "../api";
 import { socket } from "../ws";
 import { useApp } from "../store";
 import { EMPTY_REPLY, useDrafts } from "../drafts";
 import { clsx, fmtDuration } from "../util";
 import { Markdown, Spinner } from "../components/ui";
+import { useOpenCompaction } from "../components/Compactions";
 import { BoardToolRow, PermissionCard, ToolRow, isBoardTool, useOpenSubagent } from "./ToolViews";
 import { AttachButton, AttachmentTray, ContextRing, EffortPicker, HarnessChip, MessageAttachments, ModelChip, PendingUpload, PermissionPicker, WorkspaceChip, effortOptions, useAttachments } from "./Composer";
 
@@ -196,10 +197,39 @@ export function Transcript({ blocks, results, running, cwd, forks, onFork }: {
   return <>{rendered}</>;
 }
 
-/** Info line; a subagent's end links to it (it can land turns after its Agent row, which has a link of its own). */
+/** Info line; a subagent's end links to it (it can land turns after its Agent row, which has a link of its own).
+ *  A compaction is a rule across the chat that opens the conversation before it; a summary's text folds. */
 function SystemLine({ item }: { item: SystemItem }) {
   const done = item.subtype === "task_done";
   const open = useOpenSubagent(done ? (item.tool_use_id ?? null) : null, done && item.agent_id ? [item.agent_id] : undefined);
+  const earlier = useOpenCompaction(item.subtype === "compact" ? (item.compaction ?? null) : null);
+  if (item.subtype === "compact")
+    return (
+      <div className="msg-compact">
+        <FoldVertical size={12} style={{ flex: "none" }} />
+        <span>
+          {item.text}
+          {earlier && (
+            <button className="sub-link inline" title="What came before, read-only (the agent keeps a summary)" onClick={earlier}>
+              Earlier messages <ArrowUpRight size={12} />
+            </button>
+          )}
+        </span>
+      </div>
+    );
+  if (item.detail)
+    return (
+      <details className="msg-system-detail">
+        <summary className="msg-system">
+          <Info size={12} style={{ flex: "none" }} />
+          <span>{item.text}</span>
+          <ChevronRight size={12} className="chev" />
+        </summary>
+        <div className="msg-output">
+          <Markdown text={item.detail} />
+        </div>
+      </details>
+    );
   return (
     <div className="msg-system">
       <Info size={12} style={{ flex: "none" }} />

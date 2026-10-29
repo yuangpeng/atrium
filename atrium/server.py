@@ -298,6 +298,11 @@ async def get_subagent(pid: str, sid: str, aid: str):
     return await sessions.subagent(P(pid), sid, aid)
 
 
+@app.get("/api/p/{pid}/sessions/{sid}/compactions/{cid}")
+async def get_compaction(pid: str, sid: str, cid: str):
+    return await sessions.compaction(P(pid), sid, cid)
+
+
 @app.delete("/api/p/{pid}/sessions/{sid}")
 async def delete_session(pid: str, sid: str):
     try:

@@ -1,4 +1,4 @@
-import type { JSX } from "react";
+import type { JSX, ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { Archive, ArchiveRestore, ArrowLeft, ChevronRight, FileDiff, Files, FolderOpen, GitBranch, GitFork, LayoutDashboard, MessageSquare, PanelRightClose, Plug, Unplug } from "lucide-react";
@@ -13,7 +13,9 @@ import { useFullscreenElement } from "./components/ui";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { ChatView } from "./chat/ChatView";
 import { SubagentView } from "./chat/SubagentView";
+import { CompactionView } from "./chat/CompactionView";
 import { SUBAGENT_STATUS, SubagentAvatar, subagentLabel } from "./components/Subagents";
+import { CompactionAvatar, compactedWhen, compactionFacts, compactionLabel } from "./components/Compactions";
 import { BoardPanel } from "./panels/BoardPanel";
 import { FilesPanel } from "./panels/FilesPanel";
 import { ChangesPanel } from "./panels/ChangesPanel";
@@ -118,15 +120,14 @@ function SessionHeader() {
   );
 }
 
-/** Parent › subagent; the way back is the parent's name or the arrow. */
-function SubagentHeader({ parent, aid }: { parent: SessionRow | undefined; aid: string }) {
+/** Agent › what opened under it (a subagent, compacted history); the way back is the agent's name or the arrow. */
+function ChildHeader({ parent, children }: { parent: SessionRow | undefined; children: ReactNode }) {
   const selectSession = useApp((s) => s.selectSession);
-  const sub = parent?.subagents?.find((a) => a.id === aid);
   const back = () => parent && selectSession(parent.id);
   return (
     <div className="topbar bordered">
       <div className="t-name">
-        <button className="icon-btn sm" title="Back to the parent agent" onClick={back}>
+        <button className="icon-btn sm" title={`Back to ${parent ? displayName(parent) : "the agent"}`} onClick={back}>
           <ArrowLeft size={15} />
         </button>
         {parent && (
@@ -137,16 +138,39 @@ function SubagentHeader({ parent, aid }: { parent: SessionRow | undefined; aid: 
             <ChevronRight size={14} className="faint" style={{ flex: "none" }} />
           </>
         )}
-        {sub && parent && <SubagentAvatar a={sub} harness={parent.harness} size={22} />}
-        <span className="ellipsis" title={sub?.description}>
-          {sub ? subagentLabel(sub) : "Subagent"}
-        </span>
-        {sub && <span className={clsx("dot", SUBAGENT_STATUS[sub.status].dot)} title={SUBAGENT_STATUS[sub.status].label} />}
+        {children}
       </div>
       <div className="actions">
         <CloseChat />
       </div>
     </div>
+  );
+}
+
+function SubagentHeader({ parent, aid }: { parent: SessionRow | undefined; aid: string }) {
+  const sub = parent?.subagents?.find((a) => a.id === aid);
+  return (
+    <ChildHeader parent={parent}>
+      {sub && parent && <SubagentAvatar a={sub} harness={parent.harness} size={22} />}
+      <span className="ellipsis" title={sub?.description}>
+        {sub ? subagentLabel(sub) : "Subagent"}
+      </span>
+      {sub && <span className={clsx("dot", SUBAGENT_STATUS[sub.status].dot)} title={SUBAGENT_STATUS[sub.status].label} />}
+    </ChildHeader>
+  );
+}
+
+function CompactionHeader({ parent, cid }: { parent: SessionRow | undefined; cid: string }) {
+  const n = parent?.compactions?.findIndex((c) => c.id === cid) ?? -1;
+  const c = parent?.compactions?.[n];
+  return (
+    <ChildHeader parent={parent}>
+      {parent && <CompactionAvatar harness={parent.harness} size={22} />}
+      <span style={{ flex: "none" }} title={c ? compactionFacts(c) : undefined}>
+        {n >= 0 ? compactionLabel(n + 1) : "Compacted history"}
+      </span>
+      {c?.at && <span className="pill hide-narrow">{compactedWhen(c)}</span>}
+    </ChildHeader>
   );
 }
 
@@ -203,7 +227,7 @@ function Workspace() {
 
 /** The selected agent's conversation, or the new-agent composer — right of the workspace. */
 function ChatColumn() {
-  const { project, sessionId, subagentId, sessions, chatWidth, setChatWidth } = useApp();
+  const { project, sessionId, subagentId, compactionId, sessions, chatWidth, setChatWidth } = useApp();
   const [drag, setDrag] = useState(false);
   useEffect(() => {
     if (!drag) return;
@@ -242,6 +266,11 @@ function ChatColumn() {
         <>
           <SubagentHeader parent={current} aid={subagentId} />
           <SubagentView key={`${sessionId}/${subagentId}`} pid={project.id} sid={sessionId} aid={subagentId} cwd={current?.cwd ?? project.path} />
+        </>
+      ) : sessionId && compactionId ? (
+        <>
+          <CompactionHeader parent={current} cid={compactionId} />
+          <CompactionView key={`${sessionId}/${compactionId}`} pid={project.id} sid={sessionId} cid={compactionId} cwd={current?.cwd ?? project.path} />
         </>
       ) : sessionId ? (
         <>

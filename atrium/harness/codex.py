@@ -18,15 +18,17 @@ import logging
 import mimetypes
 import os
 import shlex
+import threading
 import time
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from ..config import config
-from .base import Attachment, Emit, FileEdit, ForkPoint, Harness, Item, LiveSession, LiveSpec, SessionSummary, SubagentSummary, ToolSpec
+from .base import Attachment, Compaction, Emit, FileEdit, ForkPoint, Harness, Item, LiveSession, LiveSpec, SessionSummary, SubagentSummary, ToolSpec
 from .codex_rpc import AppServerClient, RpcError
-from .util import attachment_note, clip, hhmm, parse_json_loose, short, split_attachment_note, strict_schema, upload_url
+from .util import TailScan, attachment_note, clip, hhmm, iso_to_epoch, parse_json_loose, short, split_attachment_note, strict_schema, tail_scan, upload_url
 
 log = logging.getLogger("atrium.codex")
 
@@ -209,7 +211,7 @@ def message_items(item: dict[str, Any]) -> list[Item]:
     if t == "plan":
         return [{"kind": "text", "id": iid, "text": item.get("text") or ""}]
     if t == "contextCompaction":
-        return [{"kind": "system", "id": iid, "subtype": "compact", "text": "Conversation compacted"}]
+        return [{"kind": "system", "id": iid, "subtype": "compact", "text": "Conversation compacted", "compaction": iid}]
     if t in ("enteredReviewMode", "exitedReviewMode"):
         return [{"kind": "system", "id": iid, "subtype": t, "text": f"{'Entered' if t.startswith('entered') else 'Exited'} review mode"}]
     return []
@@ -576,6 +578,8 @@ class CodexHarness(Harness):
         self._list_warned = False
         self._spawns_cache: dict[str, tuple[int, list[tuple[str, str]]]] = {}  # rollout -> (size, [(sub-agent thread, spawn call)])
         self._thread_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}  # thread/read, briefly
+        self._compaction_cache: dict[str, _CompactionScan] = {}  # rollout path -> what's read of it
+        self._compaction_lock = threading.Lock()
 
     @property
     def client(self) -> AppServerClient:
@@ -745,7 +749,51 @@ class CodexHarness(Harness):
         return t
 
     async def load_subagent_history(self, session_id: str, agent_id: str, cwd: str) -> list[Item]:
-        return await self.load_history(agent_id, cwd)  # a sub-agent is a thread of its own
+        return await self._thread_items(agent_id)  # a sub-agent is a thread of its own, shown whole
+
+    # ---- compactions: "compacted" rollout entries, each followed by its contextCompaction item
+    async def list_compactions(self, sessions: list[SessionSummary]) -> dict[str, list[Compaction]]:
+        def scan() -> dict[str, list[Compaction]]:
+            found = {s.id: self._compactions(Path(s.transcript)) for s in sessions if s.harness == self.id and s.transcript}
+            return {sid: cs for sid, cs in found.items() if cs}
+
+        return await asyncio.to_thread(scan)
+
+    def _compactions(self, path: Path) -> list[Compaction]:
+        with self._compaction_lock:
+            scan = tail_scan(self._compaction_cache, path, _CompactionScan)
+            return scan.compactions() if scan else []
+
+    def _rollout_compactions(self, path: Path) -> tuple[list[Compaction], list[str]]:
+        return self._compactions(path), _compaction_summaries(path)
+
+    async def _parts(self, session_id: str, cwd: str) -> tuple[list[Item], list[int]]:
+        """A thread's whole conversation and where its compactions are in it: each with its id as listed
+        (``compaction``), and followed by its summary when the rollout has it."""
+        items = await self._thread_items(session_id)
+        count = sum(1 for it in items if _is_compact(it))
+        path = self.transcript_path(session_id, cwd) if count else None
+        listed, summaries = await asyncio.to_thread(self._rollout_compactions, path) if path else ([], [])
+        out: list[Item] = []
+        marks: list[int] = []
+        for it in items:
+            out.append(it)
+            if not _is_compact(it):
+                continue
+            n = len(marks)
+            marks.append(len(out) - 1)
+            if len(listed) == count:  # by position: an older rollout's compactions have no item ids
+                it["compaction"] = listed[n].id
+            if len(summaries) == count and summaries[n]:  # a remote compaction leaves nothing readable
+                out.append({"kind": "system", "id": f"{it['id']}:summary", "subtype": "compact_summary", "text": "Summary of the earlier conversation", "detail": summaries[n]})
+        return out, marks
+
+    async def load_compacted_history(self, session_id: str, compaction_id: str, cwd: str) -> list[Item]:
+        items, marks = await self._parts(session_id, cwd)
+        at = next((n for n, i in enumerate(marks) if items[i].get("compaction") == compaction_id), None)
+        if at is None:
+            raise FileNotFoundError(f"no compaction {compaction_id} in session {session_id}")
+        return items[marks[at - 1] if at else 0 : marks[at]]
 
     def _summary(self, t: dict[str, Any]) -> SessionSummary:
         if t.get("path"):
@@ -859,8 +907,12 @@ class CodexHarness(Harness):
                 break
         return turns
 
-    async def load_history(self, session_id: str, cwd: str) -> list[Item]:
+    async def _thread_items(self, session_id: str) -> list[Item]:
         return [it for turn in await self._turns(session_id) for it in turn_items(turn)]
+
+    async def load_history(self, session_id: str, cwd: str) -> list[Item]:
+        items, marks = await self._parts(session_id, cwd)
+        return items[marks[-1] :] if marks else items
 
     def digest_lines(self, lines: list[str]) -> list[str]:
         out: list[str] = []
@@ -999,6 +1051,82 @@ def _epoch(v: Any) -> float | None:
         return float(v) if v else None
     except (TypeError, ValueError):
         return None
+
+
+def _is_compact(it: Item) -> bool:
+    return it["kind"] == "system" and it.get("subtype") == "compact"
+
+
+class _CompactionScan(TailScan):
+    """A rollout's compactions ("compacted" entries, named by the contextCompaction item that follows
+    each), with when each part began, its first prompt and the context's size before."""
+
+    def __init__(self, ino: int):
+        super().__init__(ino)
+        self.thread: str | None = None  # the rollout's own thread (others' items show up in it too)
+        self.started: float | None = None  # when the part being read began
+        self.prompt: str | None = None  # its first prompt, once read
+        self.tokens: int | None = None  # the context sent with the last model call
+        self.found: list[Compaction] = []
+        self.named = 0  # how many of them have their item id
+
+    def line(self, raw: bytes) -> None:
+        wanted = (b'"compacted"', b'"ContextCompaction"', b'"token_count"') + ((b'"UserMessage"', b'"user_message"') if self.prompt is None else ())
+        if self.started is not None and not any(w in raw for w in wanted):
+            return
+        try:
+            d = json.loads(raw)
+        except ValueError:
+            return
+        p = d.get("payload") if isinstance(d, dict) else None
+        if not isinstance(p, dict):
+            return
+        ts = iso_to_epoch(d.get("timestamp"))
+        if self.started is None:
+            self.started = ts
+        item = p.get("item")
+        item = item if isinstance(item, dict) else {}
+        own = not self.thread or p.get("thread_id") in (None, self.thread)
+        if d.get("type") == "session_meta":
+            self.thread = p.get("id")
+        elif d.get("type") == "compacted":
+            self.found.append(Compaction(id="", at=ts, started_at=self.started, tokens=self.tokens, first_prompt=self.prompt or ""))
+            self.started, self.prompt = ts, None
+        elif p.get("type") == "item_completed" and item.get("type") == "ContextCompaction" and own:
+            if self.named < len(self.found):
+                self.found[self.named].id = item.get("id") or ""
+                self.named += 1
+        elif p.get("type") == "token_count":
+            self.tokens = ((p.get("info") or {}).get("last_token_usage") or {}).get("input_tokens") or self.tokens
+        elif self.prompt is None and own:
+            text = None
+            if p.get("type") == "item_completed" and item.get("type") == "UserMessage":
+                text = "\n".join(c.get("text") or "" for c in item.get("content") or [] if isinstance(c, dict) and c.get("type") == "text")
+            elif p.get("type") == "user_message":  # older rollouts
+                text = p.get("message")
+            if isinstance(text, str) and text.strip():
+                self.prompt = short(split_attachment_note(text)[0], 300)
+
+    def compactions(self) -> list[Compaction]:
+        """As listed: an older rollout's compactions (no item ids) are numbered."""
+        return [c if c.id else replace(c, id=f"compaction-{n}") for n, c in enumerate(self.found, 1)]
+
+
+def _compaction_summaries(path: Path) -> list[str]:
+    """What each compaction in a rollout left the model, in order ("" for a remote compaction's, which
+    isn't readable)."""
+    out: list[str] = []
+    with path.open(encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            if '"type":"compacted"' not in line:
+                continue
+            try:
+                d = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(d, dict) and d.get("type") == "compacted":
+                out.append(((d.get("payload") or {}).get("message") or "").strip())
+    return out
 
 
 def _turn_of(turns: list[dict[str, Any]], anchor: str) -> int | None:

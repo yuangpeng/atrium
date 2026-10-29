@@ -35,6 +35,7 @@ interface AppState {
   sessions: SessionRow[];
   sessionId: string | null;
   subagentId: string | null; // a subagent of the selected session, shown read-only in the chat column
+  compactionId: string | null; // ... or the part of its conversation a compaction closed, also read-only
   panel: Panel; // the workspace tab (left, always shown)
   chatOpen: boolean; // the chat column (right)
   chatWidth: number;
@@ -62,6 +63,7 @@ interface AppState {
   refreshSessions: () => Promise<void>;
   selectSession: (sid: string | null) => void;
   selectSubagent: (sid: string, aid: string) => void;
+  selectCompaction: (sid: string, cid: string) => void;
   setPanel: (p: Panel) => void;
   setChatOpen: (v: boolean) => void;
   setChatWidth: (w: number) => void;
@@ -80,11 +82,12 @@ let toastId = 0;
 let sessionsAsked = 0; // session-list requests sent
 let sessionsShown = 0; // the one whose answer is in the store
 
-function syncUrl(pid: string | null, sid: string | null, aid: string | null = null) {
+function syncUrl(pid: string | null, sid: string | null, aid: string | null = null, cid: string | null = null) {
   const u = new URL(location.href);
   pid ? u.searchParams.set("project", pid) : u.searchParams.delete("project");
   sid ? u.searchParams.set("session", sid) : u.searchParams.delete("session");
   aid ? u.searchParams.set("agent", aid) : u.searchParams.delete("agent");
+  cid ? u.searchParams.set("compaction", cid) : u.searchParams.delete("compaction");
   history.replaceState(null, "", u.toString());
 }
 
@@ -108,6 +111,7 @@ export const useApp = create<AppState>((set, get) => {
     sessions: [],
     sessionId: null,
     subagentId: null,
+    compactionId: null,
     panel: PANELS.find((p) => p === localStorage.getItem("atrium.panel")) ?? "board",
     chatOpen: localStorage.getItem("atrium.chatOpen") !== "0",
     chatWidth: Number(localStorage.getItem("atrium.chatWidth")) || Math.round(Math.min(520, Math.max(400, window.innerWidth * 0.3))),
@@ -136,7 +140,9 @@ export const useApp = create<AppState>((set, get) => {
         await get().openProject(pid);
         const sid = params.get("session");
         const aid = params.get("agent");
+        const cid = params.get("compaction");
         if (sid && aid) get().selectSubagent(sid, aid);
+        else if (sid && cid) get().selectCompaction(sid, cid);
         else if (sid) get().selectSession(sid);
       } else {
         set({ pickerOpen: true });
@@ -159,13 +165,13 @@ export const useApp = create<AppState>((set, get) => {
       unsubProject?.();
       unsubProject = null;
       if (!pid) {
-        set({ project: null, sessions: [], sessionId: null, subagentId: null });
+        set({ project: null, sessions: [], sessionId: null, subagentId: null, compactionId: null });
         syncUrl(null, null);
         return;
       }
       const project = await api.project(pid);
       localStorage.setItem("atrium.project", pid);
-      set({ project, sessions: [], sessionId: null, subagentId: null, changesSession: null, fileRequest: null, forkRequest: null });
+      set({ project, sessions: [], sessionId: null, subagentId: null, compactionId: null, changesSession: null, fileRequest: null, forkRequest: null });
       syncUrl(pid, null);
       unsubProject = socket.subscribe(`project:${pid}`, (msg) => {
         switch (msg.type) {
@@ -227,13 +233,18 @@ export const useApp = create<AppState>((set, get) => {
 
     selectSession: (sid) => {
       get().setChatOpen(true);
-      set({ sessionId: sid, subagentId: null });
+      set({ sessionId: sid, subagentId: null, compactionId: null });
       syncUrl(get().project?.id ?? null, sid);
     },
     selectSubagent: (sid, aid) => {
       get().setChatOpen(true);
-      set({ sessionId: sid, subagentId: aid });
+      set({ sessionId: sid, subagentId: aid, compactionId: null });
       syncUrl(get().project?.id ?? null, sid, aid);
+    },
+    selectCompaction: (sid, cid) => {
+      get().setChatOpen(true);
+      set({ sessionId: sid, subagentId: null, compactionId: cid });
+      syncUrl(get().project?.id ?? null, sid, null, cid);
     },
 
     setPanel: (p) => {

@@ -100,7 +100,7 @@ function HoverCard({ anchor, children }: { anchor: HTMLElement; children: ReactN
 
 /** An agent's unsent reply while its composer isn't on screen: the first line, else what's attached. */
 function useDraftAway(sid: string): string | null {
-  const away = useApp((st) => st.sessionId !== sid || !!st.subagentId);
+  const away = useApp((st) => st.sessionId !== sid || !!st.subagentId || !!st.compactionId);
   const d = useDrafts((st) => st.bySession[sid]);
   if (!away || !d || !hasReply(d)) return null;
   const n = d.attachments.length;
@@ -162,10 +162,10 @@ function Tip({ title, sub, hint }: { title: ReactNode; sub?: ReactNode; hint?: s
 
 // ---------------------------------------------------------------- flyout with the full list
 function AgentsFlyout({ onClose }: { onClose: () => void }) {
-  const { project, meta, sessions, sessionId, subagentId, selectSession, showArchived, setShowArchived, refreshSessions, toast } = useApp();
+  const { project, meta, sessions, sessionId, subagentId, compactionId, selectSession, showArchived, setShowArchived, refreshSessions, toast } = useApp();
   const glyphs = useGlyphs();
   // agents with an unsent reply, but not the one whose composer is on screen
-  const drafted = useDrafts(useShallow((d) => Object.keys(d.bySession).filter((k) => hasReply(d.bySession[k]) && (k !== sessionId || !!subagentId))));
+  const drafted = useDrafts(useShallow((d) => Object.keys(d.bySession).filter((k) => hasReply(d.bySession[k]) && (k !== sessionId || !!subagentId || !!compactionId))));
   const updateReply = useDrafts((d) => d.updateReply);
   const setArchived = async (s: SessionRow, archived: boolean) => {
     if (!project) return;
@@ -282,7 +282,7 @@ function AgentsFlyout({ onClose }: { onClose: () => void }) {
 // ---------------------------------------------------------------- rail
 export function Rail() {
   useTick(30000);
-  const { project, sessions, sessionId, subagentId, selectSession, selectSubagent, refreshSessions, setPickerOpen, setSettingsOpen, theme, setTheme, setPanel } =
+  const { project, sessions, sessionId, subagentId, compactionId, selectSession, selectSubagent, selectCompaction, refreshSessions, setPickerOpen, setSettingsOpen, theme, setTheme, setPanel } =
     useApp();
   const draftWaiting = useDrafts((s) => hasContent(s.byProject[project?.id ?? ""]));
   const [tip, setTip] = useState<{ el: HTMLElement; content: ReactNode } | null>(null);
@@ -293,10 +293,11 @@ export function Rail() {
     const w = sessions.filter((s) => s.role === "worker" && !s.archived);
     return [...w.filter(isActive), ...w.filter((s) => !isActive(s))];
   }, [sessions]);
-  useEffect(() => setCollapsed(false), [sessionId, subagentId]);
+  const childOpen = !!subagentId || !!compactionId; // a subagent or compacted history in the chat column, not the agent's chat
+  useEffect(() => setCollapsed(false), [sessionId, subagentId, compactionId]);
   // subagent progress rarely triggers a session event (and can only be guessed for CLI sessions): poll meanwhile
   useInterval(() => void refreshSessions(), workers.some((s) => s.subagents?.some((a) => a.status === "running")) ? 4000 : null);
-  const pickAgent = (s: SessionRow) => (s.id === sessionId && !subagentId ? setCollapsed((c) => !c) : selectSession(s.id));
+  const pickAgent = (s: SessionRow) => (s.id === sessionId && !childOpen ? setCollapsed((c) => !c) : selectSession(s.id));
   const live = sessions.filter((s) => s.live).length;
   const hoverProps = (content: ReactNode) => ({
     onMouseEnter: (e: React.MouseEvent<HTMLElement>) => setTip({ el: e.currentTarget, content }),
@@ -325,23 +326,32 @@ export function Rail() {
             {workers.map((s) => {
               const sc = statusClass(s);
               const subs = s.subagents ?? [];
-              const open = s.id === sessionId && !collapsed && subs.length > 0;
+              const kids = subs.length + (s.compactions?.length ?? 0);
+              const open = s.id === sessionId && !collapsed && kids > 0;
               return (
                 <Fragment key={s.id}>
                   <button
-                    className={clsx("rail-agent", s.id === sessionId && !subagentId && "on", s.id === sessionId && subagentId && "parent-on")}
+                    className={clsx("rail-agent", s.id === sessionId && !childOpen && "on", s.id === sessionId && childOpen && "parent-on")}
                     onClick={click(() => pickAgent(s))}
-                    aria-expanded={subs.length ? open : undefined}
+                    aria-expanded={kids ? open : undefined}
                     {...hoverProps(<AgentTip s={s} glyph={glyphs.get(s.id)} />)}
                   >
                     <AgentAvatar s={s} glyph={glyphs.get(s.id)} />
                     {sc && <span className={clsx("st dot", sc)} />}
                     {s.pending > 0 && <span className="pend">{s.pending}</span>}
-                    {subs.length > 0 && !open && (
-                      <span className={clsx("subs-n", subs.some((a) => a.status === "running") && "on")}>{subs.length}</span>
+                    {kids > 0 && !open && (
+                      <span className={clsx("subs-n", subs.some((a) => a.status === "running") && "on")}>{kids}</span>
                     )}
                   </button>
-                  {subs.length > 0 && <RailSubagents parent={s} open={open} hover={hoverProps} onPick={(a) => (setTip(null), selectSubagent(s.id, a.id))} />}
+                  {kids > 0 && (
+                    <RailSubagents
+                      parent={s}
+                      open={open}
+                      hover={hoverProps}
+                      onPick={(a) => (setTip(null), selectSubagent(s.id, a.id))}
+                      onPickCompaction={(c) => (setTip(null), selectCompaction(s.id, c.id))}
+                    />
+                  )}
                 </Fragment>
               );
             })}

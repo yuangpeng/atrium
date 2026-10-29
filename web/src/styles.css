@@ -291,6 +291,21 @@ a { color: var(--accent-strong); }
 .msg-thinking summary::-webkit-details-marker { display: none; }
 .msg-thinking .content { white-space: pre-wrap; margin-top: 6px; font-style: italic; }
 .msg-system { align-self: center; font-size: 12px; color: var(--faint); display: flex; align-items: center; gap: 6px; text-align: center; }
+/* where a compaction cut the conversation: a rule across the chat */
+.msg-compact { align-self: stretch; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--faint); }
+.msg-compact::before, .msg-compact::after { content: ""; flex: 1 0 16px; border-top: 1px dashed var(--border-strong); }
+.msg-compact > span { min-width: 0; text-align: center; }
+.msg-compact::before { margin-right: 4px; }
+.msg-compact::after { margin-left: 4px; }
+.msg-output { border-left: 2px solid var(--border-strong); padding: 2px 0 2px 12px; color: var(--text-2); font: 12.5px/1.55 var(--font-mono); overflow-x: auto; }
+.msg-output .md p { white-space: pre-wrap; }
+/* an info line with more to read: a compaction's summary */
+.msg-system-detail { align-self: stretch; }
+.msg-system-detail > summary { list-style: none; cursor: pointer; justify-content: center; }
+.msg-system-detail > summary::-webkit-details-marker { display: none; }
+.msg-system-detail > summary:hover { color: var(--muted); }
+.msg-system-detail[open] .chev { transform: rotate(90deg); }
+.msg-system-detail > .msg-output { margin-top: 8px; max-height: 420px; overflow-y: auto; font-family: var(--font-ui); font-size: 13px; }
 .msg-result { align-self: flex-start; font-size: 12px; color: var(--faint); display: flex; gap: 10px; align-items: center; }
 .msg-error { background: var(--err-soft); color: var(--err); border-radius: 10px; padding: 10px 12px; font-size: 13px; white-space: pre-wrap; font-family: var(--font-mono); }
 .stream-cursor::after { content: ""; display: inline-block; width: 8px; height: 16px; margin-left: 2px; vertical-align: -2px; background: var(--accent); border-radius: 2px; animation: pulse 1s infinite; }
@@ -697,6 +712,9 @@ body.col-resizing iframe { pointer-events: none; } /* the board's would take the
 .sub-av.h-claude-code { --hc: #d97757; }
 .sub-av.h-codex { --hc: #10a37f; }
 [data-theme="dark"] .sub-av { color: color-mix(in srgb, var(--hc) 70%, #fff); }
+/* compacted history: the same circle, dashed (read-only, out of the agent's context) */
+.compaction-av { box-shadow: none; outline: 1.5px dashed color-mix(in srgb, var(--hc) 50%, transparent); outline-offset: -1.5px; }
+.rail-sub.on .compaction-av { box-shadow: 0 0 0 2px var(--sidebar), 0 0 0 3.5px var(--hc); }
 .dot.stopped { background: var(--faint); }
 /* chat: "Open" on Agent tool rows and subagent lines; the subagent view */
 .sub-link {

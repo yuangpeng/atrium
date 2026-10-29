@@ -124,6 +124,16 @@ export interface SubagentRow {
   depth: number;
 }
 
+/** A compaction of an agent's context: the conversation before it opens read-only, like a subagent. */
+export interface CompactionRow {
+  id: string;
+  at: number | null; // when it happened
+  started_at: number | null; // when the part it closed began
+  trigger: "manual" | "auto" | null; // asked for, or the context filled up (Claude)
+  tokens: number | null; // the context's size just before
+  first_prompt: string; // the first message sent in the part it closed
+}
+
 export interface SessionRow {
   id: string;
   harness: string;
@@ -145,6 +155,7 @@ export interface SessionRow {
   created_by: "atrium" | "external";
   effort: string;
   subagents: SubagentRow[]; // oldest first, nested ones included
+  compactions: CompactionRow[]; // oldest first; the chat shows the conversation since the last
   forked_from: { session: string; name: string | null; exists: boolean } | null;
 }
 
@@ -190,7 +201,19 @@ export type Item =
       text?: string | null;
       terminal_reason?: string | null;
     }
-  | { kind: "system"; id: string; subtype: string; text: string; model?: string; effort?: string | null; permission_mode?: string; tool_use_id?: string | null; agent_id?: string | null }
+  | {
+      kind: "system";
+      id: string;
+      subtype: string;
+      text: string;
+      detail?: string; // more text, shown folded (a compaction's summary)
+      compaction?: string; // a compaction (subtype compact): the part before opens read-only
+      model?: string;
+      effort?: string | null;
+      permission_mode?: string;
+      tool_use_id?: string | null;
+      agent_id?: string | null;
+    }
   | { kind: "error"; id: string; text: string }
   | { kind: "delta"; text: string }
   | { kind: "state"; state: LiveState }
@@ -447,6 +470,8 @@ export const api = {
   session: (pid: string, sid: string) => req<Snapshot>("GET", `/api/p/${pid}/sessions/${sid}`),
   subagent: (pid: string, sid: string, aid: string) =>
     req<{ subagent: SubagentRow; items: Item[] }>("GET", `/api/p/${pid}/sessions/${sid}/subagents/${encodeURIComponent(aid)}`),
+  compaction: (pid: string, sid: string, cid: string) =>
+    req<{ compaction: CompactionRow & { index: number }; items: Item[] }>("GET", `/api/p/${pid}/sessions/${sid}/compactions/${encodeURIComponent(cid)}`),
   patchSession: (pid: string, sid: string, body: { name?: string; archived?: boolean }) =>
     req("PATCH", `/api/p/${pid}/sessions/${sid}`, body),
   deleteSession: (pid: string, sid: string) => req<{ ok: boolean; backup: string | null }>("DELETE", `/api/p/${pid}/sessions/${sid}`),

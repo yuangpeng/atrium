@@ -18,7 +18,7 @@ from .config import UPLOADS_DIR, config
 from .events import hub
 from .gitagent import GIT_AGENT_ALLOWED_TOOLS, GIT_SERVER, git_toolset
 from .harness import all_harnesses, get_harness
-from .harness.base import Attachment, ForkPoint, Item, LiveSession, LiveSpec, SessionSummary, SubagentSummary
+from .harness.base import Attachment, Compaction, ForkPoint, Item, LiveSession, LiveSpec, SessionSummary, SubagentSummary
 from .harness.util import upload_url
 from .mcp.web import WEB_SERVER, web_toolset
 from .notify import notifier
@@ -324,10 +324,12 @@ class SessionManager:
         if not include_archived:
             out = [r for r in out if not r["archived"]]
         roots = [project.path] + [w["path"] for w in wts if w["path"] != project.path and not w.get("bare")]
-        listed = {r["id"] for r in out}
-        found = await self._subagents([s for s in summaries if s.id in listed], roots)
+        shown = {r["id"] for r in out}
+        listed = [s for s in summaries if s.id in shown]
+        found, compacted = await asyncio.gather(self._subagents(listed, roots), self._compactions(listed))
         for r in out:
             r["subagents"] = _subagent_rows(found.get(r["id"], []), self.live.get(r["id"]))
+            r["compactions"] = [asdict(c) for c in compacted.get(r["id"], [])]
         out.sort(key=lambda r: -(r["updated_at"] or 0))
         return out
 
@@ -354,6 +356,31 @@ class SessionManager:
         cwd, harness_id = await self.session_info(project, sid)
         items = await get_harness(harness_id).load_subagent_history(sid, aid, cwd)
         return {"subagent": sub, "items": items}
+
+    async def _compactions(self, summaries: list[SessionSummary]) -> dict[str, list[Compaction]]:
+        groups: dict[str, list[SessionSummary]] = {}
+        for s in summaries:
+            groups.setdefault(s.harness, []).append(s)
+        results = await asyncio.gather(*(get_harness(hid).list_compactions(ss) for hid, ss in groups.items()), return_exceptions=True)
+        found: dict[str, list[Compaction]] = {}
+        for hid, r in zip(groups, results):
+            if isinstance(r, BaseException):
+                log.warning("%s: listing compactions failed: %s", hid, r)
+            else:
+                found.update(r)
+        return found
+
+    async def compaction(self, project: Project, sid: str, cid: str) -> dict[str, Any]:
+        """The part of a session's conversation that a compaction closed (read-only: the agent now sees
+        it only as a summary), and the compaction (``index``: 1 for the session's first)."""
+        summary = await self.find_summary(project, sid)
+        found = (await self._compactions([summary])).get(sid, []) if summary else []
+        n = next((i for i, c in enumerate(found) if c.id == cid), None)
+        if n is None:
+            raise FileNotFoundError(f"no compaction {cid} in session {sid}")
+        cwd, harness_id = await self.session_info(project, sid)
+        items = await get_harness(harness_id).load_compacted_history(sid, cid, cwd)
+        return {"compaction": {**asdict(found[n]), "index": n + 1}, "items": items}
 
     # ---- operations --------------------------------------------------------
     def _lock(self, sid: str) -> asyncio.Lock:

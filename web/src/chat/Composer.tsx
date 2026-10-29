@@ -334,7 +334,7 @@ export function ModelChip({ harness, model, faded }: { harness: Harness; model: 
   );
 }
 
-const fmtTokens = (n: number) => (n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n));
+export const fmtTokens = (n: number) => (n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n));
 
 /** How full the context window is, as a ring (after Codex's); the numbers on hover. */
 export function ContextRing({ used, max }: { used?: number | null; max?: number | null }) {

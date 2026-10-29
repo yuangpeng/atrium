@@ -1,12 +1,13 @@
 // Subagents: the agents a session spawned (Claude's Agent tool, Codex sub-agent threads).
-// Read-only in Atrium: they open under their parent in the rail, and in the chat column.
+// Read-only in Atrium: they open under their parent in the rail (with its compacted history), and in the chat column.
 import type { CSSProperties, ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import { BookOpen, Bot, ChevronUp, FlaskConical, Map as MapIcon, ScanEye, ScanSearch } from "lucide-react";
-import { SessionRow, SubagentRow, SubagentStatus } from "../api";
+import { CompactionRow, SessionRow, SubagentRow, SubagentStatus } from "../api";
 import { useApp } from "../store";
 import { clsx, displayName, timeAgo } from "../util";
+import { CompactionAvatar, CompactionTip, compactionLabel } from "./Compactions";
 
 const GLYPHS: [RegExp, LucideIcon][] = [
   [/explor|search|research|scout/i, ScanSearch],
@@ -60,19 +61,31 @@ export function SubagentTip({ a, parent }: { a: SubagentRow; parent: SessionRow 
 const MAX_SHOWN = 6;
 type Hover = (content: ReactNode) => { onMouseEnter: (e: React.MouseEvent<HTMLElement>) => void; onMouseLeave: () => void };
 
-/** An agent's subagents, opened under it in the rail (running first, then newest). Always mounted, so it can slide open. */
-export function RailSubagents({ parent, open, hover, onPick }: { parent: SessionRow; open: boolean; hover: Hover; onPick: (a: SubagentRow) => void }) {
+type Entry = { sub: SubagentRow } | { compaction: CompactionRow; n: number };
+
+/** What opens under an agent in the rail: its subagents (running first, then newest), then its compacted
+ *  history (newest first). Always mounted, so it can slide open. */
+export function RailSubagents({ parent, open, hover, onPick, onPickCompaction }: {
+  parent: SessionRow;
+  open: boolean;
+  hover: Hover;
+  onPick: (a: SubagentRow) => void;
+  onPickCompaction: (c: CompactionRow) => void;
+}) {
   const sessionId = useApp((s) => s.sessionId);
   const subagentId = useApp((s) => s.subagentId);
+  const compactionId = useApp((s) => s.compactionId);
   const [all, setAll] = useState(false);
-  const subs = useMemo(
-    () =>
-      [...parent.subagents].sort(
-        (x, y) => Number(y.status === "running") - Number(x.status === "running") || (y.created_at ?? y.updated_at) - (x.created_at ?? x.updated_at),
-      ),
-    [parent.subagents],
+  const entries = useMemo<Entry[]>(
+    () => [
+      ...[...parent.subagents]
+        .sort((x, y) => Number(y.status === "running") - Number(x.status === "running") || (y.created_at ?? y.updated_at) - (x.created_at ?? x.updated_at))
+        .map((sub) => ({ sub })),
+      ...(parent.compactions ?? []).map((compaction, i) => ({ compaction, n: i + 1 })).reverse(),
+    ],
+    [parent.subagents, parent.compactions],
   );
-  const shown = all ? subs : subs.slice(0, MAX_SHOWN);
+  const shown = all ? entries : entries.slice(0, MAX_SHOWN);
   const tab = open ? 0 : -1;
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -83,28 +96,42 @@ export function RailSubagents({ parent, open, hover, onPick }: { parent: Session
   return (
     <div ref={ref} className={clsx("rail-subs", `h-${parent.harness}`, open && "open")} aria-hidden={!open}>
       <div className="rail-subs-inner">
-        {shown.map((a, i) => (
-          <button
-            key={a.id}
-            className={clsx("rail-sub", parent.id === sessionId && a.id === subagentId && "on")}
-            style={{ "--i": i } as CSSProperties}
-            tabIndex={tab}
-            aria-label={`${subagentLabel(a)}: ${a.description}`}
-            onClick={() => onPick(a)}
-            {...hover(<SubagentTip a={a} parent={parent} />)}
-          >
-            <SubagentAvatar a={a} harness={parent.harness} />
-            <span className={clsx("st dot", SUBAGENT_STATUS[a.status].dot)} />
-          </button>
-        ))}
-        {subs.length > MAX_SHOWN && (
+        {shown.map((e, i) =>
+          "sub" in e ? (
+            <button
+              key={e.sub.id}
+              className={clsx("rail-sub", parent.id === sessionId && e.sub.id === subagentId && "on")}
+              style={{ "--i": i } as CSSProperties}
+              tabIndex={tab}
+              aria-label={`${subagentLabel(e.sub)}: ${e.sub.description}`}
+              onClick={() => onPick(e.sub)}
+              {...hover(<SubagentTip a={e.sub} parent={parent} />)}
+            >
+              <SubagentAvatar a={e.sub} harness={parent.harness} />
+              <span className={clsx("st dot", SUBAGENT_STATUS[e.sub.status].dot)} />
+            </button>
+          ) : (
+            <button
+              key={e.compaction.id}
+              className={clsx("rail-sub", parent.id === sessionId && e.compaction.id === compactionId && "on")}
+              style={{ "--i": i } as CSSProperties}
+              tabIndex={tab}
+              aria-label={compactionLabel(e.n)}
+              onClick={() => onPickCompaction(e.compaction)}
+              {...hover(<CompactionTip c={e.compaction} n={e.n} parent={parent} />)}
+            >
+              <CompactionAvatar harness={parent.harness} />
+            </button>
+          ),
+        )}
+        {entries.length > MAX_SHOWN && (
           <button
             className="rail-sub-more"
             tabIndex={tab}
             onClick={() => setAll((v) => !v)}
-            {...hover(<div className="tip-title">{all ? "Show fewer" : `${subs.length - MAX_SHOWN} older subagents`}</div>)}
+            {...hover(<div className="tip-title">{all ? "Show fewer" : `${entries.length - MAX_SHOWN} more`}</div>)}
           >
-            {all ? <ChevronUp size={12} /> : `+${subs.length - MAX_SHOWN}`}
+            {all ? <ChevronUp size={12} /> : `+${entries.length - MAX_SHOWN}`}
           </button>
         )}
       </div>

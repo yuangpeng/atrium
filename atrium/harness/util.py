@@ -7,7 +7,8 @@ import mimetypes
 import os
 import re
 from datetime import datetime
-from typing import Any
+from pathlib import Path
+from typing import Any, Callable, TypeVar
 
 from .base import Attachment
 
@@ -41,6 +42,48 @@ def iso_to_epoch(ts: str | None) -> float | None:
         return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
     except ValueError:
         return None
+
+
+class TailScan:
+    """What has been gathered from a file that only grows (a transcript), as far as it was read:
+    ``update`` hands the whole lines appended since to ``line``."""
+
+    def __init__(self, ino: int):
+        self.ino = ino
+        self.offset = 0
+
+    def line(self, raw: bytes) -> None:
+        raise NotImplementedError
+
+    def update(self, path: Path) -> None:
+        with path.open("rb") as f:
+            f.seek(self.offset)
+            for raw in f:
+                if not raw.endswith(b"\n"):
+                    break  # still being written
+                self.offset += len(raw)
+                self.line(raw)
+
+
+S = TypeVar("S", bound=TailScan)
+
+
+def tail_scan(cache: dict[str, S], path: Path, make: Callable[[int], S]) -> S | None:
+    """``cache``'s scan of ``path``, brought up to date; a new one (``make(inode)``) for a file it hasn't
+    seen or that was replaced since. None if the file is gone."""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    scan = cache.get(str(path))
+    if scan is None or scan.ino != st.st_ino or scan.offset > st.st_size:
+        scan = cache[str(path)] = make(st.st_ino)
+    if scan.offset < st.st_size:
+        scan.update(path)
+    if len(cache) > 4096:  # forget deleted files
+        for gone in [p for p in cache if not os.path.exists(p)]:
+            del cache[gone]
+    return scan
 
 
 # Non-image attachments are passed to agents as paths in a small trailer appended to

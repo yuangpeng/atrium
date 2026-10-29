@@ -12,7 +12,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -24,6 +24,7 @@ from claude_agent_sdk import (
     ServerToolResultBlock,
     ServerToolUseBlock,
     SessionMessage,
+    SessionStore,
     StreamEvent,
     SystemMessage,
     TaskNotificationMessage,
@@ -37,7 +38,7 @@ from claude_agent_sdk import (
     create_sdk_mcp_server,
     delete_session as sdk_delete_session,
     fork_session as sdk_fork_session,
-    get_session_messages,
+    get_session_messages_from_store,
     list_sessions,
     project_key_for_directory,
     query,
@@ -47,8 +48,8 @@ from claude_agent_sdk import (
 
 from .. import gitops
 from ..config import UPLOADS_DIR
-from .base import Attachment, Emit, FileEdit, ForkPoint, Harness, Item, LiveSession, LiveSpec, SessionSummary, SubagentSummary, ToolSpec
-from .util import attachment_note, hhmm, iso_to_epoch, parse_json_loose, split_attachment_note
+from .base import Attachment, Compaction, Emit, FileEdit, ForkPoint, Harness, Item, LiveSession, LiveSpec, SessionSummary, SubagentSummary, ToolSpec
+from .util import TailScan, attachment_note, hhmm, iso_to_epoch, parse_json_loose, split_attachment_note, tail_scan
 
 log = logging.getLogger("atrium.claude")
 
@@ -60,6 +61,7 @@ CLI_DEFAULT_EFFORT = "medium"  # what Claude Code sends when nothing sets an eff
 AGENT_TASKS = (None, "local_agent", "remote_agent")  # task types that are subagents (None: older CLIs)
 TASK_STATUS = {"completed": "done", "failed": "failed", "stopped": "stopped", "killed": "stopped"}
 SUBAGENT_STALE = 300  # a subagent mid-turn whose transcript sat still this long (seconds) is presumed stopped
+COMPACT_SUMMARY = "This session is being continued from a previous conversation"  # how a compaction's summary starts
 
 
 def _claude_home() -> Path:
@@ -143,7 +145,7 @@ _CMD_RE = re.compile(r"<(command-name|command-message|command-args|local-command
 
 
 def _user_text_item(uid: str, text: str, ts: str | None = None) -> Item:
-    """User-role text, recognising CLI command wrappers and interrupt markers."""
+    """User-role text, recognising CLI command wrappers, interrupt markers and compaction summaries."""
     stripped = text.strip()
     if stripped.startswith("<command-") or stripped.startswith("<local-command"):
         parts = {m.group(1): m.group(2).strip() for m in _CMD_RE.finditer(stripped)}
@@ -152,6 +154,8 @@ def _user_text_item(uid: str, text: str, ts: str | None = None) -> Item:
         return {"kind": "system", "id": uid, "subtype": "command", "text": f"{label} {out}".strip() or stripped}
     if stripped.startswith("[Request interrupted by user"):
         return {"kind": "system", "id": uid, "subtype": "interrupted", "text": "Interrupted by user"}
+    if stripped.startswith(COMPACT_SUMMARY):
+        return {"kind": "system", "id": uid, "subtype": "compact_summary", "text": "Summary of the earlier conversation", "detail": stripped}
     text, atts = split_attachment_note(text)
     item: Item = {"kind": "user", "id": uid, "text": text}
     if atts:
@@ -543,7 +547,8 @@ def live_message_items(msg: Any, tasks: dict[str, str | None] | None = None) -> 
                 }
             )
         elif msg.subtype == "compact_boundary":
-            items.append({"kind": "system", "id": f"compact-{uuid.uuid4().hex[:8]}", "subtype": "compact", "text": "Conversation compacted"})
+            d = msg.data or {}
+            items.append(_compact_item(d.get("uuid") or f"compact-{uuid.uuid4().hex[:8]}", (d.get("compact_metadata") or {}).get("trigger")))
         return items
     return items
 
@@ -598,6 +603,12 @@ def history_items(messages: list[Any]) -> list[Item]:
     return items
 
 
+def _compact_item(cid: str, trigger: str | None) -> Item:
+    """Where a compaction cut the conversation; ``compaction`` opens the part it closed."""
+    text = "Context full: conversation compacted" if trigger == "auto" else "Conversation compacted"
+    return {"kind": "system", "id": cid, "subtype": "compact", "text": text, "compaction": cid}
+
+
 def to_sdk_server(server_name: str, specs: list[ToolSpec]) -> Any:
     """Expose harness-neutral ToolSpecs as an in-process SDK MCP server."""
     sdk_tools = []
@@ -645,6 +656,8 @@ class ClaudeCodeHarness(Harness):
     def __init__(self) -> None:
         self._subagent_cache: dict[str, tuple[tuple[int, int, int], dict[str, Any]]] = {}  # path -> (signature, scan)
         self._subagent_lock = threading.Lock()  # list_subagents runs in worker threads
+        self._compaction_cache: dict[str, _CompactionScan] = {}  # transcript path -> what's read of it
+        self._compaction_lock = threading.Lock()
 
     async def catalog(self) -> dict[str, Any]:
         d = self.describe()
@@ -786,6 +799,30 @@ class ClaudeCodeHarness(Harness):
 
         return await asyncio.to_thread(load)
 
+    # ---- compactions: compact_boundary entries (the chat shows the conversation since the last, as Claude Code resumes it)
+    async def list_compactions(self, sessions: list[SessionSummary]) -> dict[str, list[Compaction]]:
+        def scan() -> dict[str, list[Compaction]]:
+            found = {s.id: self._compactions(Path(s.transcript)) for s in sessions if s.harness == self.id and s.transcript}
+            return {sid: cs for sid, cs in found.items() if cs}
+
+        return await asyncio.to_thread(scan)
+
+    def _compactions(self, path: Path) -> list[Compaction]:
+        with self._compaction_lock:
+            scan = tail_scan(self._compaction_cache, path, _CompactionScan)
+            return list(scan.found) if scan else []
+
+    async def load_compacted_history(self, session_id: str, compaction_id: str, cwd: str) -> list[Item]:
+        def load() -> list[Item]:
+            path = self.transcript_path(session_id, cwd)
+            entries = _transcript_entries(path) if path else []
+            cut = next((i for i, e in enumerate(entries) if _is_boundary(e) and e["uuid"] == compaction_id), None)
+            if cut is None:
+                raise FileNotFoundError(f"no compaction {compaction_id} in session {session_id}")
+            return _conversation_items(session_id, entries[:cut])
+
+        return await asyncio.to_thread(load)
+
     async def delete_session(self, session_id: str, cwd: str) -> None:
         # the transcript normally sits under the cwd's project key; otherwise search them all
         for directory in (cwd, None):
@@ -825,10 +862,8 @@ class ClaudeCodeHarness(Harness):
     # ---- content -----------------------------------------------------------
     async def load_history(self, session_id: str, cwd: str) -> list[Item]:
         def load() -> list[Item]:
-            msgs = get_session_messages(session_id, directory=cwd)
-            if not msgs:
-                msgs = get_session_messages(session_id)
-            return history_items(msgs)
+            path = self.transcript_path(session_id, cwd)
+            return _conversation_items(session_id, _transcript_entries(path)) if path else []
 
         return await asyncio.to_thread(load)
 
@@ -1045,27 +1080,157 @@ def _edit_from_result(tur: dict[str, Any], ts: str | None) -> FileEdit | None:
     return None
 
 
+def _transcript_entries(path: Path) -> list[dict[str, Any]]:
+    """A transcript's conversation entries (what the SDK builds conversations from), in file order."""
+    entries: list[dict[str, Any]] = []
+    with path.open(encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            if line.startswith('{"type":"api-request'):  # request logs, possibly large
+                continue
+            try:
+                d = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(d, dict) and d.get("type") in _TRANSCRIPT_TYPES and isinstance(d.get("uuid"), str):
+                entries.append(d)
+    return entries
+
+
+# --------------------------------------------------------------------------
+# Compactions
+# --------------------------------------------------------------------------
+class _CompactionScan(TailScan):
+    """A transcript's compactions, with when each part began and its first prompt."""
+
+    def __init__(self, ino: int):
+        super().__init__(ino)
+        self.started: float | None = None  # when the part being read began
+        self.prompt: str | None = None  # its first prompt, once read
+        self.found: list[Compaction] = []
+
+    def line(self, raw: bytes) -> None:
+        if b'"compact_boundary"' not in raw and self.started is not None and (self.prompt is not None or b'"user"' not in raw):
+            return
+        try:
+            d = json.loads(raw)
+        except ValueError:
+            return
+        if not isinstance(d, dict) or d.get("isSidechain"):
+            return
+        ts = _ts_epoch(d.get("timestamp"))
+        if self.started is None:
+            self.started = ts
+        if d.get("type") == "system" and d.get("subtype") == "compact_boundary" and isinstance(d.get("uuid"), str):
+            meta = d.get("compactMetadata") or {}
+            self.found.append(
+                Compaction(id=d["uuid"], at=ts, started_at=self.started, trigger=meta.get("trigger"), tokens=meta.get("preTokens"), first_prompt=self.prompt or "")
+            )
+            self.started, self.prompt = ts, None
+        elif self.prompt is None and (text := _prompt_text(d)) is not None:
+            self.prompt = _short(split_attachment_note(text)[0], 300) or "(image)"
+
+
+def _is_boundary(entry: dict[str, Any]) -> bool:
+    return entry.get("type") == "system" and entry.get("subtype") == "compact_boundary" and not entry.get("isSidechain")
+
+
+def _conversation_items(session_id: str, entries: list[dict[str, Any]]) -> list[Item]:
+    """The conversation that ``entries`` (a transcript, or its start up to a compaction) end with, as Claude
+    Code resumes it: since the last compaction, which opens it."""
+    entries, boundary = _resumed(entries)
+    # the SDK's get_session_messages, on these entries: it walks back from the last message (a compaction
+    # boundary has no parent) and puts back the tool calls and results of parallel turns
+    msgs = asyncio.run(get_session_messages_from_store(cast(SessionStore, _Entries(entries)), session_id))
+    opening = [_compact_item(boundary["uuid"], (boundary.get("compactMetadata") or {}).get("trigger"))] if boundary else []
+    return opening + history_items(msgs)
+
+
+def _resumed(entries: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """A transcript as Claude Code reads it to resume, and its last compaction boundary. A compaction may keep
+    the newest messages as they are (its preserved segment): they stay before the boundary in the file, and
+    Claude Code moves them in after the summary, dropping the rest of what came before (the CLI's relink)."""
+    at = max((i for i, e in enumerate(entries) if _is_boundary(e)), default=None)
+    if at is None:
+        return entries, None
+    boundary = entries[at]
+    by_uuid = {e["uuid"]: e for e in entries}
+    kept = _preserved(boundary.get("compactMetadata") or {}, by_uuid)
+    if not kept or not kept[1] or any(u not in by_uuid for u in kept[1]):
+        return entries, boundary  # the conversation starts at the boundary as it is
+    anchor, uuids = kept
+    moved = {u: {**by_uuid[u], "parentUuid": p} for u, p in zip(uuids, [anchor, *uuids[:-1]])}
+    dropped = {e["uuid"] for e in entries[:at] if e["uuid"] not in moved}
+    out: list[dict[str, Any]] = []
+    for e in entries:
+        if e["uuid"] in dropped:
+            continue
+        p = e.get("parentUuid")
+        if e["uuid"] in moved:
+            e = moved[e["uuid"]]
+        elif p == anchor or (p in dropped and e.get("type") in ("user", "assistant")):
+            e = {**e, "parentUuid": uuids[-1]}  # what followed the summary now follows what was kept
+        out.append(e)
+    return out, boundary
+
+
+def _preserved(meta: dict[str, Any], by_uuid: dict[str, dict[str, Any]]) -> tuple[str, list[str]] | None:
+    """What a compaction kept as it was: (its summary, the kept entries in order)."""
+    listed = meta.get("preservedMessages")
+    if isinstance(listed, dict):
+        return listed.get("anchorUuid") or "", list(listed.get("uuids") or [])
+    seg = meta.get("preservedSegment")
+    if not isinstance(seg, dict):
+        return None
+    walked: list[str] = []
+    cur = by_uuid.get(seg.get("tailUuid") or "")
+    while cur and cur["uuid"] not in walked:  # from its end back to its start
+        walked.append(cur["uuid"])
+        if cur["uuid"] == seg.get("headUuid"):
+            return seg.get("anchorUuid") or "", walked[::-1]
+        cur = by_uuid.get(cur.get("parentUuid") or "")
+    return None
+
+
+class _Entries:
+    """Transcript entries as a session store (the SDK only ``load``s it), for ``get_session_messages_from_store``."""
+
+    def __init__(self, entries: list[Any]):
+        self.entries = entries
+
+    async def append(self, key: Any, entries: list[Any]) -> None:
+        raise NotImplementedError
+
+    async def load(self, key: Any) -> list[Any]:
+        return self.entries
+
+
 # --------------------------------------------------------------------------
 # Forks
 # --------------------------------------------------------------------------
 _TRANSCRIPT_TYPES = ("user", "assistant", "attachment", "system", "progress")  # what the SDK's fork copies
 
 
-def _is_prompt(entry: dict[str, Any]) -> bool:
-    """A message that opens a user turn (not a tool result, CLI command or interrupt marker)."""
+def _prompt_text(entry: dict[str, Any]) -> str | None:
+    """The text of a message that opens a user turn ("" for images alone); None for anything else
+    (a tool result, CLI command, interrupt marker or compaction summary)."""
     if entry.get("type") != "user" or entry.get("isMeta") or entry.get("isCompactSummary"):
-        return False
+        return None
     content = (entry.get("message") or {}).get("content")
     if isinstance(content, str):
         text = content.strip()
     else:
         blocks = [b for b in content or [] if isinstance(b, dict)]
         if any(b.get("type") == "tool_result" for b in blocks):
-            return False
-        if any(b.get("type") == "image" for b in blocks):
-            return True
+            return None
         text = "\n".join(b.get("text") or "" for b in blocks if b.get("type") == "text").strip()
-    return bool(text) and not text.startswith(("<command-", "<local-command", "[Request interrupted"))
+        if any(b.get("type") == "image" for b in blocks):
+            return text
+    return text if text and not text.startswith(("<command-", "<local-command", "[Request interrupted")) else None
+
+
+def _is_prompt(entry: dict[str, Any]) -> bool:
+    """A message that opens a user turn (not a tool result, CLI command or interrupt marker)."""
+    return _prompt_text(entry) is not None
 
 
 def _find_entry(entries: list[dict[str, Any]], anchor: str) -> int | None:
@@ -1082,15 +1247,7 @@ def _find_entry(entries: list[dict[str, Any]], anchor: str) -> int | None:
 
 
 def _fork_point(path: Path, anchor: str | None, user_index: int | None) -> ForkPoint:
-    entries: list[dict[str, Any]] = []
-    with path.open(encoding="utf-8", errors="replace") as fh:
-        for line in fh:
-            try:
-                d = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(d, dict) and d.get("type") in _TRANSCRIPT_TYPES and isinstance(d.get("uuid"), str) and not d.get("isSidechain"):
-                entries.append(d)
+    entries = [e for e in _transcript_entries(path) if not e.get("isSidechain")]
     prompts = [i for i, e in enumerate(entries) if _is_prompt(e)]
     at = _find_entry(entries, anchor) if anchor else None
     if at is None and user_index and user_index < len(prompts):  # items shown live may not carry transcript ids
