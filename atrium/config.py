@@ -138,13 +138,18 @@ def _set_path(d: dict[str, Any], dotted: str, value: Any) -> None:
 
 
 def atomic_write(path: Path, text: str, mode: int | None = None) -> None:
+    """Write a temporary file, then rename it over ``path``. The file has ``mode`` (else the existing file's)
+    from the start: a secret is never readable by others, not even in the temporary file."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".atrium-tmp")
-    tmp.write_text(text)
-    if mode is not None:
-        os.chmod(tmp, mode)
-    elif path.exists():
-        os.chmod(tmp, path.stat().st_mode & 0o777)
+    if mode is None and path.exists():
+        mode = path.stat().st_mode & 0o777
+    tmp.unlink(missing_ok=True)  # a stale one may be held open by someone: write a new file
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600 if mode is not None else 0o666)
+    with os.fdopen(fd, "w") as f:
+        if mode is not None:
+            os.fchmod(fd, mode)  # exactly, whatever the umask
+        f.write(text)
     tmp.replace(path)
 
 

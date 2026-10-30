@@ -159,12 +159,16 @@ reverse proxy running here, everyone's requests come from 127.0.0.1.
 
 - The first start makes up a password: Atrium prints it when it runs in a terminal, and keeps it in
   `~/.atrium/auth.json` until you set your own with `.venv/bin/atrium --set-password`. A new password
-  logs every browser out (a running Atrium picks it up at once), and is the way back in when you
-  forget it. Log out is at the bottom of the rail.
-- A login is a cookie, valid for 30 days and renewed while you use Atrium; restarts keep it. After 10
-  wrong passwords in 10 minutes, the login page refuses every password for the rest of those minutes
-  (setting a new one lifts that).
-- Scripts send `Authorization: Bearer <token>`; `.venv/bin/atrium --token` prints the token.
+  comes with a new API token, so it logs every browser and script out (a running Atrium picks it up
+  at once), and it is the way back in when you forget the password. Log out is at the bottom of the rail.
+- A login is a cookie, valid for 30 days and renewed while you use Atrium; restarts keep it.
+- Wrong passwords are counted per browser, so nobody can lock you out. A browser that logged in here
+  before is known by a device cookie (kept when you log out) and counted on its own; others by their
+  address (behind a reverse proxy on this machine, the one it puts in `X-Forwarded-For`). 10 wrong
+  passwords in 10 minutes refuse that browser for the rest of those minutes; 100 from unknown browsers
+  together refuse all unknown ones, never a browser you logged in with before. A new password clears
+  the counts.
+- Scripts send `Authorization: Bearer <token>`; `.venv/bin/atrium --token` prints the current token.
 - Across a network, put HTTPS in front (Tailscale Serve, a Cloudflare Tunnel, Caddy…): over plain HTTP
   the password and the cookie can be read on the way. The reverse proxy has to pass the original `Host`
   header through, or set `X-Forwarded-Host` (nginx: `proxy_set_header Host $host;`, next to the

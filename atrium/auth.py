@@ -8,9 +8,14 @@
     token               ``Authorization: Bearer <token>`` for scripts (``atrium --token``)
 
 Logging in sets a signed cookie for 30 days, renewed while it is used. It survives restarts;
-a new password logs every browser out (the password hash is part of the signing key), also
-when it is set while the server runs. There is no exception for requests from this machine:
-through a tunnel or a reverse proxy running here, everyone comes from 127.0.0.1.
+a new password (which also replaces the API token) logs every browser and script out (the password
+hash is part of the cookies' signing key), also when it is set while the server runs. There is no
+exception for requests from this machine: through a tunnel or a reverse proxy running here,
+everyone comes from 127.0.0.1.
+
+Wrong passwords are counted per source, so nobody can lock the owner out: a browser that logged in
+here before is known by a device cookie (OWASP's "device cookies") and counted on its own; others
+by their address, and all of them together against a higher limit that a known device doesn't hit.
 
 ``atrium --no-auth`` (scratch instances) switches the login off; the CLI allows it on a loopback
 address only, and requests must then be addressed to localhost (no DNS rebinding). Either way,
@@ -49,7 +54,11 @@ log = logging.getLogger("atrium.auth")
 AUTH_PATH = ATRIUM_HOME / "auth.json"
 MAX_AGE = 30 * 86400  # a login lasts 30 days from its last use...
 RENEW_AFTER = 86400  # ...renewed at most once a day
-MAX_FAILURES, FAILURE_WINDOW = 10, 600  # wrong passwords before the login page closes for the rest of the window
+MAX_FAILURES, FAILURE_WINDOW = 10, 600  # wrong passwords from one source, then it is refused for the rest of the window
+MAX_UNKNOWN_FAILURES = 100  # from all sources that aren't a known device together (same window)
+MAX_SOURCES = 10_000  # failure records kept, the oldest dropped first
+DEVICE_AGE = 365 * 86400  # the device cookie: kept when logging out
+CHECKS_AT_ONCE = 2  # scrypt takes 32 MiB a check
 MAX_FORM_BYTES = 4096
 SCRYPT = (2**15, 8, 1)  # n, r, p: 32 MiB and some 40 ms per check
 LOOPBACK = {"127.0.0.1", "localhost", "::1"}
@@ -104,8 +113,9 @@ class Auth:
         self._data: dict[str, Any] = {}
         self._mtime: int | None = None
         self.error: str | None = None  # auth.json can't be read
-        self._failures: deque[float] = deque()
-        self._checking = asyncio.Lock()
+        self._failures: dict[str, deque[float]] = {}  # per source: a known device, else the client's address
+        self._unknown: deque[float] = deque()  # every source that isn't a known device
+        self._checking = asyncio.Semaphore(CHECKS_AT_ONCE)
 
     # ---- auth.json -----------------------------------------------------------
     def _load(self) -> dict[str, Any]:
@@ -127,6 +137,7 @@ class Auth:
                 return self._data  # the last good one
             self._data, self.error = data, None
             self._failures.clear()  # a new password starts with a clean slate
+            self._unknown.clear()
         return self._data
 
     def _write(self, data: dict[str, Any]) -> None:
@@ -151,9 +162,10 @@ class Auth:
         return self._data
 
     def set_password(self, password: str) -> None:
+        """A new password and a new API token: browsers and scripts logged in before have to log in again."""
         data = {k: v for k, v in self._load().items() if k != "generated_password"}
-        self._write({**data, "password_hash": hash_password(password)})
-        self.ensure()  # on a first run: the secret and the token
+        self._write({**data, "password_hash": hash_password(password), "token": secrets.token_urlsafe(32)})
+        self.ensure()  # on a first run: the secret
 
     # ---- credentials -----------------------------------------------------------
     @property
@@ -178,6 +190,25 @@ class Auth:
     def logout_cookie(self, secure: bool) -> str:
         return self._cookie("", 0, secure)
 
+    def _device_sig(self, device: str) -> str | None:
+        secret = self._load().get("secret")
+        if not secret:
+            return None
+        key = hmac.new(secret.encode(), b"device", hashlib.sha256).digest()
+        return _b64(hmac.new(key, device.encode(), hashlib.sha256).digest())
+
+    def device_cookie(self, secure: bool) -> str:
+        """Set at a browser's first login; only /login reads it (and logging out keeps it)."""
+        device = secrets.token_urlsafe(12)
+        return (f"{self.cookie_name}_device={device}.{self._device_sig(device)}; Max-Age={DEVICE_AGE}; Path=/login; HttpOnly; SameSite=Lax"
+                + ("; Secure" if secure else ""))
+
+    def device(self, conn: HTTPConnection) -> str | None:
+        """The browser's device id, when it logged in here before."""
+        device, _, sig = conn.cookies.get(f"{self.cookie_name}_device", "").partition(".")
+        good = self._device_sig(device) if device else None
+        return device if good and hmac.compare_digest(sig.encode(), good.encode()) else None
+
     def login_expiry(self, conn: HTTPConnection) -> int | None:
         """When the request's login cookie expires; None without a valid one (forged, expired, older than the password)."""
         exp, _, sig = conn.cookies.get(self.cookie_name, "").partition(".")
@@ -191,21 +222,33 @@ class Auth:
         token = self._load().get("token")
         return scheme.lower() == "bearer" and bool(token) and hmac.compare_digest(value.strip().encode(), str(token).encode())
 
-    async def check_password(self, password: str) -> bool:
-        """One check at a time, and a second's wait after a wrong one; raises TooManyFailures."""
+    async def check_password(self, password: str, source: str, known: bool) -> bool:
+        """``source``: a known device (``known``), else the client's address. Raises TooManyFailures when
+        it, or (unless known) all unknown sources together, had too many wrong passwords lately."""
+        stored = self._load().get("password_hash") or ""  # first: a new password clears the counts
+        now = time.monotonic()
+        mine = self._failures.pop(source, deque())
+        self._failures[source] = mine  # most recent last: the oldest records go first
+        while len(self._failures) > MAX_SOURCES:
+            del self._failures[next(iter(self._failures))]
+        for q, limit in ((mine, MAX_FAILURES), *(() if known else ((self._unknown, MAX_UNKNOWN_FAILURES),))):
+            while q and now - q[0] > FAILURE_WINDOW:
+                q.popleft()
+            if len(q) >= limit:
+                raise TooManyFailures(FAILURE_WINDOW - (now - q[0]))
+        # counted before checking, so parallel attempts can't slip past the limit; a right one takes it back
+        mine.append(now)
+        if not known:
+            self._unknown.append(now)
         async with self._checking:
-            stored = self._load().get("password_hash") or ""  # first: a new password clears the failures
-            now = time.monotonic()
-            while self._failures and now - self._failures[0] > FAILURE_WINDOW:
-                self._failures.popleft()
-            if len(self._failures) >= MAX_FAILURES:
-                raise TooManyFailures(FAILURE_WINDOW - (now - self._failures[0]))
-            if stored and await asyncio.to_thread(verify_password, password[:1024], stored):
-                self._failures.clear()
-                return True
-            self._failures.append(time.monotonic())
-            await asyncio.sleep(1)
-            return False
+            ok = bool(stored) and await asyncio.to_thread(verify_password, password[:1024], stored)
+        if ok:  # (a new password may have cleared the counts meanwhile)
+            self._failures.pop(source, None)
+            if not known and now in self._unknown:
+                self._unknown.remove(now)
+            return True
+        await asyncio.sleep(1)  # outside the semaphore: it slows this source, not the others
+        return False
 
 
 auth = Auth()
@@ -228,8 +271,12 @@ def _same_origin(conn: HTTPConnection) -> bool:
     origin = conn.headers.get("origin")
     if origin is None:
         return True
+    try:
+        netloc = urlsplit(origin).netloc.lower()
+    except ValueError:  # e.g. "http://[": no page of ours sends that
+        return False
     hosts = {conn.headers.get("host", ""), *conn.headers.get("x-forwarded-host", "").split(",")}
-    return urlsplit(origin).netloc.lower() in {h.strip().lower() for h in hosts if h.strip()}
+    return netloc in {h.strip().lower() for h in hosts if h.strip()}
 
 
 async def _refuse(scope: Scope, receive: Receive, send: Send, status: int, reason: str) -> None:
@@ -338,15 +385,19 @@ async def login(request: Request):
     nxt = _safe_next(form.get("next", ["/"])[0])
     if not auth.enabled:
         return RedirectResponse(nxt, status_code=303)
+    device = auth.device(request)
+    address = request.client.host if request.client else "?"  # behind a reverse proxy here: X-Forwarded-For's
     try:
-        ok = await auth.check_password(form.get("password", [""])[0])
+        ok = await auth.check_password(form.get("password", [""])[0], f"device {device}" if device else address, known=bool(device))
     except TooManyFailures as e:
         return _page(nxt, f"Too many wrong passwords: try again in {math.ceil(e.wait / 60)} min.", 429)
     if not ok:
-        log.warning("wrong password on the login page, from %s", request.client.host if request.client else "?")
+        log.warning("wrong password on the login page, from %s%s", address, " (a known device)" if device else "")
         return _page(nxt, "Wrong password.", 401)
     resp = RedirectResponse(nxt, status_code=303)
     resp.headers.append("set-cookie", auth.login_cookie(_secure(request)))
+    if not device:
+        resp.headers.append("set-cookie", auth.device_cookie(_secure(request)))
     return resp
 
 

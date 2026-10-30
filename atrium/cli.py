@@ -90,7 +90,7 @@ def _set_password() -> None:
     if getpass.getpass("Again: ") != password:
         sys.exit("The two don't match.")
     auth.set_password(password)
-    print(f"Saved in {auth.path}. Browsers logged in before have to log in again.")
+    print(f"Saved in {auth.path}, with a new API token. Browsers logged in before, and scripts with the old token, have to log in again.")
 
 
 if __name__ == "__main__":
