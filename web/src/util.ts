@@ -67,6 +67,9 @@ export function clsx(...xs: (string | false | null | undefined)[]): string {
   return xs.filter(Boolean).join(" ");
 }
 
+/** macOS: ⌘ is the app's modifier; Ctrl keys are the text fields' Emacs bindings there (Ctrl+K: delete to the line's end). */
+export const isMac = /mac/i.test((navigator as Navigator & { userAgentData?: { platform: string } }).userAgentData?.platform ?? navigator.platform);
+
 export function throttle<T extends (...a: any[]) => void>(fn: T, ms: number): T {
   let last = 0;
   let timer: number | null = null;

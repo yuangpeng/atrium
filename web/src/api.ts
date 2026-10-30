@@ -173,6 +173,27 @@ export interface SessionRow {
   forked_from: { session: string; name: string | null; exists: boolean } | null;
 }
 
+/** An agent on the home page: what its status dot, line and avatar need from its session row. */
+export type AgentBrief = Pick<
+  SessionRow, "id" | "harness" | "name" | "title" | "live" | "pending" | "status" | "progress" | "doing" | "created_at" | "updated_at"
+>;
+
+/** A project on the home page. Archived and missing ones come without headline, git and agents. */
+export interface HomeProject {
+  id: string;
+  path: string;
+  name: string;
+  exists: boolean;
+  last_opened: number | null;
+  open_count: number | null; // times the human opened it (Frequent)
+  pinned_at: number | null;
+  archived_at: number | null;
+  headline?: string; // the Tracker's one-liner
+  git?: { branch: string | null; changed: number } | null;
+  agents?: AgentBrief[]; // workers, not archived
+  error?: string;
+}
+
 /** Fork before a user message: keep everything up to the turn holding chat item `anchor`
  *  (the last harness item shown before it); `user_index` is the message's position among user messages. */
 export interface ForkAt {
@@ -537,14 +558,19 @@ export const api = {
     return data as Upload;
   },
   projects: () => req<Project[]>("GET", "/api/projects"),
-  addProject: (path: string) => req<Project>("POST", "/api/projects", { path }),
+  /** `create`: make the folder first (its parent must exist), git-initialised when `git`. */
+  addProject: (path: string, create?: { git: boolean }) =>
+    req<Project>("POST", "/api/projects", create ? { path, create: true, git: create.git } : { path }),
   removeProject: (pid: string) => req("DELETE", `/api/projects/${pid}`),
+  markProject: (pid: string, body: { pinned?: boolean; archived?: boolean }) => req("PATCH", `/api/projects/${pid}`, body),
+  home: () => req<HomeProject[]>("GET", "/api/home"),
   browse: (path?: string) =>
     req<{ path: string; parent: string | null; git: boolean; dirs: { name: string; path: string; git: boolean }[] }>(
       "GET",
       `/api/browse${q({ path })}`,
     ),
-  project: (pid: string) => req<ProjectInfo>("GET", `/api/p/${pid}`),
+  /** `opened`: the human opened it (counted for the home page's Frequent). */
+  project: (pid: string, opened = false) => req<ProjectInfo>("GET", `/api/p/${pid}${q({ opened: opened || undefined })}`),
 
   sessions: (pid: string, archived = false) => req<SessionRow[]>("GET", `/api/p/${pid}/sessions${q({ archived })}`),
   createSession: (

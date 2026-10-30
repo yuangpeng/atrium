@@ -53,6 +53,16 @@ class BoardStore:
             a = self.state["agents"].get(sid)
             return copy.deepcopy(a) if a else None
 
+    def agent_states(self) -> dict[str, dict[str, Any]]:
+        """What session rows show of each agent (status, progress, doing, stats), without copying the cards."""
+        with self._lock:
+            return {sid: {"status": a.get("status"), "progress": a.get("progress"), "doing": a.get("doing"), "stats": dict(a["stats"]) if "stats" in a else None}
+                    for sid, a in self.state["agents"].items()}
+
+    def headline(self) -> str:
+        with self._lock:
+            return self.state["overview"].get("headline") or ""
+
     # ---- write -------------------------------------------------------------
     def _write(self) -> None:
         self.json_path.write_text(json.dumps(self.state, indent=1, ensure_ascii=False))

@@ -68,6 +68,10 @@ export function FilesPanel() {
     setOpen([]);
     setActive(null);
   }, [project?.id]);
+  // unsaved edits go with this panel when the project is left: the store asks first
+  const setUnsaved = useApp((s) => s.setUnsaved);
+  useEffect(() => setUnsaved(open.filter((f) => f.content !== f.saved).map((f) => basename(f.path))), [open, setUnsaved]);
+  useEffect(() => () => setUnsaved([]), [setUnsaved]);
 
   const loadDir = useCallback(
     async (dir: string) => {

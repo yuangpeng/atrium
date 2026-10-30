@@ -7,7 +7,7 @@ A project-centric workbench for coding agents — Claude Code, Codex and Antigra
 
 ```
 ┌ Workspace ─────────────────────────────────┬ Chat (selected agent) ─────┬ Rail ┐
-│ Board · Files · Changes · Git              │  user ▸ task               │  AD  │ project
+│ Board · Files · Changes · Git              │  user ▸ task               │  ⌂   │ home
 │                                            │  ◆ tool calls, diffs       │  +   │ new agent
 │  board.html (live, shared)                 │  ◆ board.status / publish  │  ●○  │ agents (hover
 │  Monaco editor + language server           │  ⚠ permission card         │  ●○  │  for details)
@@ -20,7 +20,12 @@ A project-centric workbench for coding agents — Claude Code, Codex and Antigra
 
 1. **Directory = project.** Pick a directory; you see every session that ever ran there — from every
    harness, including its git worktrees and sessions started from the `claude` / `codex` CLIs — and
-   you can start new ones with either harness.
+   you can start new ones with either harness. The **home page** (⌂ at the top of the rail, or ⌘K to
+   search it) is where Atrium opens: first the agents of every project that need you (an approval, or
+   they said they wait or are blocked), then your projects as cards — pinned ones, then the ones you
+   open most, archived ones folded away (and not loaded until opened) — each with the Tracker's
+   one-liner, its git branch and changed files, and what its agents are doing. Open a folder from
+   there, or make a new one (git-initialised unless you untick it).
 2. **One fixed HTML board per project** — `<project>/.atrium/board.html`. It is self-contained
    (open it straight from disk), embedded live in the UI, and written by two kinds of agents:
    * **Session agents** get a fixed system-prompt section plus the `board` tools
@@ -182,7 +187,7 @@ reverse proxy running here, everyone's requests come from 127.0.0.1.
 | Path | What |
 |---|---|
 | `~/.atrium/settings.json` | Atrium settings: defaults per harness (mode / model / effort), tracker, Git Agent, Code Review Agent (`review_agent`: auto, harness / model / effort, language), desktop notifications, web keys (`chmod 600`; env vars take precedence), extra MCP servers |
-| `~/.atrium/config.json` | the project list |
+| `~/.atrium/config.json` | the project list: pinned / archived, how often you opened each |
 | `~/.atrium/auth.json` | the login: the password's hash (and the made-up password, until you set yours), the secret that signs login cookies, the API token (`chmod 600`) |
 | `~/.atrium/uploads/` | composer attachments |
 | `~/.atrium/backups/` | the previous versions of config files saved from Settings (last 20 each) |

@@ -41,7 +41,9 @@ interface AppState {
   chatWidth: number;
   theme: Theme;
   showArchived: boolean;
-  pickerOpen: boolean;
+  pickerOpen: false | "open" | "create"; // the folder dialog: open one, or make a new one
+  homeFocus: number; // ⌘K: the home page focuses its search when this changes (0: don't)
+  unsaved: string[]; // files with unsaved edits in the editor (FilesPanel): leaving the project asks first
   settingsOpen: boolean;
   forkRequest: ForkRequest | null;
   // cross-panel requests / change counters
@@ -59,8 +61,9 @@ interface AppState {
   init: () => Promise<void>;
   refreshMeta: () => Promise<void>;
   loadProjects: () => Promise<void>;
-  openProject: (pid: string | null) => Promise<void>;
-  addProject: (path: string) => Promise<void>;
+  openProject: (pid: string | null, opened?: boolean) => Promise<boolean>; // false: stayed (unsaved edits kept)
+  addProject: (path: string, create?: { git: boolean }) => Promise<void>;
+  goHome: (search?: boolean) => Promise<void>;
   refreshProject: () => Promise<void>;
   refreshSessions: () => Promise<void>;
   selectSession: (sid: string | null) => void;
@@ -71,7 +74,8 @@ interface AppState {
   setChatWidth: (w: number) => void;
   setTheme: (t: Theme) => void;
   setShowArchived: (v: boolean) => void;
-  setPickerOpen: (v: boolean) => void;
+  setPickerOpen: (v: false | "open" | "create") => void;
+  setUnsaved: (names: string[]) => void;
   setSettingsOpen: (v: boolean) => void;
   setForkRequest: (r: ForkRequest | null) => void;
   openFile: (path: string, root?: string, target?: FileTarget) => void;
@@ -120,6 +124,8 @@ export const useApp = create<AppState>((set, get) => {
     theme: (localStorage.getItem("atrium.theme") as Theme) || "system",
     showArchived: false,
     pickerOpen: false,
+    homeFocus: 0,
+    unsaved: [],
     settingsOpen: false,
     forkRequest: null,
     fileRequest: null,
@@ -140,7 +146,7 @@ export const useApp = create<AppState>((set, get) => {
       set({ meta });
       onLoggedOut(() => set({ loggedOut: true }));
       const params = new URLSearchParams(location.search);
-      const pid = params.get("project") || localStorage.getItem("atrium.project") || get().projects[0]?.id || null;
+      const pid = params.get("project"); // none: the home page
       if (pid && get().projects.some((p) => p.id === pid)) {
         await get().openProject(pid);
         const sid = params.get("session");
@@ -149,8 +155,8 @@ export const useApp = create<AppState>((set, get) => {
         if (sid && aid) get().selectSubagent(sid, aid);
         else if (sid && cid) get().selectCompaction(sid, cid);
         else if (sid) get().selectSession(sid);
-      } else {
-        set({ pickerOpen: true });
+      } else if (pid) {
+        syncUrl(null, null); // a project that isn't in the list (any more)
       }
       socket.onReconnect(() => {
         void get().refreshSessions();
@@ -166,16 +172,19 @@ export const useApp = create<AppState>((set, get) => {
       set({ projects: await api.projects() });
     },
 
-    openProject: async (pid) => {
+    openProject: async (pid, opened = false) => {
+      const { project: current, unsaved } = get();
+      // the editor's open files live in FilesPanel, which goes with the project: same question as closing a tab
+      if (pid !== (current?.id ?? null) && unsaved.length && !confirm(`Discard unsaved changes to ${unsaved.length === 1 ? unsaved[0] : `${unsaved.length} files`}?`))
+        return false;
       unsubProject?.();
       unsubProject = null;
       if (!pid) {
-        set({ project: null, sessions: [], sessionId: null, subagentId: null, compactionId: null });
+        set({ project: null, sessions: [], sessionId: null, subagentId: null, compactionId: null, homeFocus: 0 });
         syncUrl(null, null);
-        return;
+        return true;
       }
-      const project = await api.project(pid);
-      localStorage.setItem("atrium.project", pid);
+      const project = await api.project(pid, opened);
       set({ project, sessions: [], sessionId: null, subagentId: null, compactionId: null, changesSession: null, fileRequest: null, forkRequest: null });
       syncUrl(pid, null);
       unsubProject = socket.subscribe(`project:${pid}`, (msg) => {
@@ -211,13 +220,18 @@ export const useApp = create<AppState>((set, get) => {
       });
       await get().refreshSessions();
       void get().loadProjects();
+      return true;
     },
 
-    addProject: async (path) => {
-      const p = await api.addProject(path);
+    addProject: async (path, create) => {
+      const p = await api.addProject(path, create);
       await get().loadProjects();
-      await get().openProject(p.id);
+      await get().openProject(p.id, true);
       set({ pickerOpen: false });
+    },
+
+    goHome: async (search = false) => {
+      if (await get().openProject(null)) set({ pickerOpen: false, homeFocus: search ? Date.now() : 0 });
     },
 
     refreshProject: async () => {
@@ -281,6 +295,9 @@ export const useApp = create<AppState>((set, get) => {
       void get().refreshSessions();
     },
     setPickerOpen: (v) => set({ pickerOpen: v }),
+    setUnsaved: (names) => {
+      if (names.join("\n") !== get().unsaved.join("\n")) set({ unsaved: names }); // FilesPanel reports on every keystroke
+    },
     setSettingsOpen: (v) => set({ settingsOpen: v }),
     setForkRequest: (r) => set({ forkRequest: r }),
     openFile: (path, root, target) => {

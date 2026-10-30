@@ -8,6 +8,7 @@ import logging
 import mimetypes
 import os
 import re
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -66,7 +67,7 @@ async def lifespan(_app: FastAPI):
     sessions.start_background()
     transcript_watcher.start()
     for p in config.projects():
-        if p["exists"]:
+        if p["exists"] and not p.get("archived_at"):  # archived: loaded when opened
             try:
                 projects.get(p["id"])
             except Exception:
@@ -243,8 +244,29 @@ async def list_projects():
 
 @app.post("/api/projects")
 async def add_project(body: dict[str, Any] = Body(...)):
-    proj = projects.open(body["path"])  # on the loop: loading starts tracker/watcher tasks
+    """Open a directory as a project; ``create``: make it first (in an existing directory), ``git``: and git init it."""
+    path = os.path.realpath(os.path.expanduser(body["path"]))
+    if body.get("create"):
+        name = os.path.basename(path)
+        if not name or name.startswith(".") or not os.path.isdir(os.path.dirname(path)):
+            raise HTTPException(400, f"can't create {path}: give a new folder's name, in an existing directory")
+        await asyncio.to_thread(os.mkdir, path)  # FileExistsError: 409
+        if body.get("git"):
+            await gitops.init(path)
+    proj = projects.open(path)  # on the loop: loading starts tracker/watcher tasks
     return proj.describe()
+
+
+@app.patch("/api/projects/{pid}")
+async def mark_project(pid: str, body: dict[str, Any] = Body(...)):
+    """Pin / unpin, archive / unarchive (home page)."""
+    if body.get("archived"):
+        loaded = next((p for p in projects.loaded() if p.id == pid), None)
+        busy = sessions.busy_in(loaded, loaded.path) if loaded else []
+        if busy:
+            who = f"“{busy[0]}” is" if len(busy) == 1 else f"{len(busy)} agents are"
+            raise HTTPException(409, f"{who} in the middle of a turn here: archive the project when it's done")
+    return config.mark_project(pid, pinned=body.get("pinned"), archived=body.get("archived"))
 
 
 @app.delete("/api/projects/{pid}")
@@ -264,10 +286,62 @@ async def browse(path: str | None = None):
     return fs.browse(path)
 
 
+_HOME_AGENT_FIELDS = ("id", "harness", "name", "title", "live", "pending", "status", "progress", "doing", "created_at", "updated_at")
+_git_briefs: dict[str, tuple[float, dict[str, Any] | None]] = {}
+_git_brief_tasks: dict[str, asyncio.Task] = {}
+
+
+async def _git_brief(p: Project) -> dict[str, Any] | None:
+    """Branch and number of changed files, for a home card: fresh for 15 s, then the last one is returned
+    while a new one is worked out (a big repository's git status mustn't hold up the whole page)."""
+
+    async def compute() -> dict[str, Any] | None:
+        brief = None
+        if gitops.is_repo(p.path):
+            try:
+                st = await gitops.status(p.path)
+                brief = {"branch": st["branch"], "changed": len(st["files"])}
+            except gitops.GitError:
+                pass
+        _git_briefs[p.id] = (time.monotonic(), brief)
+        return brief
+
+    hit = _git_briefs.get(p.id)
+    if hit and time.monotonic() - hit[0] < 15:
+        return hit[1]
+    task = _git_brief_tasks.get(p.id)
+    if task is None:
+        task = _git_brief_tasks[p.id] = asyncio.create_task(compute())
+        task.add_done_callback(lambda _t: _git_brief_tasks.pop(p.id, None))
+    return hit[1] if hit else await asyncio.shield(task)
+
+
+@app.get("/api/home")
+async def home():
+    """Every project for the home page: pins, archive, how often it was opened. For the others, also the
+    Tracker's headline, the git branch and changed files, and their agents (the session rows' status fields,
+    so the page shows them the way the rail does)."""
+
+    async def one(entry: dict[str, Any]) -> dict[str, Any]:
+        out = {k: entry.get(k) for k in ("id", "path", "name", "exists", "last_opened", "open_count", "pinned_at", "archived_at")}
+        if not entry["exists"] or entry.get("archived_at"):
+            return out
+        try:
+            p = P(entry["id"])
+            rows, git = await asyncio.gather(sessions.list_sessions(p, details=False), _git_brief(p))
+        except Exception as e:  # one broken project mustn't take the home page down
+            log.warning("home: %s: %s", entry["path"], e)
+            return {**out, "error": str(e) or type(e).__name__}
+        agents = [{k: r.get(k) for k in _HOME_AGENT_FIELDS} for r in rows if r["role"] == "worker" and not r["archived"]]
+        return {**out, "headline": p.board.headline(), "git": git, "agents": agents}
+
+    return await asyncio.gather(*(one(e) for e in config.projects()))
+
+
 @app.get("/api/p/{pid}")
-async def project_info(pid: str):
+async def project_info(pid: str, opened: bool = False):
     p = P(pid)
-    config.touch_project(pid)
+    config.touch_project(pid, opened)
     info = p.describe()
     info["worktrees"] = await gitops.worktrees(p.path) if info["is_git"] else []
     return info

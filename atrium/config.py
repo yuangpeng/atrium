@@ -280,13 +280,32 @@ class Config:
             self._save()
             return {**entry, "id": project_id_for(real), "exists": True}
 
-    def touch_project(self, pid: str) -> None:
+    def touch_project(self, pid: str, opened: bool = False) -> None:
+        """``opened``: the human opened it, counted for the home page's Frequent."""
         with self._lock:
             for p in self._data["projects"]:
                 if project_id_for(p["path"]) == pid:
                     p["last_opened"] = time.time()
+                    if opened:
+                        p["open_count"] = p.get("open_count", 0) + 1
                     self._save()
                     return
+
+    def mark_project(self, pid: str, pinned: bool | None = None, archived: bool | None = None) -> dict[str, Any]:
+        """Pin or archive a project (home page). Archiving unpins it; archived projects aren't loaded at startup."""
+        with self._lock:
+            for p in self._data["projects"]:
+                if project_id_for(p["path"]) == pid:
+                    for key, on in (("pinned_at", pinned), ("archived_at", archived)):
+                        if on:
+                            p.setdefault(key, time.time())
+                        elif on is not None:
+                            p.pop(key, None)
+                    if archived:
+                        p.pop("pinned_at", None)
+                    self._save()
+                    return {**p, "id": pid, "exists": os.path.isdir(p["path"])}
+        raise FileNotFoundError(f"project {pid}")
 
     def remove_project(self, pid: str) -> None:
         with self._lock:

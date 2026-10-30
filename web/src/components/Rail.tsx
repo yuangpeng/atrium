@@ -1,4 +1,4 @@
-// The rail on the far right: project, new agent, one avatar per agent (status at a glance,
+// The rail on the far right: home, new agent, one avatar per agent (status at a glance,
 // details on hover), the full agent list as a flyout, the system agents, settings.
 import type { ReactNode } from "react";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -6,8 +6,8 @@ import { createPortal } from "react-dom";
 import { useShallow } from "zustand/react/shallow";
 import type { LucideIcon } from "lucide-react";
 import {
-  Anchor, Archive, ArchiveRestore, Atom, Bird, Bug, Cat, Cherry, Citrus, Clover, Compass, Cookie, Dog, Feather, Fish, Flame, Flower2, FolderOpen, Gem,
-  Ghost, GitBranch, LayoutList, Leaf, LogOut, Monitor, Moon, Mountain, Orbit, Origami, Rabbit, Rocket, Sailboat, Search, Settings, Shell,
+  Anchor, Archive, ArchiveRestore, Atom, Bird, Bug, Cat, Cherry, Citrus, Clover, Compass, Cookie, Dog, Feather, Fish, Flame, Flower2, Gem,
+  Ghost, GitBranch, House, LayoutList, Leaf, LogOut, Monitor, Moon, Mountain, Orbit, Origami, Rabbit, Rocket, Sailboat, Search, Settings, Shell,
   Snail, Snowflake, Sprout, SquarePen, Squirrel, Star, Sun, Telescope, Trash2, Turtle, Workflow, X,
 } from "lucide-react";
 import { api, SessionRow } from "../api";
@@ -17,17 +17,18 @@ import { clsx, displayName, tidyNote, timeAgo } from "../util";
 import { Popover, useInterval, useTick } from "./ui";
 import { RailSubagents } from "./Subagents";
 
-export function statusClass(s: SessionRow): string {
+export function statusClass(s: Pick<SessionRow, "live" | "pending" | "status">): string {
   if (s.live === "waiting" || s.pending) return "waiting";
   if (s.live === "running" || s.live === "starting") return "running";
   if (s.live === "error") return "error";
   if (s.status === "blocked") return "blocked";
+  if (s.status === "waiting") return "waiting"; // it said it waits for the human
   if (s.status === "done") return "done";
   if (s.live === "idle") return "idle-live";
   return "";
 }
 
-export function liveLabel(s: SessionRow): string {
+export function liveLabel(s: Pick<SessionRow, "live" | "pending">): string {
   if (s.live === "waiting" || s.pending) return "needs approval";
   if (s.live === "running") return "running";
   if (s.live === "starting") return "starting";
@@ -50,25 +51,27 @@ function hash(key: string): number {
   return h >>> 0;
 }
 
-/** Glyph per session: preferred by id, else the next free one, assigned in creation order so agents keep theirs.
- *  Archived ones go last, so showing them doesn't change the others'. */
-export function useGlyphs(): Map<string, LucideIcon> {
-  const sessions = useApp((s) => s.sessions);
-  return useMemo(() => {
-    const out = new Map<string, LucideIcon>();
-    const used = new Set<number>();
-    const ordered = sessions.filter((s) => s.role === "worker").sort((a, b) => Number(a.archived) - Number(b.archived) || (a.created_at ?? a.updated_at) - (b.created_at ?? b.updated_at) || a.id.localeCompare(b.id));
-    for (const s of ordered) {
-      let i = hash(s.id) % GLYPHS.length;
-      for (let n = 0; n < GLYPHS.length && used.has(i); n++) i = (i + 1) % GLYPHS.length;
-      used.add(i);
-      out.set(s.id, GLYPHS[i]!);
-    }
-    return out;
-  }, [sessions]);
+/** Glyph per agent (a project's workers): preferred by id, else the next free one, assigned in creation order so
+ *  agents keep theirs. Archived ones go last, so showing them doesn't change the others'. */
+export function glyphsFor(workers: (Pick<SessionRow, "id" | "created_at" | "updated_at"> & { archived?: boolean })[]): Map<string, LucideIcon> {
+  const out = new Map<string, LucideIcon>();
+  const used = new Set<number>();
+  const ordered = [...workers].sort((a, b) => Number(!!a.archived) - Number(!!b.archived) || (a.created_at ?? a.updated_at) - (b.created_at ?? b.updated_at) || a.id.localeCompare(b.id));
+  for (const s of ordered) {
+    let i = hash(s.id) % GLYPHS.length;
+    for (let n = 0; n < GLYPHS.length && used.has(i); n++) i = (i + 1) % GLYPHS.length;
+    used.add(i);
+    out.set(s.id, GLYPHS[i]!);
+  }
+  return out;
 }
 
-export function AgentAvatar({ s, glyph, size = 32 }: { s: SessionRow; glyph?: LucideIcon; size?: number }) {
+export function useGlyphs(): Map<string, LucideIcon> {
+  const sessions = useApp((s) => s.sessions);
+  return useMemo(() => glyphsFor(sessions.filter((s) => s.role === "worker")), [sessions]);
+}
+
+export function AgentAvatar({ s, glyph, size = 32 }: { s: Pick<SessionRow, "id" | "harness">; glyph?: LucideIcon; size?: number }) {
   const Glyph = glyph ?? GLYPHS[hash(s.id) % GLYPHS.length]!;
   return (
     <span className={clsx("agent-av", `h-${s.harness}`)} style={{ width: size, height: size }}>
@@ -286,7 +289,7 @@ function AgentsFlyout({ onClose }: { onClose: () => void }) {
 // ---------------------------------------------------------------- rail
 export function Rail() {
   useTick(30000);
-  const { meta, project, sessions, sessionId, subagentId, compactionId, selectSession, selectSubagent, selectCompaction, refreshSessions, setPickerOpen, setSettingsOpen, theme, setTheme, setPanel } =
+  const { meta, project, sessions, sessionId, subagentId, compactionId, selectSession, selectSubagent, selectCompaction, refreshSessions, openProject, setSettingsOpen, theme, setTheme, setPanel } =
     useApp();
   const draftWaiting = useDrafts((s) => hasContent(s.byProject[project?.id ?? ""]));
   const [tip, setTip] = useState<{ el: HTMLElement; content: ReactNode } | null>(null);
@@ -312,12 +315,8 @@ export function Rail() {
 
   return (
     <nav className="rail">
-      <button
-        className="rail-btn"
-        onClick={() => setPickerOpen(true)}
-        aria-label="Open project"
-      >
-        <FolderOpen size={17} />
+      <button className={clsx("rail-btn", !project && "on")} onClick={() => void openProject(null)} aria-label="Home">
+        <House size={17} />
       </button>
       {project && (
         <>

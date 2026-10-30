@@ -1,12 +1,13 @@
 import type { JSX, ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { Archive, ArchiveRestore, ArrowLeft, ChevronRight, FileDiff, Files, FolderOpen, GitBranch, GitFork, LayoutDashboard, MessageSquare, PanelRightClose, Plug, Unplug } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowLeft, ChevronRight, FileDiff, Files, GitBranch, GitFork, LayoutDashboard, MessageSquare, PanelRightClose, Plug, Unplug } from "lucide-react";
 import { api, loginUrl, SessionRow } from "./api";
 import { Panel, useApp } from "./store";
-import { clsx, displayName, tidyNote } from "./util";
+import { clsx, displayName, isMac, tidyNote } from "./util";
 import { Rail, liveLabel, statusClass } from "./components/Rail";
-import { Home } from "./components/Home";
+import { NewAgent } from "./components/NewAgent";
+import { HomePage } from "./components/HomePage";
 import { ProjectPicker } from "./components/Dialogs";
 import { ForkDialog } from "./components/ForkDialog";
 import { useFullscreenElement } from "./components/ui";
@@ -294,25 +295,10 @@ function ChatColumn() {
               <CloseChat />
             </div>
           </div>
-          <Home />
+          <NewAgent />
         </>
       )}
     </section>
-  );
-}
-
-function NoProject() {
-  const setPickerOpen = useApp((s) => s.setPickerOpen);
-  return (
-    <main className="workspace">
-      <div className="empty-state">
-        <h3>Open a project</h3>
-        <div>Atrium works per directory: its agents, board, files and git.</div>
-        <button className="btn btn-primary" style={{ marginTop: 10 }} onClick={() => setPickerOpen(true)}>
-          <FolderOpen size={14} /> Open…
-        </button>
-      </div>
-    </main>
   );
 }
 
@@ -338,10 +324,21 @@ function Toasts() {
 }
 
 export function App() {
-  const { init, project, pickerOpen, settingsOpen, chatOpen, chatWidth, setChatWidth } = useApp();
+  const { init, project, pickerOpen, settingsOpen, chatOpen, chatWidth, setChatWidth, goHome } = useApp();
   useEffect(() => {
     void init();
   }, [init]);
+  // ⌘K (Ctrl+K off the Mac): the home page's project search, from anywhere but the editor (Monaco's own ⌘K chords)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key.toLowerCase() !== "k" || !(isMac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey) || e.shiftKey || e.altKey) return;
+      if ((e.target as HTMLElement | null)?.closest?.(".monaco-editor")) return;
+      e.preventDefault();
+      void goHome(true);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [goHome]);
   // keep the workspace usable when the window shrinks
   useEffect(() => {
     const fit = () => {
@@ -355,7 +352,7 @@ export function App() {
 
   return (
     <div className="app">
-      {project ? <Workspace /> : <NoProject />}
+      {project ? <Workspace /> : <HomePage />}
       {project && chatOpen && <ChatColumn />}
       <Rail />
       {pickerOpen && <ProjectPicker />}

@@ -1,14 +1,18 @@
 import { useEffect, useState } from "react";
-import { ArrowUp, Folder, FolderGit2, Trash2 } from "lucide-react";
+import { ArrowUp, Folder, FolderGit2 } from "lucide-react";
 import { api } from "../api";
 import { useApp } from "../store";
-import { shortPath, timeAgo } from "../util";
+import { shortPath } from "../util";
 import { Modal, Spinner } from "./ui";
 
+/** Open a folder as a project, or make a new one (in the folder being browsed), git-initialised by default. */
 export function ProjectPicker() {
-  const { projects, addProject, openProject, setPickerOpen, loadProjects, toast, project } = useApp();
+  const { pickerOpen, addProject, setPickerOpen, toast } = useApp();
+  const creating = pickerOpen === "create";
   const [path, setPath] = useState("");
   const [dir, setDir] = useState<Awaited<ReturnType<typeof api.browse>> | null>(null);
+  const [name, setName] = useState("");
+  const [git, setGit] = useState(true);
   const [busy, setBusy] = useState(false);
 
   const browse = async (p?: string) => {
@@ -24,67 +28,60 @@ export function ProjectPicker() {
     void browse(undefined);
   }, []);
 
-  const open = async (p: string) => {
+  const open = async (p: string, create?: { git: boolean }) => {
     setBusy(true);
     try {
-      await addProject(p);
+      await addProject(p, create);
     } catch (e: any) {
       toast(e.message || String(e), "error");
     } finally {
       setBusy(false);
     }
   };
+  const newPath = dir && name.trim() ? `${dir.path.replace(/\/$/, "")}/${name.trim()}` : "";
 
   return (
     <Modal
-      title="Open a project"
-      onClose={() => project && setPickerOpen(false)}
+      title={creating ? "New folder" : "Open a folder"}
+      onClose={() => setPickerOpen(false)}
       wide
       footer={
-        <>
-          <span className="muted grow" style={{ fontSize: 12.5 }}>
-            Every directory is a project: its sessions, board, files and git live together.
-          </span>
-          <button className="btn btn-primary" disabled={!path || busy} onClick={() => void open(path)}>
-            {busy && <Spinner />} Open this folder
-          </button>
-        </>
+        creating ? (
+          <>
+            <label className="check grow">
+              <input type="checkbox" checked={git} onChange={(e) => setGit(e.target.checked)} /> git init
+            </label>
+            <button className="btn btn-primary" disabled={!newPath || busy} onClick={() => void open(newPath, { git })}>
+              {busy && <Spinner />} Create and open
+            </button>
+          </>
+        ) : (
+          <>
+            <span className="muted grow" style={{ fontSize: 12.5 }}>
+              Every directory is a project: its sessions, board, files and git live together.
+            </span>
+            <button className="btn btn-primary" disabled={!path || busy} onClick={() => void open(path)}>
+              {busy && <Spinner />} Open this folder
+            </button>
+          </>
+        )
       }
     >
-      {projects.length > 0 && (
-        <>
-          <div className="section-label" style={{ paddingLeft: 2 }}>Recent</div>
-          <div style={{ marginBottom: 14 }}>
-            {projects.map((p) => (
-              <div key={p.id} className="proj-row" onClick={() => (void openProject(p.id), setPickerOpen(false))}>
-                <span className="ic">
-                  <FolderGit2 size={16} />
-                </span>
-                <div className="grow">
-                  <div style={{ fontWeight: 600 }}>{p.name}</div>
-                  <div className="muted mono ellipsis" style={{ fontSize: 12 }}>
-                    {shortPath(p.path)} {p.exists === false && <span className="pill err">missing</span>}
-                  </div>
-                </div>
-                <span className="faint" style={{ fontSize: 12 }}>{timeAgo(p.last_opened)}</span>
-                <button
-                  className="icon-btn sm"
-                  title="Remove from list (files are untouched)"
-                  onClick={async (e) => {
-                    e.stopPropagation();
-                    await api.removeProject(p.id);
-                    await loadProjects();
-                    if (project?.id === p.id) await openProject(null);
-                  }}
-                >
-                  <Trash2 size={13} />
-                </button>
-              </div>
-            ))}
-          </div>
-        </>
+      {creating && (
+        <div className="field">
+          <label>Name</label>
+          <input
+            className="input"
+            autoFocus
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && newPath && !busy && void open(newPath, { git })}
+            placeholder="my-project"
+          />
+          <div className="hint mono ellipsis">{newPath ? shortPath(newPath) : `in ${shortPath(dir?.path ?? "")}`}</div>
+        </div>
       )}
-      <div className="section-label" style={{ paddingLeft: 2 }}>Browse</div>
+      <div className="section-label" style={{ paddingLeft: 2 }}>{creating ? "In" : "Browse"}</div>
       <div className="row" style={{ marginBottom: 8 }}>
         <button className="icon-btn" disabled={!dir?.parent} onClick={() => dir?.parent && void browse(dir.parent)} title="Up">
           <ArrowUp size={15} />
@@ -99,7 +96,7 @@ export function ProjectPicker() {
       </div>
       <div className="dir-list">
         {dir?.dirs.map((d) => (
-          <div key={d.path} className="dir-row" onClick={() => void browse(d.path)} onDoubleClick={() => void open(d.path)}>
+          <div key={d.path} className="dir-row" onClick={() => void browse(d.path)} onDoubleClick={() => !creating && void open(d.path)}>
             {d.git ? <FolderGit2 size={15} style={{ color: "var(--accent-strong)" }} /> : <Folder size={15} className="muted" />}
             <span className="grow">{d.name}</span>
             {d.git && <span className="pill accent">git</span>}

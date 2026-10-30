@@ -11,7 +11,7 @@ import {
 } from "../chat/Composer";
 import { mergeCommands, useSlashCommands, useSlashMenu } from "../chat/SlashMenu";
 
-export function Home() {
+export function NewAgent() {
   const { project, meta, selectSession, toast, refreshSessions, refreshProject } = useApp();
   // what's typed and picked here is the project's draft, kept outside this component (../drafts)
   const pid = project?.id ?? "";

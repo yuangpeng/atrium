@@ -330,12 +330,15 @@ class SessionManager:
         s = await self.find_summary(project, sid)
         return meta.get("cwd") or (s.cwd if s else None) or project.path, meta.get("harness") or (s.harness if s else "claude-code")
 
-    async def list_sessions(self, project: Project, include_archived: bool = False) -> list[dict[str, Any]]:
-        summaries = await self.summaries(project)
-        wts = await asyncio.to_thread(project.worktrees_sync)
-        known = project.note_worktrees(wts)
+    async def list_sessions(self, project: Project, include_archived: bool = False, details: bool = True) -> list[dict[str, Any]]:
+        """``details=False`` (the home page, for every project): the rows' status fields are what counts. No
+        ``git worktree list`` (directories and branches come from the worktrees seen before), no subagents or
+        compactions, and the harnesses' session lists may be 10 s old."""
+        summaries = await self.summaries(project, max_age=3.0 if details else 10.0)
+        wts = await asyncio.to_thread(project.worktrees_sync) if details else []
+        known = project.note_worktrees(wts)  # without wts: only reads what was seen
         meta = project.sessions_meta()
-        board = project.board.snapshot()["agents"]
+        board = project.board.agent_states()
         wt_branch = {w["path"]: w.get("branch") for w in wts}
         linked = [p for p in dict.fromkeys([*wt_branch, *known]) if p != project.path]
         atrium_wts = os.path.join(project.path, ".atrium", "worktrees") + os.sep
@@ -404,6 +407,10 @@ class SessionManager:
             if fork and sid not in seen and m.get("cwd"):
                 title = m.get("name") or f"{fork.get('name') or 'Agent'} (fork)"
                 out.append(row(sid, m.get("harness") or "claude-code", title, m["cwd"], m.get("forked_at") or 0, m.get("created_at"), None, None, None))
+        if not details:
+            out = [r for r in out if include_archived or not r["archived"]]
+            out.sort(key=lambda r: -(r["updated_at"] or 0))
+            return out
         ids = {r["id"] for r in out}
         synced = False
         for r in out:
