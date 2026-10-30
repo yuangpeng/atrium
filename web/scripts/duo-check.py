@@ -62,12 +62,10 @@ AUDIT = """(MIN_TAP) => {
     if (el.scrollWidth > el.clientWidth + 1 && /auto|scroll/.test(cs.overflowX) && r.width > 120 &&
         !el.matches("pre, table, .code-block, .mini-diff, .editor-tabs, .md, .card-body, .msg-output"))
       out.push({ kind: "panel scrolls sideways", el: name(el), by: el.scrollWidth - el.clientWidth, width: Math.round(r.width) });
-    if (!clipped(el)) {
-      if (r.right > innerWidth + 1 || r.left < -1)
-        out.push({ kind: "past the viewport", el: name(el), right: Math.round(r.right), width: innerWidth });
-      if (leaf && el.scrollWidth > el.clientWidth + 1 && cs.textOverflow !== "ellipsis" && cs.overflow === "visible")
-        out.push({ kind: "text outside its box", el: name(el), by: el.scrollWidth - el.clientWidth, text: (el.textContent || "").trim().slice(0, 60) });
-    }
+    if (leaf && el.scrollWidth > el.clientWidth + 1 && cs.textOverflow !== "ellipsis" && cs.overflow === "visible")
+      out.push({ kind: "text outside its box", el: name(el), by: el.scrollWidth - el.clientWidth, text: (el.textContent || "").trim().slice(0, 60) });
+    if (!clipped(el) && (r.right > innerWidth + 1 || r.left < -1))
+      out.push({ kind: "past the viewport", el: name(el), right: Math.round(r.right), width: innerWidth });
     const button = el.tagName === "BUTTON" || el.getAttribute("role") === "button";
     if (button && !el.disabled) {
       if (r.width < MIN_TAP - 1 || r.height < MIN_TAP - 1)
@@ -87,8 +85,11 @@ AUDIT = """(MIN_TAP) => {
 }"""
 
 
+_direct = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # never via $http_proxy: this is localhost
+
+
 def get(url: str):
-    with urllib.request.urlopen(url) as r:
+    with _direct.open(url) as r:
         return json.load(r)
 
 
@@ -106,7 +107,12 @@ async def main() -> int:
         return 2
     pid = projects[0]["id"]
     sessions = [s for s in get(f"{args.base}/api/p/{pid}/sessions") if s.get("role") == "worker"]
-    sid = sessions[0]["id"] if sessions else None
+    if not sessions:
+        print(f"{projects[0]['path']} has no agent: the chat would be the empty new-agent box, and Changes and Git\n"
+              "their empty states — almost nothing would be checked. Give the scratch project a few sessions\n"
+              "(a transcript each) and some uncommitted edits first, then run this again.", file=sys.stderr)
+        return 2
+    sid = sessions[0]["id"]
     poses = {k: POSES[k] for k in (args.pose or POSES)}
 
     findings, errors = [], []
@@ -132,7 +138,7 @@ async def main() -> int:
             await page.goto(args.base + "/")
             await page.wait_for_timeout(1500)
             await audit(page, pose, "home")
-            await page.goto(f"{args.base}/?project={pid}" + (f"&session={sid}" if sid else ""))
+            await page.goto(f"{args.base}/?project={pid}&session={sid}")
             await page.wait_for_timeout(1500)
             views = [("chat", None)]
             back = page.locator('button[title="Board, files, changes, git"]')

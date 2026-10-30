@@ -169,8 +169,12 @@ export function startRowResize(e: React.PointerEvent<HTMLElement>, ref: RefObjec
   } catch {
     /* the pointer is already gone: the drag below still works */
   }
-  const move = (ev: PointerEvent) => set(Math.min(0.85, Math.max(0.2, (bottom - ev.clientY) / box.height)));
-  const up = () => {
+  const move = (ev: PointerEvent) => {
+    if (ev.pointerId !== e.pointerId) return;
+    set(Math.min(0.85, Math.max(0.2, (bottom - ev.clientY) / box.height)));
+  };
+  const up = (ev: PointerEvent) => {
+    if (ev.pointerId !== e.pointerId) return;
     window.removeEventListener("pointermove", move);
     window.removeEventListener("pointerup", up);
     window.removeEventListener("pointercancel", up);
@@ -184,7 +188,8 @@ export function startRowResize(e: React.PointerEvent<HTMLElement>, ref: RefObjec
   document.body.style.userSelect = "none";
 }
 
-export function useInterval(fn: () => void, ms: number | null) {  const saved = useRef(fn);
+export function useInterval(fn: () => void, ms: number | null) {
+  const saved = useRef(fn);
   saved.current = fn;
   useEffect(() => {
     if (ms === null) return;
