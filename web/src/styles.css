@@ -34,6 +34,7 @@
   --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
   --radius: 10px;
   --radius-lg: 16px;
+  --rail-w: 52px;
   color-scheme: light;
 }
 
@@ -82,10 +83,14 @@ button { font: inherit; color: inherit; }
 input, textarea, select { font: inherit; color: inherit; }
 a { color: var(--accent-strong); }
 ::selection { background: color-mix(in srgb, var(--accent) 30%, transparent); }
-::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--muted) 30%, transparent); border-radius: 10px; border: 3px solid transparent; background-clip: padding-box; }
-::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--muted) 50%, transparent); }
-::-webkit-scrollbar-track { background: transparent; }
+/* slim scrollbars for a mouse. A touch screen keeps its own overlay ones: WebKit's mobile layout leaves these no
+   room, then takes their width off clientWidth all the same, and every scroll box scrolls sideways by it */
+@media (hover: hover) and (pointer: fine) {
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--muted) 30%, transparent); border-radius: 10px; border: 3px solid transparent; background-clip: padding-box; }
+  ::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--muted) 50%, transparent); }
+  ::-webkit-scrollbar-track { background: transparent; }
+}
 
 /* ---------------------------------------------------------------- layout */
 /* workspace (board / files / changes / git) | chat column | rail */
@@ -167,10 +172,13 @@ a { color: var(--accent-strong); }
 .seg { display: inline-flex; background: var(--surface-2); border-radius: 9px; padding: 2px; gap: 2px; }
 .seg button { border: 0; background: transparent; height: 26px; padding: 0 10px; border-radius: 7px; cursor: pointer; font-size: 12.5px; color: var(--muted); font-weight: 500; display: inline-flex; align-items: center; gap: 5px; }
 .seg button.on { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08); }
+/* icons, not words: what each one is shows as its tip (data-tip, tips.ts) */
+.seg.icons button { width: 30px; padding: 0; justify-content: center; position: relative; }
+.seg-n { position: absolute; top: -3px; right: -3px; min-width: 14px; height: 14px; padding: 0 3px; border-radius: 7px; background: var(--muted); color: var(--bg); font-size: 9.5px; font-weight: 700; line-height: 14px; text-align: center; }
 .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 40px 20px; color: var(--muted); text-align: center; height: 100%; }
 .empty-state svg { color: var(--faint); }
 .empty-state h3 { margin: 0; font: 500 17px var(--font-serif); color: var(--text-2); }
-.toolbar { display: flex; align-items: center; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--border); min-height: 44px; flex-wrap: wrap; }
+.toolbar { display: flex; align-items: center; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--border); min-height: 44px; flex-wrap: wrap; flex: none; }
 .toolbar .title { font-weight: 600; font-size: 13px; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
 .dot.running, .dot.working { background: var(--accent); animation: pulse 1.5s ease-in-out infinite; }
@@ -183,7 +191,7 @@ a { color: var(--accent-strong); }
 .bar.done > span { background: var(--ok); }
 
 /* ---------------------------------------------------------------- rail */
-.rail { width: 52px; flex: none; background: var(--sidebar); border-left: 1px solid var(--border); display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 9px 0 10px; min-height: 0; }
+.rail { width: var(--rail-w); flex: none; background: var(--sidebar); border-left: 1px solid var(--border); display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 9px 0 10px; min-height: 0; }
 .rail-btn { width: 34px; height: 34px; border-radius: 9px; border: 0; background: transparent; color: var(--muted); cursor: pointer; display: grid; place-items: center; flex: none; }
 .rail-btn:hover { background: var(--hover); color: var(--text); }
 .rail-btn.on { background: var(--active); color: var(--text); }
@@ -514,6 +522,11 @@ body.col-resizing iframe { pointer-events: none; } /* the board's would take the
 .tree-row .hover-actions { display: none; gap: 0; }
 @media (hover: hover) { .tree-row:hover .hover-actions { display: flex; } }
 .editor-tabs { display: flex; overflow-x: auto; border-bottom: 1px solid var(--border); flex: none; background: var(--sidebar); min-height: 35px; }
+/* the open files, then what acts on the one shown: save, lock, full screen */
+.editor-bar { display: flex; flex: none; border-bottom: 1px solid var(--border); background: var(--sidebar); }
+.editor-bar > .editor-tabs { flex: 1; min-width: 0; border-bottom: 0; }
+.editor-acts { flex: none; display: flex; align-items: center; gap: 2px; padding: 0 6px; border-left: 1px solid var(--border); }
+.lock-toggle.active { color: var(--accent-strong); }
 .editor-tab { display: flex; align-items: center; gap: 6px; padding: 0 6px 0 12px; height: 35px; border-right: 1px solid var(--border); cursor: pointer; font-size: 12.5px; color: var(--muted); white-space: nowrap; }
 .editor-tab.on { background: var(--bg); color: var(--text); box-shadow: inset 0 2px 0 var(--accent); }
 .editor-tab .dirty { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
@@ -593,6 +606,14 @@ body.col-resizing iframe { pointer-events: none; } /* the board's would take the
 /* browser fullscreen (Changes, a commit) */
 .fs-host:fullscreen { background: var(--bg); container-type: inline-size; }
 .fs-host:fullscreen .hresizer { display: none; }
+/* where the browser has no fullscreen for it (iPhone's Safari): the element fills the window (ui.tsx) */
+.fs-host[data-fs-fill] {
+  position: fixed; inset: 0; z-index: 45; height: auto !important; min-height: 0; background: var(--bg); container-type: inline-size;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) var(--safe-bottom) env(safe-area-inset-left);
+}
+.fs-host[data-fs-fill] .hresizer { display: none; }
+/* the panes are size containers, and a container holds a fixed box inside it: they let go meanwhile */
+[data-fs-filling] .workspace, [data-fs-filling] .chatcol { container-type: normal; }
 
 /* ---------------------------------------------------------------- git */
 .graph-wrap { flex: 1; overflow: auto; position: relative; }
@@ -607,9 +628,34 @@ body.col-resizing iframe { pointer-events: none; } /* the board's would take the
 .ref-pill.local { background: var(--accent-soft); color: var(--accent-strong); }
 .ref-pill.remote { background: var(--info-soft); color: var(--info); }
 .ref-pill.tag { background: var(--warn-soft); color: var(--warn); }
+.ref-pill.more { background: var(--surface-2); color: var(--muted); cursor: default; }
 .chips { display: flex; flex-wrap: wrap; gap: 5px; }
 .chip-toggle { height: 24px; padding: 0 9px; border-radius: 99px; border: 1px solid var(--border-strong); background: transparent; cursor: pointer; font: 500 12px var(--font-mono); color: var(--muted); display: inline-flex; align-items: center; gap: 5px; }
 .chip-toggle.on { background: var(--accent-soft); border-color: transparent; color: var(--accent-strong); }
+/* the graph's branches: a list to tick (GitPanel's BranchPicker) */
+.branch-pick { gap: 4px; padding: 0 7px 0 8px; }
+.branch-pick .n { font-variant-numeric: tabular-nums; }
+.branch-pick.open { background: var(--active); }
+.branch-menu { display: flex; flex-direction: column; gap: 4px; }
+.branch-menu > .input { height: 30px; font-size: 12.5px; }
+.branch-list { max-height: min(400px, 55dvh); overflow-y: auto; margin: 0 -5px; padding: 0 5px; }
+.branch-list .section-label { padding: 8px 6px 2px; }
+.branch-list .section-label .count { font-weight: 500; letter-spacing: 0; }
+.branch-item { gap: 7px; padding: 6px 8px; font-weight: 400; }
+.branch-item.on { color: inherit; font-weight: 400; }
+.branch-item .check { flex: none; color: var(--faint); }
+.branch-item.on .check { color: var(--accent-strong); }
+.branch-item .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.branch-item .pill { height: 17px; font-size: 10px; padding: 0 6px; flex: none; }
+.branch-item > svg.faint { flex: none; }
+.branch-item .when { flex: none; color: var(--faint); font-size: 11px; font-variant-numeric: tabular-nums; }
+.branch-foot { display: flex; align-items: center; gap: 8px; padding: 6px 4px 2px; border-top: 1px solid var(--border); font-size: 12px; }
+.icon-btn.simplify { color: var(--accent-strong); }
+/* a narrow panel: a commit is its subject and age; long branch names give way */
+@container (max-width: 560px) {
+  .graph-row .meta .who, .graph-row .meta.sha { display: none; }
+  .graph-row .ref-pill { display: inline-block; max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 17px; }
+}
 .note-box { margin: 8px 12px 0; padding: 9px 12px; border-radius: 10px; background: var(--info-soft); color: var(--text-2); font-size: 13px; display: flex; gap: 8px; align-items: flex-start; }
 .note-box .ico { color: var(--info); display: inline-flex; margin-top: 2px; }
 .wt-row { display: flex; gap: 10px; align-items: center; padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 13px; }
@@ -677,7 +723,10 @@ details.review-tool > summary::-webkit-details-marker { display: none; }
 .hresizer:hover { background: color-mix(in srgb, var(--accent) 35%, transparent); }
 
 /* ---------------------------------------------------------------- modal */
-.modal-backdrop { position: fixed; inset: 0; background: rgba(20, 20, 19, 0.38); display: grid; place-items: center; z-index: 50; animation: fade 0.12s; }
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(20, 20, 19, 0.38); display: grid; place-items: center; z-index: 50; animation: fade 0.12s;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) var(--safe-bottom) env(safe-area-inset-left);
+}
 @keyframes fade { from { opacity: 0; } }
 .modal { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-lg); width: min(620px, calc(100vw - 40px)); max-height: calc(100vh - 80px); display: flex; flex-direction: column; overflow: hidden; }
 .modal.wide { width: min(820px, calc(100vw - 40px)); }

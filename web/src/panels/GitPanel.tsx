@@ -1,10 +1,13 @@
 import type { JSX } from "react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Bot, ChevronDown, ChevronUp, ExternalLink, FolderGit2, GitBranch, GitBranchPlus, Lightbulb, Maximize2, Minimize2, RefreshCw, Sparkles, Trash2, X } from "lucide-react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Bot, ChevronDown, ChevronUp, ExternalLink, FolderGit2, GitBranch, GitBranchPlus, GitGraph, Layers, Lightbulb, ListChecks, Maximize2, Minimize2,
+  RefreshCw, Sparkles, Square, SquareCheck, Trash2, Wand, X,
+} from "lucide-react";
 import { api, Branch, Commit, CommitDetail, CommitFile, GitSummary, GitView } from "../api";
 import { useApp } from "../store";
 import { clsx, displayName, languageFor, relTo, throttle, timeAgo } from "../util";
-import { Spinner, startRowResize, useFullscreen } from "../components/ui";
+import { Popover, Spinner, startRowResize, useFullscreen } from "../components/ui";
 import { DiffEditor } from "../components/LazyEditors";
 import { DiffOptions } from "../components/DiffOptions";
 import { FileNav, FileTree, useFileTree } from "../components/FileTree";
@@ -97,17 +100,115 @@ function GraphCell({ r, width, highlighted, isHead }: { r: Row; width: number; h
   );
 }
 
+const MAX_REFS = 2; // a commit many refs point at (remotes on the trunk) shows this many, the rest as "+n"
+const refName = (ref: string) => (ref.startsWith("HEAD -> ") ? ref.slice(8) : ref.startsWith("tag: ") ? ref.slice(5) : ref);
+
 function RefPills({ refs, branches }: { refs: string[]; branches: Map<string, Branch> }) {
+  // HEAD and local branches before tags and remotes: the ones that stay in sight matter most
+  const rank = (ref: string) => (ref.startsWith("HEAD") ? 0 : ref.startsWith("tag: ") ? 2 : branches.get(ref)?.remote ? 3 : 1);
+  const sorted = [...refs].sort((a, b) => rank(a) - rank(b));
+  const shown = sorted.length > MAX_REFS + 1 ? sorted.slice(0, MAX_REFS) : sorted;
+  const rest = sorted.slice(shown.length);
   return (
     <>
-      {refs.map((ref) => {
-        if (ref.startsWith("HEAD -> ")) return <span key={ref} className="ref-pill head">{ref.slice(8)}</span>;
+      {shown.map((ref) => {
+        if (ref.startsWith("HEAD -> ")) return <span key={ref} className="ref-pill head">{refName(ref)}</span>;
         if (ref === "HEAD") return <span key={ref} className="ref-pill head">HEAD</span>;
-        if (ref.startsWith("tag: ")) return <span key={ref} className="ref-pill tag">{ref.slice(5)}</span>;
+        if (ref.startsWith("tag: ")) return <span key={ref} className="ref-pill tag">{refName(ref)}</span>;
         const b = branches.get(ref);
         return <span key={ref} className={clsx("ref-pill", b?.remote ? "remote" : "local")}>{ref}</span>;
       })}
+      {rest.length > 0 && (
+        <span className="ref-pill more" data-tip={rest.map(refName).join(", ")}>
+          +{rest.length}
+        </span>
+      )}
     </>
+  );
+}
+
+// the graph's modes, as icons: what each one shows is in its tip
+const MODES = [
+  { id: "view", label: "Agent view", tip: "Agent view — the branches the Git Agent (or you) picked", icon: <Bot size={15} /> },
+  { id: "smart", label: "Smart", tip: "Smart — HEAD, worktree branches, the trunk and recently active branches", icon: <Wand size={15} /> },
+  { id: "all", label: "All", tip: "All — every branch and remote", icon: <Layers size={15} /> },
+  { id: "custom", label: "Custom", tip: "Custom — the branches you tick in the branch list", icon: <ListChecks size={15} /> },
+] as const;
+type Mode = (typeof MODES)[number]["id"];
+
+const touch = matchMedia("(pointer: coarse)");
+
+/** Which branches the graph shows: a list to tick, local ones first, with a filter — one chip per branch filled
+ *  the panel once a repository had a few dozen. Ticking one makes the graph custom. */
+function BranchPicker({ branches, shown, worktrees, custom, onToggle, onSave }: {
+  branches: Branch[];
+  shown: string[];
+  worktrees: Set<string>;
+  custom: boolean;
+  onToggle: (name: string) => void;
+  onSave: () => void;
+}) {
+  const [q, setQ] = useState("");
+  const f = q.trim().toLowerCase();
+  const match = branches.filter((b) => !f || b.name.toLowerCase().includes(f));
+  const groups: [string, Branch[]][] = [
+    ["Local", match.filter((b) => !b.remote)],
+    ["Remote", match.filter((b) => b.remote)],
+  ];
+  const n = branches.filter((b) => shown.includes(b.name)).length;
+  return (
+    <Popover
+      width={340}
+      within=".panel-body"
+      trigger={(open, toggle) => (
+        <button className={clsx("btn btn-sm branch-pick", open && "open")} onClick={() => (setQ(""), toggle())} aria-label="Branches in the graph" data-tip="Branches in the graph">
+          <GitBranch size={13} />
+          <span className="n">
+            {n}/{branches.length}
+          </span>
+          <ChevronDown size={12} />
+        </button>
+      )}
+    >
+      {(close) => (
+        <div className="branch-menu">
+          <input className="input" autoFocus={!touch.matches} placeholder="Filter branches" value={q} onChange={(e) => setQ(e.target.value)} />
+          <div className="branch-list">
+            {groups.map(
+              ([label, list]) =>
+                list.length > 0 && (
+                  <Fragment key={label}>
+                    <div className="section-label">
+                      {label} <span className="count">{list.length}</span>
+                    </div>
+                    {list.map((b) => {
+                      const on = shown.includes(b.name);
+                      return (
+                        <button key={b.name} className={clsx("menu-item branch-item", on && "on")} onClick={() => onToggle(b.name)} title={b.subject}>
+                          {on ? <SquareCheck size={14} className="check" /> : <Square size={14} className="check" />}
+                          <span className="nm mono">{b.name}</span>
+                          {b.head && <span className="pill accent">HEAD</span>}
+                          {worktrees.has(b.name) && <FolderGit2 size={12} className="faint" aria-label="has a worktree" />}
+                          <span className="when">{timeAgo(b.date)}</span>
+                        </button>
+                      );
+                    })}
+                  </Fragment>
+                ),
+            )}
+            {match.length === 0 && <div className="muted" style={{ padding: "8px 10px", fontSize: 12.5 }}>No branch matches.</div>}
+          </div>
+          {custom && (
+            <div className="branch-foot">
+              <span className="faint grow">Ticked: the graph is custom</span>
+              <button className="btn btn-sm btn-primary" onClick={() => (onSave(), close())}>
+                Save as view
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </Popover>
   );
 }
 
@@ -116,7 +217,7 @@ export function GitPanel() {
   const { project, gitVersion, toast, refreshProject } = useApp();
   const pid = project?.id ?? "";
   const [tab, setTab] = useState<"graph" | "worktrees">("graph");
-  const [mode, setMode] = useState<"view" | "smart" | "all" | "custom">("view");
+  const [mode, setMode] = useState<Mode>("view");
   const [custom, setCustom] = useState<string[]>([]);
   const [graph, setGraph] = useState<{ commits: Commit[]; head: string | null; refs: string[]; mode: string; view: GitView | null } | null>(null);
   const [sum, setSum] = useState<GitSummary | null>(null);
@@ -233,35 +334,46 @@ export function GitPanel() {
     setCustom(base.includes(name) ? base.filter((x) => x !== name) : [...base, name]);
     setMode("custom");
   };
-  const localBranches = (sum?.branches ?? []).filter((b) => !b.remote);
-  const remoteBranches = (sum?.branches ?? []).filter((b) => b.remote);
+  const worktreeBranches = new Set((sum?.worktrees ?? []).filter((w) => !w.main && w.branch).map((w) => w.branch!));
+  const wtCount = Math.max(0, (sum?.worktrees?.length ?? 1) - 1);
 
   return (
     <div className="panel-body">
       <div className="toolbar">
-        <div className="seg">
-          <button className={clsx(tab === "graph" && "on")} onClick={() => setTab("graph")}>
-            <GitBranch size={13} /> Graph
+        <div className="seg icons">
+          <button className={clsx(tab === "graph" && "on")} onClick={() => setTab("graph")} aria-label="Graph" data-tip="Commit graph">
+            <GitGraph size={15} />
           </button>
-          <button className={clsx(tab === "worktrees" && "on")} onClick={() => setTab("worktrees")}>
-            <FolderGit2 size={13} /> Worktrees {sum?.worktrees && sum.worktrees.length > 1 ? `(${sum.worktrees.length - 1})` : ""}
+          <button className={clsx(tab === "worktrees" && "on")} onClick={() => setTab("worktrees")} aria-label="Worktrees" data-tip={`Worktrees${wtCount ? ` (${wtCount})` : ""}`}>
+            <FolderGit2 size={15} />
+            {wtCount > 0 && <span className="seg-n">{wtCount}</span>}
           </button>
         </div>
         {tab === "graph" && (
-          <div className="seg">
-            {(["view", "smart", "all", "custom"] as const).map((m) => (
-              <button key={m} className={clsx(mode === m && "on")} onClick={() => (m === "custom" && !custom.length && setCustom(shownRefs), setMode(m))} title={m === "view" ? "The view chosen by the Git Agent (or you)" : undefined}>
-                {m === "view" ? "Agent view" : m[0].toUpperCase() + m.slice(1)}
+          <div className="seg icons">
+            {MODES.map((m) => (
+              <button key={m.id} className={clsx(mode === m.id && "on")} onClick={() => (m.id === "custom" && !custom.length && setCustom(shownRefs), setMode(m.id))} aria-label={m.label} data-tip={m.tip}>
+                {m.icon}
               </button>
             ))}
           </div>
         )}
+        {tab === "graph" && (
+          <BranchPicker
+            branches={sum?.branches ?? []}
+            shown={shownRefs}
+            worktrees={worktreeBranches}
+            custom={mode === "custom"}
+            onToggle={toggleRef}
+            onSave={() => void api.gitSetView(pid, { branches: custom, note: "" }).then(() => setMode("view"))}
+          />
+        )}
         <span className="grow" />
         {loading && <Spinner />}
-        <button className="btn btn-sm" onClick={() => void simplify()} title="Ask the Git Agent to pick the relevant branches">
-          <Sparkles size={13} /> Simplify
+        <button className="icon-btn simplify" onClick={() => void simplify()} aria-label="Simplify" data-tip="Simplify — the Git Agent picks the branches that matter">
+          <Sparkles size={15} />
         </button>
-        <button className="icon-btn" onClick={() => void load()} title="Refresh">
+        <button className="icon-btn" onClick={() => void load()} aria-label="Refresh" data-tip="Refresh">
           <RefreshCw size={14} />
         </button>
       </div>
@@ -284,24 +396,6 @@ export function GitPanel() {
               </button>
             </div>
           )}
-          <div style={{ padding: "8px 12px 6px" }} className="chips">
-            {localBranches.map((b) => (
-              <button key={b.name} className={clsx("chip-toggle", shownRefs.includes(b.name) && "on")} onClick={() => toggleRef(b.name)} title={b.subject}>
-                {b.head && "● "}
-                {b.name}
-              </button>
-            ))}
-            {remoteBranches.slice(0, 12).map((b) => (
-              <button key={b.name} className={clsx("chip-toggle", shownRefs.includes(b.name) && "on")} onClick={() => toggleRef(b.name)} style={{ opacity: 0.8 }}>
-                {b.name}
-              </button>
-            ))}
-            {mode === "custom" && (
-              <button className="btn btn-sm btn-ghost" onClick={() => void api.gitSetView(pid, { branches: custom, note: "" }).then(() => setMode("view"))}>
-                Save as view
-              </button>
-            )}
-          </div>
           <div className="graph-wrap">
             {rows.map((r) => (
               <div key={r.c.sha} className={clsx("graph-row", sel === r.c.sha && "on", hl.has(r.c.sha) && "hl")} onClick={() => setSel(sel === r.c.sha ? null : r.c.sha)}>
@@ -311,9 +405,10 @@ export function GitPanel() {
                   <span className="ellipsis">{r.c.subject}</span>
                 </div>
                 <span className="meta">
-                  {r.c.author} · {timeAgo(r.c.time)}
+                  <span className="who">{r.c.author} · </span>
+                  {timeAgo(r.c.time)}
                 </span>
-                <span className="meta mono">{r.c.sha.slice(0, 7)}</span>
+                <span className="meta mono sha">{r.c.sha.slice(0, 7)}</span>
               </div>
             ))}
             {graph && rows.length === 0 && (

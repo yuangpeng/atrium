@@ -40,8 +40,10 @@ class BoardStore:
             self.state = _empty()
         for k, v in _empty().items():
             self.state.setdefault(k, v)
-        if not self.html_path.exists():
+        if not self.json_path.exists():
             self._write()
+        else:
+            self._write_html()  # the template may have changed since it was last written (a new Atrium)
 
     # ---- read --------------------------------------------------------------
     def snapshot(self) -> dict[str, Any]:
@@ -66,6 +68,9 @@ class BoardStore:
     # ---- write -------------------------------------------------------------
     def _write(self) -> None:
         self.json_path.write_text(json.dumps(self.state, indent=1, ensure_ascii=False))
+        self._write_html()
+
+    def _write_html(self) -> None:
         html = render_board(self.state, self.project.name, self.project.path)
         tmp = self.html_path.with_suffix(".html.tmp")
         tmp.write_text(html)

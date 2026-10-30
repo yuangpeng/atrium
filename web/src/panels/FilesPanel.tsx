@@ -1,11 +1,13 @@
 import type { JSX } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, ChevronRight, CircleAlert, Eye, EyeOff, File, FilePlus, Folder, FolderOpen, FolderPlus, Lock, Pencil, RefreshCw, Trash2, TriangleAlert, X } from "lucide-react";
+import { ChevronDown, ChevronRight, CircleAlert, Eye, EyeOff, File, FilePlus, Folder, FolderOpen, FolderPlus, Lock, Maximize2, Minimize2, Pencil, RefreshCw, Save, Trash2, TriangleAlert, X } from "lucide-react";
 import { api, ApiError, DirEntry } from "../api";
 import { FileTarget, useApp } from "../store";
 import { basename, clsx, languageFor, shortPath, throttle } from "../util";
 import { CodeEditor } from "../components/LazyEditors";
 import type { Reveal } from "../components/Editors";
+import { LockToggle, useEditLock } from "../components/EditLock";
+import { useFullscreen } from "../components/ui";
 import { editorBridge, useEditorStatus } from "../editorStatus";
 
 interface OpenFile {
@@ -59,6 +61,9 @@ export function FilesPanel() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set(["."]));
   const [open, setOpen] = useState<OpenFile[]>([]);
   const [active, setActive] = useState<string | null>(null);
+  const locked = useEditLock((s) => s.locked);
+  const editorRef = useRef<HTMLDivElement>(null);
+  const [full, toggleFull] = useFullscreen(editorRef);
   const pid = project?.id ?? "";
 
   useEffect(() => {
@@ -314,20 +319,34 @@ export function FilesPanel() {
           </div>
           <div className="tree">{renderDir(".", 0)}</div>
         </div>
-        <div className="content">
+        <div ref={editorRef} className="content fs-host">
           {open.length > 0 && (
-            <div className="editor-tabs">
-              {open.map((f) => (
-                <div key={f.key} className={clsx("editor-tab", f.key === active && "on", f.external && "external")} onClick={() => setActive(f.key)} title={f.abs}>
-                  {f.external && <Lock size={11} className="faint" />}
-                  {basename(f.path)}
-                  {!f.external && f.root !== project.path && <span className="faint mono" style={{ fontSize: 10.5 }}>⎇</span>}
-                  {f.content !== f.saved ? <span className="dirty" /> : null}
-                  <button className="icon-btn sm" onClick={(e) => (e.stopPropagation(), close(f.key))}>
-                    <X size={12} />
+            <div className="editor-bar">
+              <div className="editor-tabs">
+                {open.map((f) => (
+                  <div key={f.key} className={clsx("editor-tab", f.key === active && "on", f.external && "external")} onClick={() => setActive(f.key)} title={f.abs}>
+                    {f.external && <Lock size={11} className="faint" />}
+                    {basename(f.path)}
+                    {!f.external && f.root !== project.path && <span className="faint mono" style={{ fontSize: 10.5 }}>⎇</span>}
+                    {f.content !== f.saved ? <span className="dirty" /> : null}
+                    <button className="icon-btn sm" aria-label="Close" onClick={(e) => (e.stopPropagation(), close(f.key))}>
+                      <X size={12} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <div className="editor-acts">
+                {/* a phone has no ⌘S */}
+                {cur && !cur.external && cur.content !== cur.saved && (
+                  <button className="icon-btn sm" aria-label="Save" data-tip="Save (⌘S)" onClick={() => void save(cur)}>
+                    <Save size={14} />
                   </button>
-                </div>
-              ))}
+                )}
+                {cur && !cur.external && !cur.binary && <LockToggle />}
+                <button className={clsx("icon-btn sm", full && "active")} aria-label={full ? "Exit full screen" : "Full screen"} data-tip={full ? "Exit full screen (Esc)" : "Full screen"} onClick={toggleFull}>
+                  {full ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+                </button>
+              </div>
             </div>
           )}
           {cur?.diskChanged && (
@@ -358,7 +377,7 @@ export function FilesPanel() {
                   filePath={cur.abs}
                   value={cur.content}
                   language={languageFor(cur.path)}
-                  readOnly={cur.external}
+                  readOnly={cur.external || locked}
                   reveal={cur.reveal}
                   onChange={(v) => setOpen((all) => all.map((x) => (x.key === cur.key ? { ...x, content: v } : x)))}
                   onSave={() => {
@@ -372,7 +391,7 @@ export function FilesPanel() {
                 <File size={28} />
                 <h3>Pick a file to edit</h3>
                 <div>
-                  Edits are yours — <span className="kbd">⌘S</span> saves. Agent edits to open files show up live.
+                  Edits are yours — <span className="kbd">⌘S</span> or <Save size={11} /> saves{locked && <>, once the lock is open</>}. Agent edits to open files show up live.
                 </div>
               </div>
             )}

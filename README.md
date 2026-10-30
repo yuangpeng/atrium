@@ -183,7 +183,8 @@ proxying `/api`, `/ws`, `/login` and `/logout`).
 
 Atrium runs agents with full access, edits any file, and starts the commands its settings name, so
 every page, API call and WebSocket needs a login, from this machine too: through a tunnel or a
-reverse proxy running here, everyone's requests come from 127.0.0.1.
+reverse proxy running here, everyone's requests come from 127.0.0.1. (Only what a phone fetches to
+add Atrium to its Home Screen is served without one: `manifest.json` and the icon.)
 
 - The first start makes up a password: Atrium prints it when it runs in a terminal, and keeps it in
   `~/.atrium/auth.json` until you set your own with `.venv/bin/atrium --set-password`. A new password
@@ -204,6 +205,13 @@ reverse proxy running here, everyone's requests come from 127.0.0.1.
   their `Origin` isn't the host they are addressed to.
 - `--no-auth` turns the login off, for scratch instances: only with a loopback `--host`, and then only
   requests addressed to localhost are answered.
+
+### On a phone
+
+Atrium lays itself out for phones and foldables (the iPhone Duo first). Safari can't hide its own bars
+from a page, so for the whole screen add Atrium to the Home Screen (Share → Add to Home Screen, with
+"Open as Web App" on) and open it from there: it runs without the address bar, as an app. It keeps its
+own login, so you log in once more there.
 
 ## Where things live
 

@@ -7,15 +7,16 @@ import { useShallow } from "zustand/react/shallow";
 import type { LucideIcon } from "lucide-react";
 import {
   Anchor, Archive, ArchiveRestore, Atom, Bird, Bug, Cat, Cherry, Citrus, Clover, Compass, Cookie, Dog, Feather, Fish, Flame, Flower2, Gem,
-  Ghost, GitBranch, House, LayoutList, Leaf, LogOut, Monitor, Moon, Mountain, Orbit, Origami, Rabbit, Rocket, Sailboat, Search, Settings, Shell,
+  Ghost, GitBranch, House, LayoutList, Leaf, LogOut, Menu, Monitor, Moon, Mountain, Orbit, Origami, Rabbit, Rocket, Sailboat, Search, Settings, Shell,
   Snail, Snowflake, Sprout, SquarePen, Squirrel, Star, Sun, Telescope, Trash2, Turtle, Workflow, X,
 } from "lucide-react";
 import { api, SessionRow } from "../api";
 import { useApp } from "../store";
 import { EMPTY_REPLY, hasContent, hasReply, useDrafts } from "../drafts";
 import { clsx, displayName, tidyNote, timeAgo } from "../util";
-import { realHover } from "../layout";
-import { Popover, useInterval, useTick } from "./ui";
+import { realHover, useCompact, useLayout } from "../layout";
+import { holdTouch } from "../tips";
+import { Popover, useInterval, useTick, useTouchDismiss } from "./ui";
 import { RailSubagents } from "./Subagents";
 
 export function statusClass(s: Pick<SessionRow, "live" | "pending" | "status">): string {
@@ -38,6 +39,21 @@ export function liveLabel(s: Pick<SessionRow, "live" | "pending">): string {
 }
 
 const isActive = (s: SessionRow) => s.live === "running" || s.live === "waiting" || s.live === "starting" || s.pending > 0;
+
+/** One screen (single layout): the rail is a drawer, and this opens it — from the right end of whichever bar is on
+ *  top. The dot: an agent waits for you, which the rail would have shown. */
+export function RailToggle() {
+  const single = useLayout() === "single";
+  const setRailOpen = useApp((s) => s.setRailOpen);
+  const waiting = useApp((s) => s.sessions.some((x) => x.role === "worker" && !x.archived && statusClass(x) === "waiting"));
+  if (!single) return null;
+  return (
+    <button className="icon-btn rail-toggle" aria-label="Agents and menu" data-tip="Agents, home, settings" onClick={() => setRailOpen(true)}>
+      <Menu size={16} />
+      {waiting && <span className="dot waiting" />}
+    </button>
+  );
+}
 
 // ---------------------------------------------------------------- avatars
 // Every agent gets a little emblem: a glyph picked per agent on a circle coloured by its harness.
@@ -293,7 +309,9 @@ export function Rail() {
   const { meta, project, sessions, sessionId, subagentId, compactionId, selectSession, selectSubagent, selectCompaction, refreshSessions, openProject, setSettingsOpen, theme, setTheme, setPanel } =
     useApp();
   const draftWaiting = useDrafts((s) => hasContent(s.byProject[project?.id ?? ""]));
-  const [tip, setTip] = useState<{ el: HTMLElement; content: ReactNode } | null>(null);
+  const compact = useCompact();
+  const [tip, setTip] = useState<{ el: HTMLElement; content: ReactNode; touch?: boolean } | null>(null);
+  useTouchDismiss(tip?.touch ? tip.el : null, () => setTip(null));
   const [flyout, setFlyout] = useState(false);
   const [collapsed, setCollapsed] = useState(false); // the selected agent's subagents open under it, unless clicked shut
   const glyphs = useGlyphs();
@@ -307,21 +325,33 @@ export function Rail() {
   useInterval(() => void refreshSessions(), workers.some((s) => s.subagents?.some((a) => a.status === "running")) ? 4000 : null);
   const pickAgent = (s: SessionRow) => (s.id === sessionId && !childOpen ? setCollapsed((c) => !c) : selectSession(s.id));
   const live = sessions.filter((s) => s.live).length;
+  // a card on hover; a finger holds the avatar for it (a tap opens the agent)
   const hoverProps = (content: ReactNode) => ({
-    onPointerEnter: (e: React.PointerEvent<HTMLElement>) => realHover(e) && setTip({ el: e.currentTarget, content }),
-    onPointerLeave: () => setTip(null),
+    onPointerEnter: (e: React.PointerEvent<HTMLElement>) => void (realHover(e) && setTip({ el: e.currentTarget, content })),
+    onPointerLeave: (e: React.PointerEvent<HTMLElement>) => void (realHover(e) && setTip(null)), // a finger "leaves" as it lifts
+    onPointerDown: (e: React.PointerEvent<HTMLElement>) => {
+      const el = e.currentTarget;
+      holdTouch(e.nativeEvent, () => setTip({ el, content, touch: true }));
+    },
+    "data-rich-tip": "" as const,
   });
   const click = (fn: () => void) => () => (setTip(null), fn());
   const ThemeIcon = theme === "dark" ? Moon : theme === "light" ? Sun : Monitor;
 
   return (
     <nav className="rail">
-      <button className={clsx("rail-btn", !project && "on")} onClick={() => void openProject(null)} aria-label="Home">
+      <button className={clsx("rail-btn", !project && "on")} onClick={() => void openProject(null)} aria-label="Home" data-tip="Home" data-tip-side="left">
         <House size={17} />
       </button>
       {project && (
         <>
-          <button className={clsx("rail-btn rail-new", !sessionId && "on")} onClick={() => selectSession(null)} aria-label={draftWaiting ? "New agent (draft saved)" : "New agent"}>
+          <button
+            className={clsx("rail-btn rail-new", !sessionId && "on")}
+            onClick={() => selectSession(null)}
+            aria-label={draftWaiting ? "New agent (draft saved)" : "New agent"}
+            data-tip={draftWaiting ? "New agent (draft saved)" : "New agent"}
+            data-tip-side="left"
+          >
             <SquarePen size={17} />
             {draftWaiting && sessionId && <span className="draft-dot" />}
           </button>
@@ -340,7 +370,7 @@ export function Rail() {
                     aria-expanded={kids ? open : undefined}
                     {...hoverProps(<AgentTip s={s} glyph={glyphs.get(s.id)} />)}
                   >
-                    <AgentAvatar s={s} glyph={glyphs.get(s.id)} />
+                    <AgentAvatar s={s} glyph={glyphs.get(s.id)} size={compact ? 26 : 32} />
                     {sc && <span className={clsx("st dot", sc)} />}
                     {s.pending > 0 && <span className="pend">{s.pending}</span>}
                     {kids > 0 && !open && (
@@ -360,27 +390,27 @@ export function Rail() {
               );
             })}
           </div>
-          <button className={clsx("rail-btn rail-flyout-toggle", flyout && "on")} onClick={() => setFlyout((o) => !o)} aria-label="All agents">
+          <button className={clsx("rail-btn rail-flyout-toggle", flyout && "on")} onClick={() => setFlyout((o) => !o)} aria-label="All agents" data-tip="All agents" data-tip-side="left">
             <LayoutList size={16} />
           </button>
           <div className="rail-sep" />
-          <button className="rail-btn" onClick={() => setPanel("board")} aria-label="Tracker Agent">
+          <button className="rail-btn" onClick={() => setPanel("board")} aria-label="Tracker Agent" data-tip="Tracker Agent — keeps the board" data-tip-side="left">
             <Workflow size={16} />
           </button>
-          <button className="rail-btn" onClick={() => setPanel("git")} aria-label="Git Agent">
+          <button className="rail-btn" onClick={() => setPanel("git")} aria-label="Git Agent" data-tip="Git Agent — ask about branches and history" data-tip-side="left">
             <GitBranch size={16} />
           </button>
         </>
       )}
       <span className="grow" />
-      <button className="rail-btn" onClick={() => setSettingsOpen(true)} aria-label="Settings">
+      <button className="rail-btn" onClick={() => setSettingsOpen(true)} aria-label="Settings" data-tip="Settings" data-tip-side="left">
         <Settings size={16} />
       </button>
       <Popover
         up
         align="right"
         trigger={(_o, toggle) => (
-          <button className="rail-btn" onClick={toggle} aria-label="Theme">
+          <button className="rail-btn" onClick={toggle} aria-label="Theme" data-tip="Theme" data-tip-side="left">
             <ThemeIcon size={16} />
           </button>
         )}
@@ -395,7 +425,7 @@ export function Rail() {
         }
       </Popover>
       {meta?.auth && (
-        <button className="rail-btn" onClick={() => void api.logout().finally(() => location.assign("/login"))} aria-label="Log out">
+        <button className="rail-btn" onClick={() => void api.logout().finally(() => location.assign("/login"))} aria-label="Log out" data-tip="Log out" data-tip-side="left">
           <LogOut size={16} />
         </button>
       )}

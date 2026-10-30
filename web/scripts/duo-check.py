@@ -2,10 +2,12 @@
 """Check Atrium's UI at iPhone Duo's screen sizes. See AGENTS.md, "Every UI change has to work
 on a phone, iPhone Duo included".
 
-It drives Safari's engine (Playwright's WebKit) at each pose, as a touch device, and walks the
-DOM for the mistakes that are easy to make and hard to see: boxes pushed past the viewport, text
-painted outside its own box, boxes squeezed to nothing (a label with `flex: 1; min-width: 0`
-collapses and paints over its neighbour), and buttons too small for a fingertip.
+It drives Safari's engine (Playwright's WebKit) at each pose, as a touch device — the home page,
+the chat, the rail's drawer where the screen is too narrow for a docked one, then each workspace
+panel — and walks the DOM for the mistakes that are easy to make and hard to see: boxes pushed
+past the viewport, text painted outside its own box, boxes squeezed to nothing (a label with
+`flex: 1; min-width: 0` collapses and paints over its neighbour), and buttons too small for a
+fingertip. Every pose also has to get the phone sizes (<html data-compact>, layout.ts).
 
     # an isolated instance on a scratch project, so nothing touches a real .atrium/
     ATRIUM_HOME=$(mktemp -d) .venv/bin/atrium --port 8841 --no-browser --no-auth /tmp/scratch
@@ -139,23 +141,30 @@ async def main() -> int:
             # the home page first: it is what Atrium opens on when the URL names no project
             await page.goto(args.base + "/")
             await page.wait_for_timeout(1500)
-            got = await page.evaluate("() => document.documentElement.dataset.layout")
+            got, compact = await page.evaluate("() => [document.documentElement.dataset.layout, document.documentElement.hasAttribute('data-compact')]")
             if got != want:
                 findings.append(f"{pose:16} {'(layout)':9} {'wrong layout':26} layout.ts resolved {w}x{h} to {got}, not {want}")
+            if not compact:
+                findings.append(f"{pose:16} {'(layout)':9} {'desktop sizes':26} layout.ts gave {w}x{h} no data-compact: a phone gets a desktop's type and bars")
             await audit(page, pose, "home")
             await page.goto(f"{args.base}/?project={pid}&session={sid}")
             await page.wait_for_timeout(1500)
-            views = [("chat", None)]
+            await audit(page, pose, "chat")
+            drawer = page.locator(".rail-toggle:visible")  # one screen: the rail is a drawer, opened from the top bar
+            if await drawer.count():
+                await drawer.first.tap()
+                await page.wait_for_timeout(400)
+                await audit(page, pose, "rail")
+                await page.locator(".rail-backdrop").tap()
+                await page.wait_for_timeout(400)
             back = page.locator('button[title="Board, files, changes, git, terminal"]')
             if await back.count():  # one screen: the chat covers the workspace
                 await back.tap()
                 await page.wait_for_timeout(400)
-            views += [(t.lower(), t) for t in ("Board", "Files", "Changes", "Git", "Terminal")]
-            for label, tab in views:
-                if tab:
-                    await page.locator(f'.ws-tabs button[aria-label="{tab}"]').tap()
-                    await page.wait_for_timeout(1300)
-                await audit(page, pose, label)
+            for tab in ("Board", "Files", "Changes", "Git", "Terminal"):
+                await page.locator(f'.ws-tabs button[aria-label="{tab}"]').tap()
+                await page.wait_for_timeout(1300)
+                await audit(page, pose, tab.lower())
             print(f"{pose:16} {got or '?':8} checked", file=sys.stderr)
             await ctx.close()
         await browser.close()

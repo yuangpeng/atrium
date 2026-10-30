@@ -334,6 +334,7 @@ export function ModelChip({ harness, model, faded }: { harness: Harness; model: 
       </div>
       {model && model !== name && <div className="k mono">{model}</div>}
     </>,
+    { tap: true }, // shown, not picked: a tap only has this to give
   );
   return (
     <span ref={ref} data-fold className={clsx("chip model-chip fixed", !roomy && "icon-chip", faded && "faded")} aria-label={`Model: ${name}`} {...tipProps}>
@@ -364,6 +365,7 @@ export function ContextRing({ used, max }: { used?: number | null; max?: number 
         {fmtTokens(used ?? 0)} / {fmtTokens(max ?? 0)} tokens used
       </div>
     </>,
+    { tap: true },
   );
   if (!used || !max) return null;
   const c = 2 * Math.PI * 6.5;
@@ -429,6 +431,7 @@ export function HarnessChip({ harness }: { harness: Harness }) {
       </div>
       <div className="k">set when the agent started</div>
     </>,
+    { tap: true },
   );
   return (
     <span className="chip icon-chip fixed" aria-label={`Harness: ${harness.label}`} {...tipProps}>
@@ -545,6 +548,7 @@ export function WorkspaceChip({ project, session, pick, onPick }: { project: Pro
         <div className="k">set when the agent started</div>
       </>
     ),
+    { tap: !gone },
   );
   if (!gone)
     return (

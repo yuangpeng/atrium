@@ -59,7 +59,12 @@ export function SubagentTip({ a, parent }: { a: SubagentRow; parent: SessionRow 
 }
 
 const MAX_SHOWN = 6;
-type Hover = (content: ReactNode) => { onPointerEnter: (e: React.PointerEvent<HTMLElement>) => void; onPointerLeave: () => void };
+type Hover = (content: ReactNode) => {
+  onPointerEnter: (e: React.PointerEvent<HTMLElement>) => void;
+  onPointerLeave: (e: React.PointerEvent<HTMLElement>) => void;
+  onPointerDown: (e: React.PointerEvent<HTMLElement>) => void; // a finger's long press
+  "data-rich-tip": "";
+};
 
 type Entry = { sub: SubagentRow } | { compaction: CompactionRow; n: number };
 

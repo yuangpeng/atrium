@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, CheckCheck, CheckCircle2, Circle, ExternalLink, GitCommitHorizontal, Maximize2, Minimize2, Minus, Plus, RefreshCw, Undo2 } from "lucide-react";
+import { AlertTriangle, Bot, CheckCheck, CheckCircle2, Circle, ExternalLink, GitCommitHorizontal, Maximize2, Minimize2, Minus, Plus, RefreshCw, Undo2 } from "lucide-react";
 import { AgentChanges, api, ChangeDetail, ChangeFile, GitStatusFile, GitSummary, ReviewSummary } from "../api";
 import { useApp } from "../store";
 import { agentColor, basename, clsx, displayName, languageFor, shortPath, throttle } from "../util";
@@ -7,6 +7,7 @@ import { DiffEditor } from "../components/LazyEditors";
 import { DiffOptions } from "../components/DiffOptions";
 import { FileNav, FileTree, useFileTree } from "../components/FileTree";
 import { ReviewBadge, ReviewDrawer } from "../components/ReviewDrawer";
+import { LockToggle, useEditLock } from "../components/EditLock";
 import { Spinner, useFullscreen } from "../components/ui";
 
 const ST: Record<string, string> = { created: "A", modified: "M", deleted: "D", "created+deleted": "–" };
@@ -33,19 +34,19 @@ export function ChangesPanel() {
   return (
     <div ref={ref} className="panel-body fs-host">
       <div className="toolbar">
-        <div className="seg">
-          <button className={clsx(mode === "agents" && "on")} onClick={() => setMode("agents")}>
-            By agent
+        <div className="seg icons">
+          <button className={clsx(mode === "agents" && "on")} onClick={() => setMode("agents")} aria-label="By agent" data-tip="By agent — what each agent changed, to review">
+            <Bot size={15} />
           </button>
           {project.is_git && (
-            <button className={clsx(mode === "tree" && "on")} onClick={() => setMode("tree")}>
-              Working tree
+            <button className={clsx(mode === "tree" && "on")} onClick={() => setMode("tree")} aria-label="Working tree" data-tip="Working tree — git status: stage and commit">
+              <GitCommitHorizontal size={15} />
             </button>
           )}
         </div>
         <span className="grow" />
         <DiffOptions />
-        <button className="icon-btn" title={full ? "Exit full screen (Esc)" : "Full-screen review"} onClick={toggleFull}>
+        <button className={clsx("icon-btn", full && "active")} aria-label={full ? "Exit full screen" : "Full-screen review"} data-tip={full ? "Exit full screen (Esc)" : "Full-screen review"} onClick={toggleFull}>
           {full ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
         </button>
       </div>
@@ -68,6 +69,7 @@ function AgentChangesView() {
   const [detail, setDetail] = useState<ChangeDetail | null>(null);
   const [edited, setEdited] = useState<string | null>(null);
   const tree = useFileTree(files, changePath);
+  const locked = useEditLock((s) => s.locked);
 
   useEffect(() => {
     if (changesSession) setSid(changesSession);
@@ -277,14 +279,15 @@ function AgentChangesView() {
                     Save
                   </button>
                 )}
-                <button className="btn btn-sm" title="Open in editor" onClick={() => openFile(cur.path, cwd)} disabled={!detail.exists || detail.gone}>
-                  <ExternalLink size={12} /> Edit
+                {detail.exists && !detail.gone && <LockToggle />}
+                <button className="btn btn-sm" aria-label="Edit" data-tip="Open in the editor" onClick={() => openFile(cur.path, cwd)} disabled={!detail.exists || detail.gone}>
+                  <ExternalLink size={12} /> <span className="lbl">Edit</span>
                 </button>
-                <button className="btn btn-sm btn-danger" onClick={() => void revert(cur)} title="Restore pre-agent content" disabled={detail.baseline_source === "unknown" || detail.gone}>
-                  <Undo2 size={12} /> Revert
+                <button className="btn btn-sm btn-danger" aria-label="Revert" onClick={() => void revert(cur)} data-tip="Revert — restore the content from before the agent" disabled={detail.baseline_source === "unknown" || detail.gone}>
+                  <Undo2 size={12} /> <span className="lbl">Revert</span>
                 </button>
-                <button className={clsx("btn btn-sm", cur.reviewed ? "" : "btn-primary")} onClick={() => void review([cur], !cur.reviewed)}>
-                  <CheckCircle2 size={12} /> {cur.reviewed ? "Reviewed" : "Mark reviewed"}
+                <button className={clsx("btn btn-sm", cur.reviewed ? "" : "btn-primary")} aria-label={cur.reviewed ? "Reviewed" : "Mark reviewed"} onClick={() => void review([cur], !cur.reviewed)}>
+                  <CheckCircle2 size={12} /> <span className="lbl">{cur.reviewed ? "Reviewed" : "Mark reviewed"}</span>
                 </button>
               </div>
             </div>
@@ -304,7 +307,7 @@ function AgentChangesView() {
                 original={detail.baseline ?? ""}
                 modified={detail.current ?? ""}
                 language={languageFor(cur.path)}
-                editable={detail.exists && !detail.gone}
+                editable={detail.exists && !detail.gone && !locked}
                 labels={{
                   original: (
                     <>
@@ -320,7 +323,7 @@ function AgentChangesView() {
                     </>
                   ) : detail.exists ? (
                     <>
-                      <b>Now</b> on disk <span className="faint ellipsis">· editable, ⌘S saves</span>
+                      <b>Now</b> on disk <span className="faint ellipsis">· {locked ? "locked" : "editable, ⌘S saves"}</span>
                     </>
                   ) : (
                     <>
@@ -359,6 +362,7 @@ function WorkingTreeView() {
   const [msg, setMsg] = useState("");
   const [amend, setAmend] = useState(false);
   const [busy, setBusy] = useState(false);
+  const locked = useEditLock((s) => s.locked);
 
   const load = useCallback(() => api.gitSummary(pid, root).then(setSum).catch((e) => toast(e.message, "error")), [pid, root, toast]);
   const loadThrottled = useMemo(() => throttle(() => void load(), 1500), [load]);
@@ -550,8 +554,9 @@ function WorkingTreeView() {
                   Save
                 </button>
               )}
-              <button className="btn btn-sm" onClick={() => openFile(sel.path, root)}>
-                <ExternalLink size={12} /> Edit
+              {diff.editable && <LockToggle />}
+              <button className="btn btn-sm" aria-label="Edit" data-tip="Open in the editor" onClick={() => openFile(sel.path, root)}>
+                <ExternalLink size={12} /> <span className="lbl">Edit</span>
               </button>
             </div>
             <div className="editor-host">
@@ -560,7 +565,7 @@ function WorkingTreeView() {
                 original={diff.original}
                 modified={diff.current}
                 language={languageFor(sel.path)}
-                editable={diff.editable}
+                editable={diff.editable && !locked}
                 labels={{
                   original: <b>HEAD</b>,
                   modified: sel.staged ? (
@@ -569,7 +574,7 @@ function WorkingTreeView() {
                     </>
                   ) : (
                     <>
-                      <b>Working tree</b> <span className="faint ellipsis">· editable, ⌘S saves</span>
+                      <b>Working tree</b> <span className="faint ellipsis">· {diff.editable && locked ? "locked" : "editable, ⌘S saves"}</span>
                     </>
                   ),
                 }}

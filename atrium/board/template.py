@@ -117,6 +117,29 @@ blockquote{margin:.6em 0;padding:2px 14px;border-left:3px solid var(--line2);col
 ul.files{list-style:none;padding:0;margin:.5em 0}
 ul.files li{font:12.5px var(--mono);padding:3px 0;border-bottom:1px dashed var(--line)}
 .add{color:var(--ok)}.del{color:var(--err)}
+/* ---- a narrow board: a phone, or a panel beside the chat. Type a size down (the app's is set by --fs in
+   web/src/responsive.css), the header stacked so the headline gets the width ---- */
+@media (max-width:700px){
+html,body{font-size:12px}
+.wrap{padding:16px 14px 40px}
+header.top{flex-direction:column;align-items:flex-start;gap:8px;padding-bottom:12px}
+.meta{text-align:left;white-space:normal;font-size:11px}
+.eyebrow{font-size:10px;margin-bottom:6px}
+h1{font-size:20px}
+.headline{font-size:13px;margin-top:6px}
+h2{font-size:15px;margin:22px 0 10px}
+.overview{padding:10px 14px;margin-top:12px}
+.agents{grid-template-columns:1fr;gap:10px}
+.tile{padding:10px 12px;gap:6px}
+.tile .name{font-size:13px}.tile .doing{font-size:12px}.tile .summary{font-size:11.5px}
+.card>header{padding:8px 12px}.card>header .title{font-size:13.5px}
+.card-body{padding:12px 14px}
+.card-body h1{font-size:17px}.card-body h2{font-size:15px}.card-body h3{font-size:13.5px}.card-body h4{font-size:12.5px}
+table{font-size:11.5px}code,pre{font-size:11px}
+.kpi .value{font-size:19px}
+.timeline li{font-size:12px}
+.cols{gap:18px}
+}
 """
 
 JS = r"""

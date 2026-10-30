@@ -8,7 +8,7 @@ import { AgentBrief, api, HomeProject } from "../api";
 import { useApp } from "../store";
 import { socket } from "../ws";
 import { clsx, displayName, isMac, shortPath, throttle, timeAgo } from "../util";
-import { AgentAvatar, glyphsFor, statusClass } from "./Rail";
+import { AgentAvatar, RailToggle, glyphsFor, statusClass } from "./Rail";
 import { Spinner } from "./ui";
 
 // Project events that change what the page shows. A state change (running, waiting, done…) shows within a
@@ -148,6 +148,7 @@ export function HomePage() {
           <button className="btn btn-primary" onClick={() => setPickerOpen("create")}>
             <FolderPlus size={14} /> New folder…
           </button>
+          <RailToggle />
         </header>
         {projects === null ? (
           <div className="homepage-empty">

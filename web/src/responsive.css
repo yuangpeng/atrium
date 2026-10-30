@@ -11,16 +11,37 @@ html, body { overscroll-behavior: none; } /* the app doesn't rubber-band as a wh
 .modal { max-height: calc(100dvh - 80px); }
 .modal.xl { height: min(820px, calc(100dvh - 60px)); }
 .toast { max-width: min(560px, calc(100vw - 24px)); }
-.rail-flyout { width: min(350px, calc(100vw - 68px)); }
+.rail-flyout { right: calc(var(--rail-w) + 8px + env(safe-area-inset-right)); width: min(350px, calc(100vw - var(--rail-w) - 16px)); }
+/* the page reaches under the notch, the status bar and the home indicator (viewport-fit=cover, index.html: a web app
+   added to the Home Screen has no Safari bars around it); what is drawn stays out of them. 0 on a desktop. The bottom
+   one goes while the keyboard is up (--vvh, above): the page then ends on the keyboard, not on the home indicator. */
+:root { --safe-bottom: max(0px, calc(env(safe-area-inset-bottom) - (100dvh - var(--vvh, 100dvh)))); }
+.app { padding: env(safe-area-inset-top) env(safe-area-inset-right) var(--safe-bottom) env(safe-area-inset-left); }
+.toasts { bottom: calc(18px + var(--safe-bottom)); }
+.rail-flyout { top: calc(10px + env(safe-area-inset-top)); bottom: calc(10px + var(--safe-bottom)); }
 
 /* ---------------------------------------------------------------- single: the chat and the workspace take turns */
-/* (the Duo's outer screen, its inner screen in portrait, Split View) both stay mounted under the rail; the one behind
-   is hidden, not removed, so it keeps its scroll positions, editors and board */
+/* (the Duo's outer screen, its inner screen in portrait, Split View) both stay mounted, the whole width; the one
+   behind is hidden, not removed, so it keeps its scroll positions, editors and board */
 [data-layout="single"] .app { position: relative; justify-content: flex-end; }
 [data-layout="single"] .app > .workspace,
-[data-layout="single"] .app > .chatcol { position: absolute; top: 0; bottom: 0; left: 0; right: 52px; width: auto; border-left: 0; }
+[data-layout="single"] .app > .chatcol {
+  position: absolute; top: env(safe-area-inset-top); bottom: var(--safe-bottom); left: env(safe-area-inset-left); right: env(safe-area-inset-right);
+  width: auto; border-left: 0;
+}
 [data-layout="single"] .app[data-pane="chat"]:has(> .chatcol) > .workspace,
 [data-layout="single"] .app[data-pane="workspace"] > .chatcol { visibility: hidden; }
+/* the rail is a drawer over them: the top bars open it (RailToggle), going anywhere closes it */
+[data-layout="single"] .rail {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 66; width: calc(var(--rail-w) + env(safe-area-inset-right));
+  padding-top: calc(9px + env(safe-area-inset-top)); padding-bottom: calc(10px + var(--safe-bottom)); padding-right: env(safe-area-inset-right);
+  box-shadow: var(--shadow-lg); transform: translateX(105%); visibility: hidden; transition: transform 0.18s ease, visibility 0s linear 0.18s;
+}
+/* open: no transform at all, which would hold the rail's own fixed flyout and cards inside it */
+[data-layout="single"] .app[data-rail="open"] > .rail { transform: none; visibility: visible; transition: transform 0.18s ease; }
+.rail-backdrop { position: fixed; inset: 0; z-index: 65; background: rgba(20, 20, 19, 0.28); animation: fade 0.12s; }
+.rail-toggle { position: relative; }
+.rail-toggle .dot { position: absolute; top: 5px; right: 5px; width: 7px; height: 7px; box-shadow: 0 0 0 2px var(--bg); }
 
 /* ---------------------------------------------------------------- dual: both, split at the middle */
 /* a touch screen with room for both (the Duo's inner screen in landscape): the panes meet at its fold */
@@ -75,6 +96,7 @@ html, body { overscroll-behavior: none; } /* the app doesn't rubber-band as a wh
   .term-host { margin-left: 6px; }
   .diff-cols .col { padding-left: 8px; }
   .toolbar { padding: 6px 8px; }
+  .btn .lbl { display: none; } /* Edit, Revert, Mark reviewed: their icons, the words in their tips */
 }
 
 /* ---------------------------------------------------------------- home page */
@@ -88,8 +110,8 @@ html, body { overscroll-behavior: none; } /* the app doesn't rubber-band as a wh
 
 /* ---------------------------------------------------------------- phone-width dialogs */
 @media (max-width: 600px) {
-  .modal, .modal.wide, .modal.xl { width: calc(100vw - 16px); max-height: calc(100dvh - 16px); }
-  .modal.xl { height: calc(100dvh - 16px); }
+  .modal, .modal.wide, .modal.xl { width: 100%; max-width: calc(100vw - 16px); max-height: calc(100dvh - 16px); }
+  .modal.xl { height: calc(100dvh - 16px - env(safe-area-inset-top) - var(--safe-bottom)); }
   .modal-head { padding: 12px 12px 8px 16px; }
   .modal-body { padding: 4px 16px 14px; }
   .modal-foot { padding: 10px 12px; }
@@ -100,10 +122,10 @@ html, body { overscroll-behavior: none; } /* the app doesn't rubber-band as a wh
 
 /* ---------------------------------------------------------------- touch */
 @media (pointer: coarse) {
-  /* Safari zooms into a field with text under 16px when it gets focus, and stays zoomed.
-     Monaco's hidden textarea is left alone: it sizes that one from the editor's own font, and an
-     input method draws the text being composed inside it — at 16px it would sit over 12.5px code. */
-  :is(input:not([type="checkbox"], [type="radio"], [type="range"]), textarea, select):not(.monaco-editor *) { font-size: 16px !important; }
+  /* (Safari zooms into a field with text under 16px when it gets focus, and stays zoomed: index.html stops that on
+     iOS with maximum-scale=1, which leaves pinch zoom alone there. So fields can follow the type around them.) */
+  /* a long press asks a control what it is (tips.ts): no callout or text selection on top of the answer */
+  :is(button, [role="button"], .chip, [data-tip], a.icon-btn) { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
   /* a horizontal splitter sits on the seam, so widening it takes from the row above: 6px up is
      enough to grab with a finger and still leaves most of that row tappable */
   .hresizer { top: -6px; height: 12px; }
@@ -138,3 +160,46 @@ html, body { overscroll-behavior: none; } /* the app doesn't rubber-band as a wh
   .proj-card-actions > * { opacity: 1; }
   .home-search .kbd { display: none; } /* ⌘K, on a device with no keyboard */
 }
+
+/* ---------------------------------------------------------------- phone-sized screens */
+/* <html data-compact> (layout.ts): a touch screen with both sides at most 1000px — every iPhone Duo pose, no tablet.
+   Type and chrome a size down from a desktop's. --fs is the chat's reading size (16px on a desktop); the chat's other
+   sizes follow it, so it is the one to change. The board (an iframe) has its own copy in atrium/board/template.py.
+   Buttons stay at least 30px for a fingertip (above). */
+[data-compact] { --fs: 12px; --rail-w: 44px; }
+[data-compact] .msg-text, [data-compact] .chat.compact .msg-text { font-size: var(--fs); line-height: 1.6; }
+[data-compact] .msg-user { font-size: var(--fs); padding: 7px 11px; border-radius: 14px 14px 4px 14px; }
+[data-compact] .chat-inner, [data-compact] .chat.compact .chat-inner { padding: 12px 12px 20px; gap: 10px; }
+[data-compact] :is(.md pre, .md table, .msg-output, .msg-thinking, .msg-thinking summary, .msg-system, .msg-result, .msg-compact) { font-size: calc(var(--fs) - 1px); }
+[data-compact] .msg-error { font-size: calc(var(--fs) - 0.5px); }
+[data-compact] .tool-row { font-size: calc(var(--fs) - 0.5px); padding: 4px 10px; }
+[data-compact] .tool-row .brief { font-size: calc(var(--fs) - 1px); }
+[data-compact] .composer, [data-compact] .chat.compact .composer { padding: 0 8px 8px; }
+[data-compact] .composer-box { padding: 8px 8px 6px 12px; border-radius: 14px; }
+[data-compact] .composer-input { font-size: calc(var(--fs) + 1px); }
+[data-compact] .composer-bar { gap: 4px; margin-top: 4px; }
+[data-compact] .composer-bar .chip { font-size: calc(var(--fs) - 0.5px); }
+[data-compact] .send-btn { width: 32px; height: 32px; }
+[data-compact] .composer-hint { font-size: calc(var(--fs) - 1.5px); }
+[data-compact] .hover-tip { font-size: var(--fs); padding: 6px 11px; }
+/* the bars on top, and their icons */
+[data-compact] :is(.topbar, .ws-tabs) { height: 40px; }
+[data-compact] .topbar { padding-left: 12px; gap: 8px; }
+[data-compact] :is(.topbar .t-name, .topbar .t-name input) { font-size: calc(var(--fs) + 1.5px); }
+[data-compact] .panel-tab.icon-only { width: 30px; height: 30px; }
+[data-compact] :is(.ws-tabs, .topbar) :is(.icon-btn, .panel-tab) svg { width: 14px; height: 14px; }
+[data-compact] .ws-project { font-size: calc(var(--fs) - 0.5px); }
+/* the rail */
+[data-compact] .rail { gap: 3px; padding-top: 6px; padding-bottom: 8px; }
+[data-compact] .rail-btn { width: 30px; height: 30px; border-radius: 8px; }
+[data-compact] .rail-btn svg { width: 15px; height: 15px; }
+[data-compact] .rail-agent { width: 30px; height: 30px; }
+[data-compact] .rail-agents { gap: 6px; }
+[data-compact] .rail-agent .st { width: 10px; height: 10px; }
+[data-compact][data-layout="single"] .rail { padding-top: calc(6px + env(safe-area-inset-top)); padding-bottom: calc(8px + var(--safe-bottom)); }
+/* panels */
+[data-compact] .toolbar { gap: 4px; min-height: 40px; }
+[data-compact] :is(.toolbar .title, .drawer-head) { font-size: calc(var(--fs) + 0.5px); }
+[data-compact] :is(.tree, .graph-row, .agent-pick, .wt-row) { font-size: var(--fs); }
+[data-compact] :is(.editor-tab, .seg button, .btn-sm, .graph-row .meta) { font-size: calc(var(--fs) - 0.5px); }
+[data-compact] .section-label { font-size: calc(var(--fs) - 1.5px); }

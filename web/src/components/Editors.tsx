@@ -5,7 +5,7 @@ import Editor, { DiffEditor as MonacoDiff, DiffEditorProps, OnMount, DiffOnMount
 import type * as Monaco from "monaco-editor";
 import { ArrowDown, ArrowUp } from "lucide-react";
 import { useApp } from "../store";
-import { useLayout } from "../layout";
+import { useCompact, useLayout } from "../layout";
 import { trackEditor } from "../lsp/client";
 import { useDiffPrefs } from "./DiffOptions";
 
@@ -29,6 +29,9 @@ const baseOptions: Monaco.editor.IStandaloneEditorConstructionOptions = {
   "semanticHighlighting.enabled": true,
   fixedOverflowWidgets: true, // hovers / suggestions may extend past the panel
 };
+
+// a phone-sized screen (layout.ts): code a size smaller, like the rest of the type there
+const compactOptions: Monaco.editor.IStandaloneEditorConstructionOptions = { fontSize: 11.5, lineHeight: 17 };
 
 // files on disk: ⌘-click jumps straight to the definition (peek for several references)
 const fileOptions: Monaco.editor.IStandaloneEditorConstructionOptions = {
@@ -77,6 +80,7 @@ export function CodeEditor({
   reveal?: Reveal;
 }) {
   const theme = useMonacoTheme();
+  const compact = useCompact();
   const saveRef = useRef(onSave);
   saveRef.current = onSave;
   const edRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
@@ -100,7 +104,8 @@ export function CodeEditor({
       theme={theme}
       onChange={(v) => onChange?.(v ?? "")}
       onMount={onMount}
-      options={{ ...baseOptions, ...(filePath ? fileOptions : {}), readOnly }}
+      // domReadOnly: the input textarea itself is read-only, so a tap brings no keyboard up on a phone
+      options={{ ...baseOptions, ...(compact ? compactOptions : {}), ...(filePath ? fileOptions : {}), readOnly, domReadOnly: readOnly }}
     />
   );
 }
@@ -149,6 +154,7 @@ export function DiffEditor({
   const theme = useMonacoTheme();
   const prefs = useDiffPrefs();
   const layout = useLayout();
+  const compact = useCompact();
   // one screen has no room for two columns, whatever the preference says; the toggle hides there too
   const sideBySide = prefs.sideBySide && layout !== "single";
   const saveRef = useRef(onSave);
@@ -162,8 +168,20 @@ export function DiffEditor({
   const [changes, setChanges] = useState<{ n: number; at: number } | null>(null);
   useEffect(() => setChanges(null), [id]);
 
+  // read-only down to the input textarea, so a tap brings no keyboard up on a phone. Per side: the diff editor
+  // hands one set of options to both, and the left one is never edited.
+  const domReadOnly = (editor: Monaco.editor.IStandaloneDiffEditor) => {
+    editor.getOriginalEditor().updateOptions({ domReadOnly: true });
+    editor.getModifiedEditor().updateOptions({ domReadOnly: !editable });
+  };
+  useEffect(() => {
+    if (edRef.current) domReadOnly(edRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editable]);
+
   const onMount: DiffOnMount = (editor, m) => {
     edRef.current = editor;
+    domReadOnly(editor);
     const orig = editor.getOriginalEditor();
     const mod = editor.getModifiedEditor();
     for (const ed of [orig, mod]) {
@@ -246,6 +264,7 @@ export function DiffEditor({
           modifiedModelPath={`atrium-diff://modified/${id}`}
           options={{
             ...baseOptions,
+            ...(compact ? compactOptions : {}),
             readOnly: !editable,
             originalEditable: false,
             renderSideBySide: sideBySide,

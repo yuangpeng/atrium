@@ -66,14 +66,27 @@ bars showing):
   the segments exist.
 - `single` — too narrow for both (the outer screen, the inner one in portrait, Split View): the
   chat and the workspace take turns. Both stay mounted so neither loses its scroll or editors;
-  picking an agent shows the chat, picking a panel shows the workspace.
+  picking an agent shows the chat, picking a panel shows the workspace. The rail is a drawer
+  there: the last button of the bar on top (`<RailToggle />`, `components/Rail.tsx`) opens it, and
+  going anywhere closes it, so a new bar that can be on top ends with one.
+
+Apart from the layout, `<html data-compact>` marks a phone-sized touch screen (every pose above):
+type, bars and the rail a size down (the block at the end of `responsive.css`). The chat's reading
+size is `--fs` (12px there); size new chat text from it, not in px. The board is an iframe and has
+its own narrow-width rules in `atrium/board/template.py`.
 
 What to get right in a new component:
 
 - **Nothing may depend on hover.** A finger has no hover, and on iOS a tap that reveals something
-  is swallowed as a hover — the button then needs a second tap. Use `realHover(e)` (`layout.ts`)
-  with `onPointerEnter` for tooltips, and put hover-reveal CSS in `@media (hover: hover)` with
-  something a finger can reach as well (the open row, an always-visible button).
+  is swallowed as a hover — the button then needs a second tap. Put hover-reveal CSS in
+  `@media (hover: hover)` with something a finger can reach as well (the open row, an
+  always-visible button). Tooltips: a plain one is `data-tip="…"` (`tips.ts` shows it on hover and
+  on a finger's long press, and the press then doesn't click); a rich one is `useTip`
+  (`components/ui.tsx`), with `{ tap: true }` on something that only shows information, like a
+  read-only chip, so that a tap shows it. A native `title` never shows on iOS.
+- **Icons, not words, for controls.** A segmented choice or a toolbar button is an icon with an
+  `aria-label` and a `data-tip`; the words live in the tip. A panel's toolbar has to fit beside
+  the chat on the inner screen, and alone on the outer one.
 - **Drag with pointer events, never mouse ones.** iOS makes up no `mousemove` while a finger
   moves, so an `onMouseDown` + `window.mousemove` splitter is dead on a phone however big its
   handle is. Use `startRowResize` (`components/ui.tsx`) or the chat splitter's pattern in
@@ -81,11 +94,19 @@ What to get right in a new component:
 - **Tap targets ≥ 30px** under `@media (pointer: coarse)`, and the row around them has to grow
   too, or the button spills out of it. The one exception is a text button sitting inside a line
   of prose (`.sub-link.inline`), where a 30px box would break the line; it keeps its text size.
-- **Text fields ≥ 16px**, or Safari zooms in on focus and stays zoomed. Scope that rule to our own
-  fields: `.monaco-editor`'s hidden `textarea.inputarea` is sized from the editor's font, and an
-  input method draws the text being composed inside it — forcing 16px there puts the pinyin you
-  are typing over the code in the wrong size.
+- **Text fields may be under 16px.** iOS zooms into such a field when it gets focus and stays
+  zoomed; `index.html` adds `maximum-scale=1` on iOS only, which stops that while pinch zoom keeps
+  working there. Don't add it (or `user-scalable=no`) for other platforms: Android takes it
+  literally and blocks zooming.
 - **Use `dvh`, not `vh`**: on a phone `100vh` includes what Safari's bars cover.
+- **The page reaches under the notch and the home indicator** (`viewport-fit=cover`, for the Home
+  Screen app, which has no Safari bars): something fixed to an edge of the window adds
+  `env(safe-area-inset-*)` (0 on a desktop).
+- **Fullscreen through `useFullscreen`** (`components/ui.tsx`, the element gets `fs-host`).
+  iPhone's Safari has no fullscreen for page elements, so there the element fills the window.
+- **Style scrollbars for a mouse only** (`@media (hover: hover) and (pointer: fine)`). WebKit's
+  mobile layout leaves a styled scrollbar no room, takes its width off `clientWidth` anyway, and
+  every scroll box then scrolls sideways by it.
 - **A label that must not be cut is not the flex child that grows.** `flex: 1; min-width: 0` on a
   label collapses it to nothing and its text then paints over its neighbour (what `.drawer-head`
   did). Let the long explanatory text shrink and ellipsis instead, and hide it outright on a
@@ -112,13 +133,14 @@ new-agent box and Changes and Git are their empty states — almost nothing woul
 every character that is not a letter or a digit replaced by `-`; one user and one assistant entry
 is enough to make a session, and a `toolUseResult` with `filePath` makes it show up in Changes.
 
-`web/scripts/duo-check.py` drives every pose above as a touch device — the home page, then each
-workspace panel — and fails on a pose that resolves to the wrong layout, boxes pushed past the
-viewport, panels that scroll sideways, text painted outside its own box, labels squeezed to
-nothing, buttons under 30px and buttons spilling out of their row. It only sees what is on screen,
-so a control that needs a particular state (an attachment in the composer, a forked agent, a
-subagent's breadcrumb) still wants a look of its own — and no check of this kind can tell you
-something is unreadable. Read the screenshots.
+`web/scripts/duo-check.py` drives every pose above as a touch device — the home page, the chat,
+the rail's drawer where it is one, then each workspace panel — and fails on a pose that resolves
+to the wrong layout or misses the phone sizes (`data-compact`), boxes pushed past the viewport,
+panels that scroll sideways, text painted outside its own box, labels squeezed to nothing, buttons
+under 30px and buttons spilling out of their row. It only sees what is on screen, so a control that
+needs a particular state (an attachment in the composer, a forked agent, a subagent's breadcrumb,
+an open menu, a panel in fullscreen) still wants a look of its own — and no check of this kind can
+tell you something is unreadable. Read the screenshots.
 
 ## Keep this in sync
 

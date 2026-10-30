@@ -63,7 +63,9 @@ MAX_FORM_BYTES = 4096
 SCRYPT = (2**15, 8, 1)  # n, r, p: 32 MiB and some 40 ms per check
 LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
-OPEN = {("GET", "/login"), ("POST", "/login"), ("POST", "/logout")}
+# what a browser fetches to add Atrium to a Home Screen, maybe without the login cookie: the name, colours and icon
+APP_FILES = ("/manifest.json", "/apple-touch-icon.png", "/icon-512.png", "/icon-maskable-512.png")
+OPEN = {("GET", "/login"), ("POST", "/login"), ("POST", "/logout")} | {("GET", f) for f in APP_FILES}
 
 
 def _b64(b: bytes) -> str:
@@ -316,7 +318,7 @@ def _guarded(send: Send, valid: Callable[[], bool]) -> Send:
 
 
 class AuthMiddleware:
-    """Lets a request through with a valid login cookie or API token; only /login and /logout are open."""
+    """Lets a request through with a valid login cookie or API token; only /login, /logout and the app's icon are open."""
 
     def __init__(self, app: ASGIApp):
         self.app = app
@@ -413,13 +415,18 @@ def _page(nxt: str, error: str = "", status: int = 200) -> HTMLResponse:
     return HTMLResponse(body, status_code=status, headers={"Cache-Control": "no-store"})
 
 
-# Self-contained (nothing else is served before logging in); colours from web/src/styles.css.
+# Self-contained (before logging in, only the Home Screen icon and manifest are served too); colours from web/src/styles.css.
 LOGIN_PAGE = Template("""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
+<meta name="theme-color" content="#faf9f5" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#262624" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-title" content="Atrium">
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <title>Atrium · Log in</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23D97757'/><path d='M9 23 16 8l7 15M12 17h8' stroke='white' stroke-width='2.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
 <script>

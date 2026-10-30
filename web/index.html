@@ -2,7 +2,21 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover: the page reaches under the notch and the home indicator; responsive.css keeps what is drawn out of them -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <script>
+      // iOS zooms into a field whose text is under 16px when it gets focus, and stays zoomed. maximum-scale=1 stops
+      // that, and iOS still lets a pinch zoom past it. Only there: Android takes it literally and would block pinch zoom.
+      if (/iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1))
+        document.querySelector('meta[name="viewport"]').content += ", maximum-scale=1";
+    </script>
+    <!-- added to the Home Screen it opens as an app, without Safari's bars (manifest.json); the theme sets the colour -->
+    <meta name="theme-color" content="#faf9f5" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Atrium" />
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23D97757'/><path d='M9 23 16 8l7 15M12 17h8' stroke='white' stroke-width='2.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
     <title>Atrium</title>
   </head>

@@ -41,6 +41,7 @@ interface AppState {
   panel: Panel; // the workspace tab (left, always shown)
   chatOpen: boolean; // the chat column (right)
   pane: Pane; // the one on screen when they take turns (phones); picking an agent shows the chat, a panel the workspace
+  railOpen: boolean; // the rail as a drawer over the panes (single layout); going anywhere closes it
   chatWidth: number;
   theme: Theme;
   showArchived: boolean;
@@ -76,6 +77,7 @@ interface AppState {
   setPanel: (p: Panel) => void;
   setChatOpen: (v: boolean) => void;
   setPane: (p: Pane) => void;
+  setRailOpen: (v: boolean) => void;
   setChatWidth: (w: number) => void;
   setTheme: (t: Theme) => void;
   setShowArchived: (v: boolean) => void;
@@ -105,6 +107,8 @@ function syncUrl(pid: string | null, sid: string | null, aid: string | null = nu
 function applyTheme(t: Theme) {
   const dark = t === "dark" || (t === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
   document.documentElement.dataset.theme = dark ? "dark" : "light";
+  // the browser's bars (and a Home Screen app's status bar) in the page's own background
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", dark ? "#262624" : "#faf9f5");
 }
 
 export function resolvedTheme(): "light" | "dark" {
@@ -126,6 +130,7 @@ export const useApp = create<AppState>((set, get) => {
     panel: PANELS.find((p) => p === localStorage.getItem("atrium.panel")) ?? "board",
     chatOpen: localStorage.getItem("atrium.chatOpen") !== "0",
     pane: "chat",
+    railOpen: false,
     chatWidth: Number(localStorage.getItem("atrium.chatWidth")) || Math.round(Math.min(520, Math.max(400, window.innerWidth * 0.3))),
     theme: (localStorage.getItem("atrium.theme") as Theme) || "system",
     showArchived: false,
@@ -186,6 +191,7 @@ export const useApp = create<AppState>((set, get) => {
         return false;
       unsubProject?.();
       unsubProject = null;
+      set({ railOpen: false });
       if (!pid) {
         set({ project: null, sessions: [], sessionId: null, subagentId: null, compactionId: null, homeFocus: 0 });
         syncUrl(null, null);
@@ -269,29 +275,30 @@ export const useApp = create<AppState>((set, get) => {
 
     selectSession: (sid) => {
       get().setChatOpen(true);
-      set({ sessionId: sid, subagentId: null, compactionId: null, pane: "chat" });
+      set({ sessionId: sid, subagentId: null, compactionId: null, pane: "chat", railOpen: false });
       syncUrl(get().project?.id ?? null, sid);
     },
     selectSubagent: (sid, aid) => {
       get().setChatOpen(true);
-      set({ sessionId: sid, subagentId: aid, compactionId: null, pane: "chat" });
+      set({ sessionId: sid, subagentId: aid, compactionId: null, pane: "chat", railOpen: false });
       syncUrl(get().project?.id ?? null, sid, aid);
     },
     selectCompaction: (sid, cid) => {
       get().setChatOpen(true);
-      set({ sessionId: sid, subagentId: null, compactionId: cid, pane: "chat" });
+      set({ sessionId: sid, subagentId: null, compactionId: cid, pane: "chat", railOpen: false });
       syncUrl(get().project?.id ?? null, sid, null, cid);
     },
 
     setPanel: (p) => {
       localStorage.setItem("atrium.panel", p);
-      set({ panel: p, pane: "workspace" });
+      set({ panel: p, pane: "workspace", railOpen: false });
     },
     setChatOpen: (v) => {
       localStorage.setItem("atrium.chatOpen", v ? "1" : "0");
       set({ chatOpen: v });
     },
     setPane: (p) => set({ pane: p }),
+    setRailOpen: (v) => set({ railOpen: v }),
     setChatWidth: (w) => {
       localStorage.setItem("atrium.chatWidth", String(Math.round(w)));
       set({ chatWidth: w });
@@ -309,7 +316,7 @@ export const useApp = create<AppState>((set, get) => {
     setUnsaved: (names) => {
       if (names.join("\n") !== get().unsaved.join("\n")) set({ unsaved: names }); // FilesPanel reports on every keystroke
     },
-    setSettingsOpen: (v) => set({ settingsOpen: v }),
+    setSettingsOpen: (v) => set({ settingsOpen: v, railOpen: false }),
     setForkRequest: (r) => set({ forkRequest: r }),
     openFile: (path, root, target) => {
       set({ fileRequest: { path, root, ...target, nonce: Date.now() } });

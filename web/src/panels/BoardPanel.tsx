@@ -70,7 +70,7 @@ export function BoardPanel() {
           align="right"
           width={360}
           trigger={(_o, toggle) => (
-            <button className="icon-btn" onClick={toggle} title="Tracker runs">
+            <button className="icon-btn" onClick={toggle} aria-label="Tracker runs" data-tip="Tracker runs">
               <History size={15} />
             </button>
           )}
@@ -97,17 +97,18 @@ export function BoardPanel() {
           )}
         </Popover>
         <button
-          className="btn btn-sm"
+          className="icon-btn"
           disabled={tracker?.running}
           onClick={async () => {
             await api.runTracker(pid);
             toast("Tracker started", "info");
           }}
-          title="Diff all transcripts since the last run and update the board now"
+          aria-label="Track now"
+          data-tip="Track now — read what the agents did since the last run and update the board"
         >
-          <RefreshCw size={13} /> Track now
+          <RefreshCw size={14} />
         </button>
-        <a className="icon-btn" href={src} target="_blank" rel="noreferrer" title="Open board.html in a new tab">
+        <a className="icon-btn" href={src} target="_blank" rel="noreferrer" aria-label="Open board.html in a new tab" data-tip="Open the board in a new tab">
           <ExternalLink size={15} />
         </a>
       </div>

@@ -6,7 +6,7 @@ import { api, loginUrl, SessionRow } from "./api";
 import { Panel, useApp } from "./store";
 import { clsx, displayName, isMac, tidyNote } from "./util";
 import { useLayout } from "./layout";
-import { Rail, liveLabel, statusClass } from "./components/Rail";
+import { Rail, RailToggle, liveLabel, statusClass } from "./components/Rail";
 import { NewAgent } from "./components/NewAgent";
 import { HomePage } from "./components/HomePage";
 import { ProjectPicker } from "./components/Dialogs";
@@ -137,6 +137,7 @@ function SessionHeader() {
           {s?.archived ? <ArchiveRestore size={15} /> : <Archive size={15} />}
         </button>
         <CloseChat />
+        <RailToggle />
       </div>
     </div>
   );
@@ -164,6 +165,7 @@ function ChildHeader({ parent, children }: { parent: SessionRow | undefined; chi
       </div>
       <div className="actions">
         <CloseChat />
+        <RailToggle />
       </div>
     </div>
   );
@@ -226,7 +228,7 @@ function Workspace() {
     <main className="workspace">
       <div className="ws-tabs">
         {TABS.filter((t) => t.id !== "terminal" || terminal).map((t) => (
-          <button key={t.id} className={clsx("panel-tab icon-only", panel === t.id && "on")} onClick={() => setPanel(t.id)} aria-label={t.label}>
+          <button key={t.id} className={clsx("panel-tab icon-only", panel === t.id && "on")} onClick={() => setPanel(t.id)} aria-label={t.label} data-tip={t.label}>
             {t.icon}
           </button>
         ))}
@@ -237,6 +239,7 @@ function Workspace() {
             <MessageSquare size={15} />
           </button>
         )}
+        <RailToggle />
       </div>
       {/* keep panels mounted so editors/graphs don't lose state when switching tabs */}
       <div className="panel-body" style={{ display: panel === "board" ? "flex" : "none" }}>
@@ -321,6 +324,7 @@ function ChatColumn() {
             <div className="t-name">New agent</div>
             <div className="actions">
               <CloseChat />
+              <RailToggle />
             </div>
           </div>
           <NewAgent />
@@ -352,7 +356,7 @@ function Toasts() {
 }
 
 export function App() {
-  const { init, project, pickerOpen, settingsOpen, chatOpen, chatWidth, setChatWidth, goHome, pane } = useApp();
+  const { init, project, pickerOpen, settingsOpen, chatOpen, chatWidth, setChatWidth, goHome, pane, railOpen, setRailOpen } = useApp();
   const layout = useLayout();
   useEffect(() => {
     void init();
@@ -381,10 +385,19 @@ export function App() {
     return () => window.removeEventListener("resize", fit);
   }, [chatWidth, setChatWidth, layout]);
 
+  const drawer = layout === "single" && railOpen; // the rail over the panes
+  useEffect(() => {
+    if (!drawer) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setRailOpen(false);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [drawer, setRailOpen]);
+
   return (
-    <div className="app" data-pane={pane}>
+    <div className="app" data-pane={pane} data-rail={drawer ? "open" : undefined}>
       {project ? <Workspace /> : <HomePage />}
       {project && (chatOpen || layout === "single") && <ChatColumn />}
+      {drawer && <div className="rail-backdrop" onClick={() => setRailOpen(false)} />}
       <Rail />
       {pickerOpen && <ProjectPicker />}
       {settingsOpen && <SettingsDialog />}
