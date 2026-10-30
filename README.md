@@ -7,12 +7,12 @@ A project-centric workbench for coding agents — Claude Code, Codex and Antigra
 
 ```
 ┌ Workspace ─────────────────────────────────┬ Chat (selected agent) ─────┬ Rail ┐
-│ Board · Files · Changes · Git              │  user ▸ task               │  ⌂   │ home
+│ Board · Files · Changes · Git · Terminal   │  user ▸ task               │  ⌂   │ home
 │                                            │  ◆ tool calls, diffs       │  +   │ new agent
 │  board.html (live, shared)                 │  ◆ board.status / publish  │  ●○  │ agents (hover
 │  Monaco editor + language server           │  ⚠ permission card         │  ●○  │  for details)
 │  diff review · commit graph + Git Agent    │                            │  ≡   │ all agents
-│                                            │  📎 mode model · effort ↑  │  ⚙   │ tracker, git,
+│  terminals: shells on the server           │  📎 mode model · effort ↑  │  ⚙   │ tracker, git,
 └────────────────────────────────────────────┴────────────────────────────┴──────┘ settings
 ```
 
@@ -64,6 +64,13 @@ A project-centric workbench for coding agents — Claude Code, Codex and Antigra
      dismiss them, jump to the line in the diff, discuss them in the chat. Nothing reaches the agent
      until you press *Send* on a message (put together from the adopted findings, or drafted by the
      reviewer); a busy agent gets it when its turn ends. The next round checks those first.
+   * **Terminal** — shells on the machine Atrium runs on, one per tab, in the project directory or any of
+     its worktrees (`+`): your login shell, with job control, colours, links and the full scrollback. They
+     live on the server, not in the page: reload, pick up another device or lose a phone's connection, and
+     you are back in the same shell with its recent output replayed; every page of the project sees the same
+     terminals. One ends when its tab is closed (a running command asks first), when its shell exits, or when
+     Atrium restarts. On a phone a row of keys adds Esc, Tab, Ctrl, ^C, the arrows and paste, and a drag
+     scrolls. ⌘K clears. `terminal` in the settings turns it off or picks another shell.
    * **Git** — commit graph with lanes (pick a commit: its files as a tree, each one diffed side by
      side against the first parent, renames followed); *Smart* / *All* / *Custom* branch sets, and an
      **Agent view**: the **Git Agent** (a chat drawer) investigates with read-only git and drives

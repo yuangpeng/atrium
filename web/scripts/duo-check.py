@@ -32,8 +32,9 @@ POSES = {
 }
 MIN_TAP = 30  # keep this the same as the rule in AGENTS.md
 
-# Monaco is virtualized and legitimately draws outside its bounds; the chips' measuring copy is
-# hidden on purpose. Inline text buttons sit in a line of prose, where a 30px box would break it.
+# Monaco is virtualized and legitimately draws outside its bounds; xterm.js keeps its input textarea
+# and its measuring element off-screen; the chips' measuring copy is hidden on purpose. Inline text
+# buttons sit in a line of prose, where a 30px box would break it.
 AUDIT = """(MIN_TAP) => {
   const out = [];
   const name = (el) => el.tagName.toLowerCase() + (typeof el.className === "string" && el.className.trim() ? "." + el.className.trim().split(/\\s+/).slice(0, 3).join(".") : "");
@@ -45,7 +46,7 @@ AUDIT = """(MIN_TAP) => {
     return false;
   };
   for (const el of document.querySelectorAll("body *")) {
-    if (el.closest(".monaco-editor, .monaco-aria-container, .chip.measure, .sub-link.inline")) continue;
+    if (el.closest(".monaco-editor, .monaco-aria-container, .xterm, .chip.measure, .sub-link.inline")) continue;
     const cs = getComputedStyle(el);
     if (cs.display === "none" || cs.visibility === "hidden") continue;
     const r = el.getBoundingClientRect();
@@ -145,11 +146,11 @@ async def main() -> int:
             await page.goto(f"{args.base}/?project={pid}&session={sid}")
             await page.wait_for_timeout(1500)
             views = [("chat", None)]
-            back = page.locator('button[title="Board, files, changes, git"]')
+            back = page.locator('button[title="Board, files, changes, git, terminal"]')
             if await back.count():  # one screen: the chat covers the workspace
                 await back.tap()
                 await page.wait_for_timeout(400)
-            views += [(t.lower(), t) for t in ("Board", "Files", "Changes", "Git")]
+            views += [(t.lower(), t) for t in ("Board", "Files", "Changes", "Git", "Terminal")]
             for label, tab in views:
                 if tab:
                     await page.locator(f'.ws-tabs button[aria-label="{tab}"]').tap()

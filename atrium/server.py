@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import mimetypes
 import os
@@ -27,6 +28,7 @@ from .harness import all_harnesses, get_harness
 from .project import Project, ProjectNotFound, projects
 from .review import ReviewManager
 from .sessions import WorkspaceGone, attachment_from_upload, sessions
+from .terminal import TerminalError, terminals
 from .tracker import Tracker
 from .watch import ProjectWatcher, transcript_watcher
 
@@ -84,6 +86,7 @@ async def lifespan(_app: FastAPI):
         if hasattr(h, "shutdown"):
             await h.shutdown()
     await lsp.registry.shutdown()
+    await terminals.shutdown()
 
 
 app = FastAPI(title="Atrium", version=__version__, lifespan=lifespan)
@@ -165,7 +168,7 @@ async def _catalog(h: Any) -> dict[str, Any]:
 async def meta():
     harnesses = await asyncio.gather(*(_catalog(h) for h in all_harnesses()))
     return {"version": __version__, "harnesses": harnesses, "settings": config.public_settings(), "lsp": await asyncio.to_thread(lsp.available),
-            "auth": auth.enabled}
+            "terminal": terminals.available(), "auth": auth.enabled}
 
 
 @app.get("/api/settings")
@@ -266,7 +269,13 @@ async def mark_project(pid: str, body: dict[str, Any] = Body(...)):
         if busy:
             who = f"“{busy[0]}” is" if len(busy) == 1 else f"{len(busy)} agents are"
             raise HTTPException(409, f"{who} in the middle of a turn here: archive the project when it's done")
-    return config.mark_project(pid, pinned=body.get("pinned"), archived=body.get("archived"))
+        running = await terminals.running(pid)
+        if running:
+            raise HTTPException(409, f"“{running[0]}” is still running in a terminal here: stop it or close the terminal first")
+    out = config.mark_project(pid, pinned=body.get("pinned"), archived=body.get("archived"))
+    if body.get("archived"):
+        await terminals.close_project(pid)  # nothing runs in them: an archived project is put away
+    return out
 
 
 @app.delete("/api/projects/{pid}")
@@ -277,6 +286,7 @@ async def remove_project(pid: str):
     w = _watchers.pop(pid, None)
     if w:
         w.stop()
+    await terminals.close_project(pid)
     config.remove_project(pid)
     return {"ok": True}
 
@@ -870,6 +880,36 @@ async def git_agent(pid: str):
 
 
 # ---------------------------------------------------------------------------
+# terminals
+# ---------------------------------------------------------------------------
+@app.get("/api/p/{pid}/terminals")
+async def list_terminals(pid: str):
+    return terminals.list(P(pid).id)
+
+
+@app.post("/api/p/{pid}/terminals")
+async def create_terminal(pid: str, body: dict[str, Any] = Body(default={})):
+    """A shell in the project's directory or one of its worktrees (``root``), at the page's size."""
+    p = P(pid)
+    try:
+        t = await terminals.create(p.id, _git_root(p, body.get("root")), int(body.get("cols") or 80), int(body.get("rows") or 24))
+    except TerminalError as e:
+        raise HTTPException(400, str(e))
+    return t.describe()
+
+
+@app.delete("/api/p/{pid}/terminals/{tid}")
+async def close_terminal(pid: str, tid: str, force: bool = False):
+    """Close a terminal; while a command runs in it, only with ``force`` (the 409 names the command)."""
+    t = terminals.get(pid, tid)
+    cmd = await t.foreground() if t and not force else None
+    if cmd:
+        return JSONResponse({"error": f"“{cmd}” is still running in this terminal", "code": "terminal_busy", "command": cmd}, status_code=409)
+    await terminals.close(pid, tid)
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
 # websocket
 # ---------------------------------------------------------------------------
 @app.websocket("/ws")
@@ -930,6 +970,46 @@ async def ws_lsp(socket: WebSocket):
     finally:
         sender.cancel()
         await client.close()
+
+
+@app.websocket("/ws/terminal/{pid}/{tid}")
+async def ws_terminal(socket: WebSocket, pid: str, tid: str):
+    """One page attached to a terminal: its bytes both ways, JSON for the rest; see atrium/terminal.py."""
+    await socket.accept()
+    term = terminals.get(pid, tid) if terminals.available() else None
+    if term is None:
+        await socket.close(4404, "no such terminal")
+        return
+    client = term.attach()
+
+    async def pump() -> None:
+        while True:
+            for item in await client.take():
+                if item is None:  # closed, or its shell exited with 0
+                    await socket.close(4000, "terminal closed")
+                    return
+                if isinstance(item, dict):
+                    await socket.send_json(item)
+                else:
+                    await socket.send_bytes(bytes(item))
+
+    sender = asyncio.create_task(pump())
+    try:
+        while True:
+            msg = await socket.receive()
+            if msg["type"] == "websocket.disconnect":
+                break
+            if msg.get("bytes"):
+                term.write(msg["bytes"])
+            elif msg.get("text"):
+                ctl = json.loads(msg["text"])
+                if ctl.get("type") == "resize":
+                    term.resize(int(ctl["cols"]), int(ctl["rows"]))
+    except (WebSocketDisconnect, RuntimeError, ValueError, KeyError, TypeError):
+        pass
+    finally:
+        sender.cancel()
+        term.detach(client)
 
 
 # ---------------------------------------------------------------------------

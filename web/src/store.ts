@@ -3,10 +3,10 @@ import { api, ForkAt, Meta, onLoggedOut, Project, ProjectInfo, SessionRow } from
 import { socket } from "./ws";
 import { throttle } from "./util";
 
-export type Panel = "board" | "files" | "changes" | "git";
+export type Panel = "board" | "files" | "changes" | "git" | "terminal";
 /** What a single-screen layout shows (layout.ts): the chat column or the workspace; wider ones show both. */
 export type Pane = "chat" | "workspace";
-const PANELS: Panel[] = ["board", "files", "changes", "git"];
+const PANELS: Panel[] = ["board", "files", "changes", "git", "terminal"];
 export type Theme = "light" | "dark" | "system";
 
 /** Where to put the cursor when a file opens; `external` = read-only, outside the project. */
@@ -57,6 +57,7 @@ interface AppState {
   gitVersion: number;
   fsVersion: number;
   reviewVersion: number; // the Code Review Agent's rounds / findings changed
+  terminalVersion: number; // a terminal was opened, closed or ended
   fsPaths: string[];
   toasts: Toast[];
   loggedOut: boolean; // a request found the login gone: the page offers to log in again
@@ -140,6 +141,7 @@ export const useApp = create<AppState>((set, get) => {
     gitVersion: 0,
     fsVersion: 0,
     reviewVersion: 0,
+    terminalVersion: 0,
     fsPaths: [],
     toasts: [],
     loggedOut: false,
@@ -165,7 +167,7 @@ export const useApp = create<AppState>((set, get) => {
       }
       socket.onReconnect(() => {
         void get().refreshSessions();
-        set((s) => ({ boardVersion: s.boardVersion + 1, gitVersion: s.gitVersion + 1, trackerVersion: s.trackerVersion + 1 }));
+        set((s) => ({ boardVersion: s.boardVersion + 1, gitVersion: s.gitVersion + 1, trackerVersion: s.trackerVersion + 1, terminalVersion: s.terminalVersion + 1 }));
       });
     },
 
@@ -210,6 +212,9 @@ export const useApp = create<AppState>((set, get) => {
             break;
           case "review":
             set((s) => ({ reviewVersion: s.reviewVersion + 1 }));
+            break;
+          case "terminals_changed":
+            set((s) => ({ terminalVersion: s.terminalVersion + 1 }));
             break;
           case "git_changed":
           case "git_view":

@@ -178,6 +178,20 @@ Git Agent 和 Code Review Agent 有自己的模式，不受这些设置影响：
 
 `lsp` 的修改对之后启动的语言服务器生效。
 
+### 终端
+
+| Key | 默认值 | 说明 |
+|---|---|---|
+| `terminal.enabled` | `true` | 工作区的 Terminal 标签页：在运行 Atrium 的机器上、以你的身份、在项目目录或某个 worktree 里开的 shell。关掉后标签页消失，不能再新开或连接终端；已经开着的会一直运行到 Atrium 重启。 |
+| `terminal.shell` | `""` | `""` 是你的 shell（`$SHELL`），以登录 shell 方式启动：会读你的 profile，所以 `PATH` 和你在终端 app 里的一样。写一个 shell 的名字或路径（如 `"/opt/homebrew/bin/fish"`）也按同样方式启动；写参数列表（如 `["/bin/bash", "--noprofile"]`）则原样运行。 |
+
+终端运行在服务端：刷新页面、手机断线重连、或换一台设备，连上的都是同一个 shell，并先收到它最近的输出
+（最后 1 MiB）。关掉它的标签页、shell 退出（用 `exit`；以其他方式结束的会留着标签页供查看）、或 Atrium
+停止时，终端才结束。shell 像新开的终端窗口一样从干净的环境启动，由你的 profile 设置：从 Atrium 自己的环境变量里
+只带上你是谁（`HOME`、`USER`…）、locale、`TMPDIR`、`SSH_AUTH_SOCK`、代理变量和 `ATRIUM_HOME`，不带启动 Atrium
+的那个环境里的东西（某个 agent 的会话、tmux、virtualenv）。另外设置 `TERM=xterm-256color`、`TERM_PROGRAM=Atrium`，
+没有设置 locale 时补上 UTF-8 的 `LANG`。
+
 ## Claude Code
 
 Atrium 通过 `claude-agent-sdk` 运行 Claude Code，SDK 内置了 CLI：不需要另外安装。

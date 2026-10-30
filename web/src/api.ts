@@ -92,6 +92,7 @@ export interface Meta {
   harnesses: Harness[];
   settings: Settings;
   lsp: Record<string, { server: string }>; // Monaco language id -> language server on this machine
+  terminal: boolean; // the Terminal panel is on (terminal.enabled, on a Unix server)
   auth: boolean; // the login page is on (off: `atrium --no-auth`)
 }
 
@@ -310,6 +311,17 @@ export interface TrackerStatus {
   running: boolean;
   next_run: number;
   runs: TrackerRun[];
+}
+
+/** A shell on the server (atrium/terminal.py); its bytes go over /ws/terminal/<pid>/<id>. */
+export interface TerminalInfo {
+  id: string;
+  root: string; // the project directory or a worktree it started in
+  shell: string; // e.g. "zsh"
+  cols: number;
+  rows: number;
+  created_at: number;
+  exit_code: number | null; // set once its shell ended (negative: killed by that signal); an `exit` 0 removes it
 }
 
 export interface DirEntry {
@@ -687,4 +699,8 @@ export const api = {
     req<GitView>("POST", `/api/p/${pid}/git/view`, body),
   gitResetView: (pid: string) => req("DELETE", `/api/p/${pid}/git/view`),
   gitAgent: (pid: string) => req<{ id: string }>("POST", `/api/p/${pid}/git/agent`),
+  terminals: (pid: string) => req<TerminalInfo[]>("GET", `/api/p/${pid}/terminals`),
+  createTerminal: (pid: string, body: { root?: string; cols?: number; rows?: number }) => req<TerminalInfo>("POST", `/api/p/${pid}/terminals`, body),
+  /** 409 `terminal_busy` (body.command) while a command runs in it, unless `force`. */
+  closeTerminal: (pid: string, tid: string, force = false) => req("DELETE", `/api/p/${pid}/terminals/${tid}${q({ force: force || undefined })}`),
 };

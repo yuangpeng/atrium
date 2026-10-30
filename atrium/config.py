@@ -89,6 +89,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "commands": {},
         "python": {"typeCheckingMode": "standard"},  # off | basic | standard | strict | recommended | all
     },
+    # The workspace's Terminal panel: shells on the server, in the project's directory or a worktree.
+    # shell "" = $SHELL as a login shell; a shell's name or path (also started as a login shell), or an
+    # argument list run as given, e.g. ["/bin/bash", "--noprofile"].
+    "terminal": {"enabled": True, "shell": ""},
     "ui": {"theme": "system"},
 }
 

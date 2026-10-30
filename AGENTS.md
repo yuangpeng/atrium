@@ -25,7 +25,8 @@ running inside the app you are editing.
 ## Restarting stops every agent
 
 - Killing or restarting the Atrium server ends the turn in progress of every live session,
-  yours included; sessions can be resumed from the UI afterwards. Python changes only take
+  yours included, and every shell in the Terminal tab; sessions can be resumed from the UI
+  afterwards, terminals can't. Python changes only take
   effect after a restart, so ask the human to restart instead of doing it yourself.
 - Under `make dev-backend` (auto-reload), every saved `.py` file restarts the server.
 - UI changes show up after `make build`. It type-checks first and stops on errors; then it

@@ -1,7 +1,7 @@
 import type { JSX, ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { Archive, ArchiveRestore, ArrowLeft, ChevronRight, FileDiff, Files, GitBranch, GitFork, LayoutDashboard, MessageSquare, PanelLeftOpen, PanelRightClose, Plug, Unplug } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowLeft, ChevronRight, FileDiff, Files, GitBranch, GitFork, LayoutDashboard, MessageSquare, PanelLeftOpen, PanelRightClose, Plug, SquareTerminal, Unplug } from "lucide-react";
 import { api, loginUrl, SessionRow } from "./api";
 import { Panel, useApp } from "./store";
 import { clsx, displayName, isMac, tidyNote } from "./util";
@@ -22,12 +22,14 @@ import { BoardPanel } from "./panels/BoardPanel";
 import { FilesPanel } from "./panels/FilesPanel";
 import { ChangesPanel } from "./panels/ChangesPanel";
 import { GitPanel } from "./panels/GitPanel";
+import { TerminalPanel } from "./panels/TerminalPanel";
 
 const TABS: { id: Panel; label: string; icon: JSX.Element }[] = [
   { id: "board", label: "Board", icon: <LayoutDashboard size={16} /> },
   { id: "files", label: "Files", icon: <Files size={16} /> },
   { id: "changes", label: "Changes", icon: <FileDiff size={16} /> },
   { id: "git", label: "Git", icon: <GitBranch size={16} /> },
+  { id: "terminal", label: "Terminal", icon: <SquareTerminal size={16} /> },
 ];
 const RAIL_WIDTH = 52;
 const MIN_CHAT = 340;
@@ -40,7 +42,7 @@ function CloseChat() {
   // on a single screen the chat covers the workspace: this brings the workspace up instead
   if (single)
     return (
-      <button className="icon-btn" title="Board, files, changes, git" onClick={() => setPane("workspace")}>
+      <button className="icon-btn" title="Board, files, changes, git, terminal" onClick={() => setPane("workspace")}>
         <PanelLeftOpen size={15} />
       </button>
     );
@@ -208,15 +210,22 @@ function ProjectPath({ path, name }: { path: string; name: string }) {
   );
 }
 
-/** Board / Files / Changes / Git — the large area on the left. */
+/** Board / Files / Changes / Git / Terminal — the large area on the left. */
 function Workspace() {
-  const { panel, setPanel, project, chatOpen, setChatOpen, setPane } = useApp();
+  const { panel: chosen, setPanel, project, chatOpen, setChatOpen, setPane, meta } = useApp();
   const single = useLayout() === "single";
+  const terminal = !!meta?.terminal; // terminal.enabled, on a Unix server
+  const panel = chosen === "terminal" && !terminal ? "board" : chosen;
+  // the terminals' panel comes the first time it is opened, then stays: their screens and sockets with it
+  const [terminalShown, setTerminalShown] = useState(panel === "terminal");
+  useEffect(() => {
+    if (panel === "terminal") setTerminalShown(true);
+  }, [panel]);
   if (!project) return null;
   return (
     <main className="workspace">
       <div className="ws-tabs">
-        {TABS.map((t) => (
+        {TABS.filter((t) => t.id !== "terminal" || terminal).map((t) => (
           <button key={t.id} className={clsx("panel-tab icon-only", panel === t.id && "on")} onClick={() => setPanel(t.id)} aria-label={t.label}>
             {t.icon}
           </button>
@@ -242,6 +251,11 @@ function Workspace() {
       <div className="panel-body" style={{ display: panel === "git" ? "flex" : "none" }}>
         {panel === "git" && <GitPanel />}
       </div>
+      {terminal && terminalShown && (
+        <div className="panel-body" style={{ display: panel === "terminal" ? "flex" : "none" }}>
+          <TerminalPanel visible={panel === "terminal"} />
+        </div>
+      )}
     </main>
   );
 }
@@ -344,10 +358,11 @@ export function App() {
     void init();
   }, [init]);
   // ⌘K (Ctrl+K off the Mac): the home page's project search, from anywhere but the editor (Monaco's own ⌘K chords)
+  // and a terminal (⌘K clears it; Ctrl+K is the shell's)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key.toLowerCase() !== "k" || !(isMac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey) || e.shiftKey || e.altKey) return;
-      if ((e.target as HTMLElement | null)?.closest?.(".monaco-editor")) return;
+      if ((e.target as HTMLElement | null)?.closest?.(".monaco-editor, .xterm")) return;
       e.preventDefault();
       void goHome(true);
     };

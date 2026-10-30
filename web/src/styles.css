@@ -521,6 +521,25 @@ body.col-resizing iframe { pointer-events: none; } /* the board's would take the
 .banner.info { background: var(--info-soft); color: var(--info); }
 .banner.subtle { background: var(--surface-2); color: var(--muted); border-bottom: 1px solid var(--border); padding: 5px 12px; }
 .editor-tab.external { font-style: italic; }
+/* terminal panel: its tabs, the terminals (one shown at a time), the key row a finger gets (responsive.css) */
+.term-bar { display: flex; flex: none; background: var(--sidebar); border-bottom: 1px solid var(--border); }
+.term-tabs { flex: 1; min-width: 0; border-bottom: 0; }
+.term-title { max-width: 240px; overflow: hidden; text-overflow: ellipsis; }
+.term-branch { font-size: 10.5px; }
+.editor-tab.exited .term-title { font-style: italic; color: var(--faint); }
+.term-actions { flex: none; display: flex; align-items: center; padding: 0 6px; border-left: 1px solid var(--border); }
+.term-new { width: auto; padding: 0 5px 0 7px; gap: 1px; }
+.term-views { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--bg); }
+.term-slot { flex: 1; min-height: 0; flex-direction: column; }
+.term-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.term-host { flex: 1; min-height: 0; margin: 6px 2px 0 10px; overflow: hidden; touch-action: none; } /* xterm fits itself to this box (no padding: it counts it) */
+.term-keys { flex: none; display: none; gap: 4px; padding: 5px 6px; border-top: 1px solid var(--border); background: var(--sidebar); }
+.term-keys button {
+  flex: 1 1 0; min-width: 30px; max-width: 64px; height: 34px; padding: 0; border: 1px solid var(--border-strong); border-radius: 7px;
+  display: inline-flex; align-items: center; justify-content: center; background: var(--surface); color: var(--text-2);
+  font: 500 12.5px var(--font-mono); cursor: pointer; user-select: none; -webkit-user-select: none; touch-action: manipulation;
+}
+.term-keys button.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-strong); }
 .editor-status { display: flex; align-items: center; gap: 10px; height: 24px; padding: 0 12px; flex: none; border-top: 1px solid var(--border); background: var(--sidebar); font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; }
 .editor-status .count { display: inline-flex; align-items: center; gap: 3px; }
 .editor-status .count.err { color: var(--err); }
