@@ -186,8 +186,9 @@ what you say into the message you meant to type, with two model calls to one Ope
 1. **Speech to text.** The recording (16 kHz mono WAV) goes to `<base_url>/v1/audio/transcriptions`. A model the
    server doesn't serve there (it answers 400, 404, 405, 415 or 422) — a chat model that takes audio, such as
    Doubao Seed — gets the recording through `/v1/chat/completions` instead, as `input_audio`, with
-   `reasoning_effort: "minimal"`: a reasoning model would otherwise think for a minute first. Which route a model
-   takes is found out on its first recording and remembered until Atrium restarts.
+   `reasoning_effort: "minimal"`: a reasoning model would otherwise think for a minute first (a model that refuses
+   the parameter is asked again without it). Which route a model takes is found out on its first recording and
+   remembered until Atrium restarts.
 2. **Refine.** The transcript goes to `<base_url>/v1/responses` together with what the agent sees: its conversation
    since the last compaction, thinking left out and tool calls and results shortened; the files of its directory
    (`git ls-files`); and the draft in the composer. The model rewrites it the way you meant it: paths,
@@ -202,10 +203,25 @@ in as heard. A recording stops by itself after 5 minutes.
 | Key | Default | |
 |---|---|---|
 | `voice.base_url` | `""` | The server, with or without `/v1`: `https://api.openai.com` and `https://api.openai.com/v1` are the same. |
-| `voice.api_key` | `""` | Sent as `Authorization: Bearer …`; not sent when empty. It never reaches the browser. |
+| `voice.api_key` | `""` | Sent as `Authorization: Bearer …`; not sent when empty. `/api/meta` only says whether it is set; ⚙ Settings shows the file as it is, like the web keys. |
 | `voice.asr_model` | `""` | The speech-to-text model, e.g. `gpt-4o-transcribe`, or a chat model that takes audio. `""` = no mic. |
 | `voice.refine_model` | `""` | The model that refines the transcript, through the Responses API. `""` = the transcript goes in as heard. |
-| `voice.refine_effort` | `"low"` | Its reasoning effort, one the model takes (`minimal`, `low`, `medium`, `high`…); low keeps dictation quick. `""` = none sent, for models without reasoning. |
+| `voice.refine_effort` | `"low"` | Its reasoning effort, one the model takes (`minimal`, `low`, `medium`, `high`…); low keeps dictation quick. A model without reasoning that refuses it is asked again without it, and sent none until Atrium restarts; `""` sends none at all. |
+
+Recommended: Doubao Seed 2.1 Lite to hear (it takes the chat route), gpt-6-luna to refine, at `low`:
+
+```json
+"voice": {
+  "base_url": "https://<your server>",
+  "api_key": "…",
+  "asr_model": "doubao-seed-2-1-lite-260915",
+  "refine_model": "gpt-6-luna",
+  "refine_effort": "low"
+}
+```
+
+On one such server a 13 s recording took 3–5 s to transcribe and 2–3 s to refine. A server that routes models by
+a suffix (`<model>:<route>`) wants its own names for them here.
 
 Browsers give the microphone only to secure pages: Atrium opened over HTTPS, or on `localhost`. Opened as
 `http://<address>` from a phone, the mic says so instead of recording. The first recording asks for the

@@ -177,7 +177,8 @@ Git Agent 和 Code Review Agent 有自己的模式，不受这些设置影响：
 1. **语音转文字。** 录音（16 kHz 单声道 WAV）发到 `<base_url>/v1/audio/transcriptions`。服务器在那里不提供
    的模型（返回 400、404、405、415 或 422）——比如能听音频的聊天模型 Doubao Seed——改走
    `/v1/chat/completions`，录音作为 `input_audio` 发送，并带上 `reasoning_effort: "minimal"`：推理模型否则会
-   先想上一分钟。一个模型走哪条路，在它第一次录音时试出来，之后一直记着，直到 Atrium 重启。
+   先想上一分钟（不接受这个参数的模型会去掉它再请求一次）。一个模型走哪条路，在它第一次录音时试出来，之后
+   一直记着，直到 Atrium 重启。
 2. **Refine。** 转写结果连同 agent 看到的上下文发到 `<base_url>/v1/responses`：上次压缩（compaction）以来的
    对话（去掉 thinking，工具调用和结果都缩短）、它工作目录里的文件（`git ls-files`），以及输入框里已有的草稿。
    模型按你的本意改写：路径、标识符、命令按项目和对话里的写法写出，纠正听错的词，去掉口头禅，把英文改通顺，
@@ -189,10 +190,25 @@ Git Agent 和 Code Review Agent 有自己的模式，不受这些设置影响：
 | Key | 默认值 | 说明 |
 |---|---|---|
 | `voice.base_url` | `""` | 服务器地址，带不带 `/v1` 都行：`https://api.openai.com` 和 `https://api.openai.com/v1` 是一样的。 |
-| `voice.api_key` | `""` | 以 `Authorization: Bearer …` 发送；为空时不发。永远不会发到浏览器。 |
+| `voice.api_key` | `""` | 以 `Authorization: Bearer …` 发送；为空时不发。`/api/meta` 只告诉浏览器它是否已设置；⚙ Settings 显示的是文件原文（和 web 工具的 key 一样）。 |
 | `voice.asr_model` | `""` | 语音转文字的模型，例如 `gpt-4o-transcribe`，或能听音频的聊天模型。`""` = 没有麦克风。 |
 | `voice.refine_model` | `""` | 改写转写结果的模型，走 Responses API。`""` = 直接放入听到的原文。 |
-| `voice.refine_effort` | `"low"` | 它的推理强度，取模型支持的值（`minimal`、`low`、`medium`、`high`……）；low 让听写保持快速。`""` = 不发送，用于不带推理的模型。 |
+| `voice.refine_effort` | `"low"` | 它的推理强度，取模型支持的值（`minimal`、`low`、`medium`、`high`……）；low 让听写保持快速。不带推理的模型拒绝这个参数时，会去掉它再请求一次，之后直到 Atrium 重启都不再发送；`""` = 一开始就不发送。 |
+
+推荐配置：用 Doubao Seed 2.1 Lite 听写（它走 chat 那条路），用 gpt-6-luna 以 `low` 改写：
+
+```json
+"voice": {
+  "base_url": "https://<你的服务器>",
+  "api_key": "…",
+  "asr_model": "doubao-seed-2-1-lite-260915",
+  "refine_model": "gpt-6-luna",
+  "refine_effort": "low"
+}
+```
+
+在一台这样的服务器上实测：13 秒的录音，转写 3–5 秒，改写 2–3 秒。按后缀路由模型的服务器（`<模型>:<路由>`）
+这里要写它自己的模型名。
 
 浏览器只把麦克风给安全的页面：通过 HTTPS 打开的 Atrium，或 `localhost`。在手机上以 `http://<地址>` 打开时，
 麦克风会提示这一点，而不会录音。第一次录音时浏览器会请求麦克风权限；如果被拒绝了，到浏览器里这个网站的

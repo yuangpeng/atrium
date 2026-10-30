@@ -104,7 +104,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 }
 
 _ENV_SECRETS = {("web", "serper_api_key"): "SERPER_API_KEY", ("web", "jina_api_key"): "JINA_API_KEY"}
-_SECRETS = (*_ENV_SECRETS, ("voice", "api_key"))  # never sent to the browser: only whether they're set
+_SECRETS = (*_ENV_SECRETS, ("voice", "api_key"))  # public_settings says only whether they're set (⚙ Settings shows the raw file)
 
 # flat keys of the first version → nested paths
 _LEGACY_KEYS = {
