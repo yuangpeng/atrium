@@ -551,9 +551,9 @@ export function ChatView({ pid, sid, cwd, compact, forkable, modeLocked, placeho
             <AttachButton onClick={att.open} />
             {/* the new-agent page's chips, in its order; harness and workspace can't change any more (the
                 workspace can once it's gone) */}
-            {harness && !compact && (meta?.harnesses.length ?? 0) > 1 && <HarnessChip harness={harness} />}
             {harness && !modeLocked && <PermissionPicker harness={harness} value={shownMode} onChange={(m) => void setMode(m)} detached={!st.mode} />}
             {project && row && !compact && <WorkspaceChip project={project} session={row} pick={ws} onPick={pickWs} />}
+            {harness && !compact && (meta?.harnesses.length ?? 0) > 1 && <HarnessChip harness={harness} />}
             {harness && !compact && <ModelChip harness={harness} model={shownModel} faded={!st.model} />}
             </div>
             <div className="bar-end">

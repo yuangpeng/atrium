@@ -133,10 +133,6 @@ export function Home() {
           <div className="composer-bar">
             <div className="bar-chips">
             <AttachButton onClick={att.open} />
-            {/* another harness: back to its defaults */}
-            {meta.harnesses.length > 1 && (
-              <HarnessPicker harnesses={meta.harnesses} value={harness.id} onChange={(id) => patch({ harness: id, mode: undefined, model: undefined, effort: undefined })} />
-            )}
             <PermissionPicker harness={harness} value={mode} onChange={(mode) => patch({ mode })} />
             {project.is_git ? (
               <Popover
@@ -150,6 +146,10 @@ export function Home() {
               <span className="chip" style={{ cursor: "default" }}>
                 <FolderGit2 size={13} /> {project.name}
               </span>
+            )}
+            {/* another harness: back to its defaults */}
+            {meta.harnesses.length > 1 && (
+              <HarnessPicker harnesses={meta.harnesses} value={harness.id} onChange={(id) => patch({ harness: id, mode: undefined, model: undefined, effort: undefined })} />
             )}
             <ModelChip harness={harness} model={model || harness.config_model} />
             </div>
