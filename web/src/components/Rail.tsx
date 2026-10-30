@@ -306,8 +306,11 @@ function AgentsFlyout({ onClose }: { onClose: () => void }) {
 // ---------------------------------------------------------------- rail
 export function Rail() {
   useTick(30000);
-  const { meta, project, sessions, sessionId, subagentId, compactionId, selectSession, selectSubagent, selectCompaction, refreshSessions, openProject, setSettingsOpen, theme, setTheme, setPanel } =
-    useApp();
+  const {
+    meta, project, sessions, sessionId, subagentId, compactionId, selectSession, selectSubagent, selectCompaction, refreshSessions, openProject, setSettingsOpen,
+    theme, setTheme, setPanel, pane, chatOpen,
+  } = useApp();
+  const layout = useLayout();
   const draftWaiting = useDrafts((s) => hasContent(s.byProject[project?.id ?? ""]));
   const compact = useCompact();
   const [tip, setTip] = useState<{ el: HTMLElement; content: ReactNode; touch?: boolean } | null>(null);
@@ -323,7 +326,11 @@ export function Rail() {
   useEffect(() => setCollapsed(false), [sessionId, subagentId, compactionId]);
   // subagent progress rarely triggers a session event (and can only be guessed for CLI sessions): poll meanwhile
   useInterval(() => void refreshSessions(), workers.some((s) => s.subagents?.some((a) => a.status === "running")) ? 4000 : null);
-  const pickAgent = (s: SessionRow) => (s.id === sessionId && !childOpen ? setCollapsed((c) => !c) : selectSession(s.id));
+  // the open agent's own chat on screen: a click folds what opened under it. Not on screen (a panel on one screen, the
+  // chat column hidden): the click goes back to it, which also closes the rail's drawer
+  const chatShown = layout === "single" ? pane === "chat" : chatOpen;
+  const pickAgent = (s: SessionRow, kids: number) =>
+    s.id === sessionId && !childOpen && kids > 0 && chatShown ? setCollapsed((c) => !c) : selectSession(s.id);
   const live = sessions.filter((s) => s.live).length;
   // a card on hover; a finger holds the avatar for it (a tap opens the agent)
   const hoverProps = (content: ReactNode) => ({
@@ -366,7 +373,7 @@ export function Rail() {
                 <Fragment key={s.id}>
                   <button
                     className={clsx("rail-agent", s.id === sessionId && !childOpen && "on", s.id === sessionId && childOpen && "parent-on")}
-                    onClick={click(() => pickAgent(s))}
+                    onClick={click(() => pickAgent(s, kids))}
                     aria-expanded={kids ? open : undefined}
                     {...hoverProps(<AgentTip s={s} glyph={glyphs.get(s.id)} />)}
                   >

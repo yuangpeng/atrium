@@ -286,7 +286,12 @@ function AgentChangesView() {
                 <button className="btn btn-sm btn-danger" aria-label="Revert" onClick={() => void revert(cur)} data-tip="Revert — restore the content from before the agent" disabled={detail.baseline_source === "unknown" || detail.gone}>
                   <Undo2 size={12} /> <span className="lbl">Revert</span>
                 </button>
-                <button className={clsx("btn btn-sm", cur.reviewed ? "" : "btn-primary")} aria-label={cur.reviewed ? "Reviewed" : "Mark reviewed"} onClick={() => void review([cur], !cur.reviewed)}>
+                <button
+                  className={clsx("btn btn-sm", cur.reviewed ? "" : "btn-primary")}
+                  aria-label={cur.reviewed ? "Reviewed" : "Mark reviewed"}
+                  data-tip={cur.reviewed ? "Reviewed — click to mark as not reviewed" : "Mark reviewed"}
+                  onClick={() => void review([cur], !cur.reviewed)}
+                >
                   <CheckCircle2 size={12} /> <span className="lbl">{cur.reviewed ? "Reviewed" : "Mark reviewed"}</span>
                 </button>
               </div>

@@ -134,8 +134,9 @@ every character that is not a letter or a digit replaced by `-`; one user and on
 is enough to make a session, and a `toolUseResult` with `filePath` makes it show up in Changes.
 
 `web/scripts/duo-check.py` drives every pose above as a touch device — the home page, the chat,
-the rail's drawer where it is one, then each workspace panel — and fails on a pose that resolves
-to the wrong layout or misses the phone sizes (`data-compact`), boxes pushed past the viewport,
+the rail's drawer where it is one, each workspace panel, then back to the chat through the drawer —
+and fails on a pose that resolves to the wrong layout or misses the phone sizes (`data-compact`), a
+drawer that doesn't lead back to the chat, boxes pushed past the viewport,
 panels that scroll sideways, text painted outside its own box, labels squeezed to nothing, buttons
 under 30px and buttons spilling out of their row. It only sees what is on screen, so a control that
 needs a particular state (an attachment in the composer, a forked agent, a subagent's breadcrumb,

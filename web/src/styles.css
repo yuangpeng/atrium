@@ -871,7 +871,8 @@ details.review-tool > summary::-webkit-details-marker { display: none; }
 .rail-subs.h-codex { --hc: #10a37f; }
 .rail-subs.open { grid-template-rows: 1fr; margin-top: -3px; }
 .rail-subs-inner { min-height: 0; overflow: hidden; position: relative; display: flex; flex-direction: column; align-items: center; gap: 7px; visibility: hidden; transition: visibility 0s linear 0.2s; }
-.rail-subs.open .rail-subs-inner { visibility: visible; transition-delay: 0s; padding: 5px 0; }
+/* inherit, not visible: in a closed drawer (one screen) the rail is hidden, and what opened under an agent with it */
+.rail-subs.open .rail-subs-inner { visibility: inherit; transition-delay: 0s; padding: 5px 0; }
 /* the thread from the agent down through its subagents */
 .rail-subs-inner::before { content: ""; position: absolute; left: calc(50% - 0.75px); top: 0; bottom: 17px; width: 1.5px; border-radius: 1px; background: color-mix(in srgb, var(--hc) 32%, var(--border)); }
 .rail-sub { position: relative; width: 24px; height: 24px; border-radius: 50%; border: 0; padding: 0; flex: none; cursor: pointer; background: transparent; display: grid; place-items: center; }

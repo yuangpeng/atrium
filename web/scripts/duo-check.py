@@ -4,7 +4,7 @@ on a phone, iPhone Duo included".
 
 It drives Safari's engine (Playwright's WebKit) at each pose, as a touch device — the home page,
 the chat, the rail's drawer where the screen is too narrow for a docked one, then each workspace
-panel — and walks the DOM for the mistakes that are easy to make and hard to see: boxes pushed
+panel, and back to the chat through the drawer — and walks the DOM for the mistakes that are easy to make and hard to see: boxes pushed
 past the viewport, text painted outside its own box, boxes squeezed to nothing (a label with
 `flex: 1; min-width: 0` collapses and paints over its neighbour), and buttons too small for a
 fingertip. Every pose also has to get the phone sizes (<html data-compact>, layout.ts).
@@ -165,6 +165,14 @@ async def main() -> int:
                 await page.locator(f'.ws-tabs button[aria-label="{tab}"]').tap()
                 await page.wait_for_timeout(1300)
                 await audit(page, pose, tab.lower())
+            # the way back from a panel: the open agent, picked in the drawer, brings its chat up and the drawer goes
+            if await drawer.count():
+                await drawer.first.tap()
+                await page.wait_for_timeout(400)
+                await page.locator(".rail-agent.on").tap()
+                await page.wait_for_timeout(400)
+                if not await page.evaluate("() => { const app = document.querySelector('.app'); return app.dataset.pane === 'chat' && !app.dataset.rail }"):
+                    findings.append(f"{pose:16} {'rail':9} {'dead end':26} the open agent, picked in the drawer from a panel, didn't bring its chat back")
             print(f"{pose:16} {got or '?':8} checked", file=sys.stderr)
             await ctx.close()
         await browser.close()
