@@ -36,3 +36,7 @@ running inside the app you are editing.
 
 The Makefile is the source of truth. If you change how Atrium is installed, built or run,
 update README "Quick start" and this file in the same change.
+
+`docs/configuration.md` documents every setting, and `docs/configuration.zh-CN.md` is its Chinese
+version. If you add, rename or re-default a key in `DEFAULT_SETTINGS`, or change what Atrium reads from
+or sets over a harness's own files, update both in the same change.

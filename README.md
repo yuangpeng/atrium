@@ -124,36 +124,16 @@ instead, set `harnesses.codex.binary` to its path, e.g. `/opt/homebrew/bin/codex
 the default before it was bundled, both mean the bundled one); `/api/meta` shows which one runs
 (`cli`). No Codex login yet? After `make install`:
 `$(.venv/bin/python -c 'import codex_cli_bin as c; print(c.bundled_codex_path())') login`.
-Antigravity comes with `make install` (the `google-antigravity` SDK bundles its runtime) and reads
-the Antigravity CLI's own settings file, `~/.gemini/antigravity-cli/settings.json`. It needs a Gemini
-API key — from [Google AI Studio](https://aistudio.google.com/app/api-keys), or a relay's — in that
-file's `env` (for Google's API, the environment's `GEMINI_API_KEY` also works). A relay that speaks the Gemini API is a custom
-model, as the CLI writes it (requests go to `<base_url>/v1beta/models/<model>:streamGenerateContent`,
-the key as `x-goog-api-key`):
+Antigravity comes with `make install` too (the `google-antigravity` SDK bundles its runtime). It needs a
+Gemini API key — from [Google AI Studio](https://aistudio.google.com/app/api-keys), or a relay's — in the
+Antigravity CLI's own settings file, `~/.gemini/antigravity-cli/settings.json`:
+`{"env": {"GEMINI_API_KEY": "..."}}`. Relays, Vertex AI and which key goes where are in
+[Antigravity](docs/configuration.md#antigravity). Antigravity's terms keep the Google account sign-in to
+Google's own apps, so Atrium doesn't use it.
 
-```json
-{
-  "modelProvider": "gemini",
-  "customModelsConfig": {"customModels": {"my-model": {
-    "modelName": "gemini-api://relay.example.com/gemini/models/<model>", "label": "My model"}}},
-  "model": "My model",
-  "env": {"GEMINI_API_KEY": "..."}
-}
-```
-
-`model` names a custom model (key or label) or a model id (`gemini-3.8-flash`); `env` also takes
-`GOOGLE_GEMINI_BASE_URL`, and Gemini Enterprise's `GOOGLE_GENAI_USE_VERTEXAI` / `GOOGLE_CLOUD_PROJECT` /
-`GOOGLE_CLOUD_LOCATION`. Which key goes where:
-
-- A relay set in this file (a custom model, or `GOOGLE_GEMINI_BASE_URL` under `env`) gets only this file's
-  `env.GEMINI_API_KEY`, never a `GEMINI_API_KEY` from Atrium's environment. Without one, Atrium says so
-  instead of starting; a relay that takes no key needs a placeholder (the runtime won't start without a key).
-- Google's Gemini API (a model id such as `gemini-3.8-flash`), or a `GOOGLE_GEMINI_BASE_URL` set in Atrium's
-  environment, gets this file's `env.GEMINI_API_KEY`, else the environment's. So with a relay's key in this
-  file, picking one of Google's models sends that key to Google.
-
-The CLI itself reads the key only from the environment. Antigravity's terms
-keep the Google account sign-in to Google's own apps, so Atrium doesn't use it.
+How to configure Atrium and each harness — which file sets what, sign-in and relays, the defaults new
+agents get, MCP servers, instructions: [docs/configuration.md](docs/configuration.md)
+([中文](docs/configuration.zh-CN.md)).
 
 ```bash
 make install          # python venv + npm deps
@@ -201,7 +181,8 @@ Codex's `~/.codex/config.toml` plus the project's `.codex/config.toml`, and Anti
 rules Antigravity's own apps load). Saves are validated
 (JSON / TOML), refused if the file changed on disk meanwhile, and back up the previous version.
 The editor's language servers are configured under `lsp` there (`enabled`, `commands` to override
-the server per language, `python.typeCheckingMode`).
+the server per language, `python.typeCheckingMode`). What each file sets, and what Atrium decides over
+it: [docs/configuration.md](docs/configuration.md).
 
 **Notifications.** Agents keep running when you close the page; Atrium posts a desktop notification
 when one asks for approval (or asks a question) and when its turn ends — except for a session whose
