@@ -73,8 +73,17 @@ What to get right in a new component:
   is swallowed as a hover — the button then needs a second tap. Use `realHover(e)` (`layout.ts`)
   with `onPointerEnter` for tooltips, and put hover-reveal CSS in `@media (hover: hover)` with
   something a finger can reach as well (the open row, an always-visible button).
-- **Tap targets ≥ 30px** under `@media (pointer: coarse)`, and the row around them has to grow too.
-- **Text fields ≥ 16px**, or Safari zooms in on focus and stays zoomed.
+- **Drag with pointer events, never mouse ones.** iOS makes up no `mousemove` while a finger
+  moves, so an `onMouseDown` + `window.mousemove` splitter is dead on a phone however big its
+  handle is. Use `startRowResize` (`components/ui.tsx`) or the chat splitter's pattern in
+  `App.tsx`, and give the handle `touch-action: none` or the page scrolls instead.
+- **Tap targets ≥ 30px** under `@media (pointer: coarse)`, and the row around them has to grow
+  too, or the button spills out of it. The one exception is a text button sitting inside a line
+  of prose (`.sub-link.inline`), where a 30px box would break the line; it keeps its text size.
+- **Text fields ≥ 16px**, or Safari zooms in on focus and stays zoomed. Scope that rule to our own
+  fields: `.monaco-editor`'s hidden `textarea.inputarea` is sized from the editor's font, and an
+  input method draws the text being composed inside it — forcing 16px there puts the pinyin you
+  are typing over the code in the wrong size.
 - **Use `dvh`, not `vh`**: on a phone `100vh` includes what Safari's bars cover.
 - **A label that must not be cut is not the flex child that grows.** `flex: 1; min-width: 0` on a
   label collapses it to nothing and its text then paints over its neighbour (what `.drawer-head`
@@ -83,18 +92,21 @@ What to get right in a new component:
 - Panels sit inside the `.workspace` container, so prefer `@container (max-width: …)` over
   `@media` for anything that should follow the panel rather than the window.
 
-How to check it (no device or Xcode needed; the recipe is WebKit, the same engine as Safari):
+How to check it (no device or Xcode needed; WebKit is the engine Safari runs):
 
 ```sh
 # an isolated instance on a scratch project, so nothing touches this repo's .atrium/
 ATRIUM_HOME=$(mktemp -d) .venv/bin/atrium --port 8841 --no-browser --no-auth <scratch dir>
-# Playwright's WebKit, at each pose above; is_mobile + has_touch to get the touch rules
-uv run --with playwright==1.64.1 python -m playwright install webkit   # once
+uv run --with playwright==1.64.1 python -m playwright install webkit        # once
+uv run --with playwright==1.64.1 python web/scripts/duo-check.py \
+    --base http://127.0.0.1:8841 --shots /tmp/duo-shots
 ```
 
-Screenshot every pose, and walk the DOM for boxes pushed past the viewport, text painted outside
-its own box, boxes squeezed to zero width, and buttons under 26px — eyeballing misses the last
-two. Ignore `.monaco-editor` internals: it is virtualized and legitimately exceeds its bounds.
+`web/scripts/duo-check.py` drives every pose above as a touch device and fails on boxes pushed
+past the viewport, text painted outside its own box, labels squeezed to nothing, buttons under
+30px and buttons spilling out of their row. It only sees what is on screen, so a control that
+needs a particular state (an attachment in the composer, a forked agent) still wants a look of
+its own — and no check of this kind can tell you something is unreadable. Read the screenshots.
 
 ## Keep this in sync
 
@@ -104,3 +116,6 @@ update README "Quick start" and this file in the same change.
 `docs/configuration.md` documents every setting, and `docs/configuration.zh-CN.md` is its Chinese
 version. If you add, rename or re-default a key in `DEFAULT_SETTINGS`, or change what Atrium reads from
 or sets over a harness's own files, update both in the same change.
+
+The phone rules above and `web/scripts/duo-check.py` have to agree: the minimum tap target is
+written in both (`MIN_TAP`). If you change one, change the other.

@@ -23,7 +23,9 @@ const queries = {
 };
 
 function compute(): Layout {
-  if (queries.book.matches) return "book";
+  // book splits the width between the panes, so it needs the room single asks for; laptop stacks
+  // the segments and each one is the full width, so it never has to fall back
+  if (queries.book.matches && !queries.single.matches) return "book";
   if (queries.laptop.matches) return "laptop";
   if (queries.single.matches) return "single";
   return queries.touch.matches ? "dual" : "wide";
@@ -44,8 +46,14 @@ for (const q of Object.values(queries))
 /** The layout right now (outside React). */
 export const layoutNow = (): Layout => current;
 
+// one identity, so React keeps the subscription instead of dropping and remaking it every render
+const subscribe = (cb: () => void) => {
+  listeners.add(cb);
+  return () => void listeners.delete(cb);
+};
+
 export function useLayout(): Layout {
-  return useSyncExternalStore((cb) => (listeners.add(cb), () => void listeners.delete(cb)), layoutNow);
+  return useSyncExternalStore(subscribe, layoutNow);
 }
 
 /** A hover from a mouse or pen, not a finger: touch taps fire mouseenter too, and a tooltip or card shown then can

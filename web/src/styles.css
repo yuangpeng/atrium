@@ -652,7 +652,7 @@ details.review-tool > summary::-webkit-details-marker { display: none; }
 .commit-detail .hd .msg-body { margin-top: 6px; max-height: 96px; }
 .commit-detail > .split > .side { width: 260px; }
 @container (max-width: 760px) { .commit-detail > .split > .side { width: 200px; } }
-.hresizer { position: absolute; top: -3px; left: 0; right: 0; height: 6px; cursor: row-resize; z-index: 5; }
+.hresizer { position: absolute; top: -3px; left: 0; right: 0; height: 6px; cursor: row-resize; z-index: 5; touch-action: none; }
 .hresizer:hover { background: color-mix(in srgb, var(--accent) 35%, transparent); }
 
 /* ---------------------------------------------------------------- modal */

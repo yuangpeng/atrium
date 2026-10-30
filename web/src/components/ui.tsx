@@ -152,8 +152,39 @@ function TipBubble({ anchor, children }: { anchor: HTMLElement; children: ReactN
   );
 }
 
-export function useInterval(fn: () => void, ms: number | null) {
-  const saved = useRef(fn);
+/** A horizontal splitter (`.hresizer`): drag it to resize the box it sits on, as a fraction of the
+ *  parent's height. Pointer events, not mouse ones, so a finger can drag it too — iOS makes up no
+ *  mousemove while a finger moves. Capture keeps the gesture on the handle when the pointer leaves
+ *  it (or crosses an iframe); the moves are taken from the window, so a refused capture still drags. */
+export function startRowResize(e: React.PointerEvent<HTMLElement>, ref: RefObject<HTMLElement | null>, set: (fraction: number) => void) {
+  if (e.button !== 0) return;
+  e.preventDefault();
+  const el = ref.current;
+  const box = el?.parentElement?.getBoundingClientRect();
+  if (!el || !box) return;
+  const bottom = el.getBoundingClientRect().bottom;
+  const handle = e.currentTarget;
+  try {
+    handle.setPointerCapture(e.pointerId);
+  } catch {
+    /* the pointer is already gone: the drag below still works */
+  }
+  const move = (ev: PointerEvent) => set(Math.min(0.85, Math.max(0.2, (bottom - ev.clientY) / box.height)));
+  const up = () => {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", up);
+    window.removeEventListener("pointercancel", up);
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+  };
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", up);
+  window.addEventListener("pointercancel", up);
+  document.body.style.cursor = "row-resize";
+  document.body.style.userSelect = "none";
+}
+
+export function useInterval(fn: () => void, ms: number | null) {  const saved = useRef(fn);
   saved.current = fn;
   useEffect(() => {
     if (ms === null) return;

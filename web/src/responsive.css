@@ -88,14 +88,26 @@ html, body { overscroll-behavior: none; } /* the app doesn't rubber-band as a wh
 
 /* ---------------------------------------------------------------- touch */
 @media (pointer: coarse) {
-  /* Safari zooms into a field with text under 16px when it gets focus, and stays zoomed */
-  input:not([type="checkbox"], [type="radio"], [type="range"]), textarea, select { font-size: 16px !important; }
-  /* splitters a finger can hold */
-  .hresizer { top: -9px; height: 18px; }
-  /* buttons a fingertip hits: the small ones are 24px, which is half of what it covers.
+  /* Safari zooms into a field with text under 16px when it gets focus, and stays zoomed.
+     Monaco's hidden textarea is left alone: it sizes that one from the editor's own font, and an
+     input method draws the text being composed inside it — at 16px it would sit over 12.5px code. */
+  :is(input:not([type="checkbox"], [type="radio"], [type="range"]), textarea, select):not(.monaco-editor *) { font-size: 16px !important; }
+  /* a horizontal splitter sits on the seam, so widening it takes from the row above: 6px up is
+     enough to grab with a finger and still leaves most of that row tappable */
+  .hresizer { top: -6px; height: 12px; }
+  /* buttons a fingertip hits: several are 16–24px, which is well under what it covers.
      The rows holding them grow to match, so nothing spills out of its row. */
   .icon-btn.sm { width: 30px; height: 30px; }
-  .btn-sm, .seg button, .chip-toggle { height: 30px; }
+  .btn-sm, .seg button, .chip-toggle, .pill.fork-pill, .sub-link { height: 30px; }
+  .ws-project, .composer-bar .chip, .composer-icon { height: 30px; }
+  .diff-cols { height: 36px; } /* it holds .icon-btn.sm, which is 30px here */
+  .rail-sub-more { height: 26px; min-width: 30px; }
+  .crumb { padding-top: 6px; padding-bottom: 6px; }
+  .f-loc { padding: 5px 0; }
+  /* the attachment's remove button, over its corner; the chip keeps room for it beside the name */
+  .attach-x { width: 28px; height: 28px; top: 3px; right: 3px; }
+  .attach-chip:not(.image) { padding-right: 34px; }
+  .attach-chip:not(.image) .attach-x { top: 3px; }
   .tree-row { height: 32px; }
   .graph-row { height: 34px; }
   .dir-row, .proj-row, .agent-pick { padding-top: 10px; padding-bottom: 10px; }

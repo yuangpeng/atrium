@@ -1,4 +1,3 @@
-import type { MouseEvent as ReactMouseEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, ChevronDown, ChevronUp, Clock, MessageSquareText, Play, ScanSearch, Send } from "lucide-react";
 import { api, ReviewSummary, ReviewView } from "../api";
@@ -6,7 +5,7 @@ import { useApp } from "../store";
 import { clsx, displayName } from "../util";
 import { ChatView } from "../chat/ChatView";
 import { ReviewContext, ReviewCtx } from "../chat/ReviewCards";
-import { Spinner } from "./ui";
+import { Spinner, startRowResize } from "./ui";
 
 const OPEN_KEY = "atrium.reviewOpen";
 const HEIGHT_KEY = "atrium.reviewHeight";
@@ -43,24 +42,6 @@ export function ReviewDrawer({ pid, wsid, cwd, onJump }: { pid: string; wsid: st
   const active = last?.state === "running" || last?.state === "queued";
   const gone = !!row?.workspace_gone; // its worktree was removed: nothing to review until it is moved
 
-  const drag = (e: ReactMouseEvent) => {
-    e.preventDefault();
-    const el = ref.current;
-    const box = el?.parentElement?.getBoundingClientRect();
-    if (!el || !box) return;
-    const bottom = el.getBoundingClientRect().bottom;
-    const move = (ev: MouseEvent) => setHeight(Math.min(0.85, Math.max(0.2, (bottom - ev.clientY) / box.height)));
-    const up = () => {
-      window.removeEventListener("mousemove", move);
-      window.removeEventListener("mouseup", up);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-    };
-    document.body.style.cursor = "row-resize";
-    document.body.style.userSelect = "none";
-    window.addEventListener("mousemove", move);
-    window.addEventListener("mouseup", up);
-  };
   const toggle = () =>
     setOpen((o) => {
       localStorage.setItem(OPEN_KEY, o ? "0" : "1");
@@ -98,7 +79,7 @@ export function ReviewDrawer({ pid, wsid, cwd, onJump }: { pid: string; wsid: st
 
   return (
     <div ref={ref} className="drawer review-drawer" style={open ? { height: `${height * 100}%` } : undefined}>
-      {open && <div className="hresizer" onMouseDown={drag} />}
+      {open && <div className="hresizer" onPointerDown={(e) => startRowResize(e, ref, setHeight)} />}
       <div className="drawer-head" onClick={toggle}>
         <ScanSearch size={14} className="muted" />
         <span>Review</span>

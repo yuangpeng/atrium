@@ -1,10 +1,10 @@
-import type { JSX, MouseEvent as ReactMouseEvent } from "react";
+import type { JSX } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Bot, ChevronDown, ChevronUp, ExternalLink, FolderGit2, GitBranch, GitBranchPlus, Lightbulb, Maximize2, Minimize2, RefreshCw, Sparkles, Trash2, X } from "lucide-react";
 import { api, Branch, Commit, CommitDetail, CommitFile, GitSummary, GitView } from "../api";
 import { useApp } from "../store";
 import { clsx, displayName, languageFor, relTo, throttle, timeAgo } from "../util";
-import { Spinner, useFullscreen } from "../components/ui";
+import { Spinner, startRowResize, useFullscreen } from "../components/ui";
 import { DiffEditor } from "../components/LazyEditors";
 import { DiffOptions } from "../components/DiffOptions";
 import { FileNav, FileTree, useFileTree } from "../components/FileTree";
@@ -387,24 +387,6 @@ function CommitView({ detail, onClose }: { detail: CommitDetail; onClose: () => 
     };
   }, [pid, detail.sha, cur, toast]);
 
-  const drag = (e: ReactMouseEvent) => {
-    e.preventDefault();
-    const el = ref.current;
-    const box = el?.parentElement?.getBoundingClientRect();
-    if (!el || !box) return;
-    const bottom = el.getBoundingClientRect().bottom;
-    const move = (ev: MouseEvent) => setHeight(Math.min(0.85, Math.max(0.2, (bottom - ev.clientY) / box.height)));
-    const up = () => {
-      window.removeEventListener("mousemove", move);
-      window.removeEventListener("mouseup", up);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-    };
-    document.body.style.cursor = "row-resize";
-    document.body.style.userSelect = "none";
-    window.addEventListener("mousemove", move);
-    window.addEventListener("mouseup", up);
-  };
 
   const [subject, ...rest] = detail.message.split("\n");
   const body = rest.join("\n").trim();
@@ -413,7 +395,7 @@ function CommitView({ detail, onClose }: { detail: CommitDetail; onClose: () => 
   const parent = detail.parents[0] ?? null;
   return (
     <div ref={ref} className="commit-detail fs-host" style={{ height: `${height * 100}%` }}>
-      <div className="hresizer" onMouseDown={drag} />
+      <div className="hresizer" onPointerDown={(e) => startRowResize(e, ref, setHeight)} />
       <div className="hd">
         <div className="row">
           <b className="grow ellipsis" title={subject}>
