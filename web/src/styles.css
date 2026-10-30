@@ -833,14 +833,14 @@ details.review-tool > summary::-webkit-details-marker { display: none; }
 .homepage section { margin-top: 8px; }
 .homepage .section-label { padding-left: 2px; padding-bottom: 8px; }
 .homepage-empty { padding: 16px 2px; font-size: 13px; }
-.needs-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 10px; }
+.needs-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr)); gap: 10px; }
 .needs-item { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 9px 12px; border-radius: 12px; border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent); background: var(--warn-soft); color: var(--text); font: inherit; text-align: left; cursor: pointer; }
 .needs-item:hover { border-color: var(--warn); }
 .needs-item > .grow { display: flex; flex-direction: column; }
 .needs-name { font-size: 13px; font-weight: 600; }
 .needs-line { font-size: 12px; color: var(--text-2); }
 .needs-item > .faint { font-size: 12px; flex: none; }
-.proj-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 12px; }
+.proj-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(290px, 100%), 1fr)); gap: 12px; }
 .proj-card { display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 13px 14px 12px; border-radius: 14px; border: 1px solid var(--border); background: var(--surface); cursor: pointer; transition: border-color 0.12s, box-shadow 0.12s; }
 .proj-card:hover { border-color: var(--border-strong); box-shadow: var(--shadow); }
 .proj-card.missing { cursor: default; border-style: dashed; background: transparent; opacity: 0.7; }

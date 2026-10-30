@@ -74,8 +74,16 @@ html, body { overscroll-behavior: none; } /* the app doesn't rubber-band as a wh
   .toolbar { padding: 6px 8px; }
 }
 
-/* ---------------------------------------------------------------- phone-width dialogs */
-@media (max-width: 600px) {
+/* ---------------------------------------------------------------- home page */
+/* its header is a single row of title, search and two buttons — 664px of it, which no phone has */
+@media (max-width: 700px) {
+  .homepage { padding: 16px 14px 32px; }
+  .home-top { flex-wrap: wrap; row-gap: 8px; }
+  .home-top h1 { margin-right: 0; }
+  .home-search { flex: 1 1 100%; order: 1; } /* onto its own line, full width */
+}
+
+/* ---------------------------------------------------------------- phone-width dialogs */@media (max-width: 600px) {
   .modal, .modal.wide, .modal.xl { width: calc(100vw - 16px); max-height: calc(100dvh - 16px); }
   .modal.xl { height: calc(100dvh - 16px); }
   .modal-head { padding: 12px 12px 8px 16px; }
@@ -108,6 +116,7 @@ html, body { overscroll-behavior: none; } /* the app doesn't rubber-band as a wh
   .attach-x { width: 28px; height: 28px; top: 3px; right: 3px; }
   .attach-chip:not(.image) { padding-right: 34px; }
   .attach-chip:not(.image) .attach-x { top: 3px; }
+  .proj-agent { min-height: 30px; }
   .tree-row { height: 32px; }
   .graph-row { height: 34px; }
   .dir-row, .proj-row, .agent-pick { padding-top: 10px; padding-bottom: 10px; }
@@ -118,4 +127,7 @@ html, body { overscroll-behavior: none; } /* the app doesn't rubber-band as a wh
 @media (hover: none) {
   .msg-fork { opacity: 0.5; } /* fork from an earlier message */
   .tree-row.on .hover-actions { display: flex; } /* the open file's rename / delete */
+  /* a project card's pin / archive / remove: hidden until hover, so a finger never reaches them */
+  .proj-card-actions > * { opacity: 1; }
+  .home-search .kbd { display: none; } /* ⌘K, on a device with no keyboard */
 }

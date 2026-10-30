@@ -102,11 +102,12 @@ uv run --with playwright==1.64.1 python web/scripts/duo-check.py \
     --base http://127.0.0.1:8841 --shots /tmp/duo-shots
 ```
 
-`web/scripts/duo-check.py` drives every pose above as a touch device and fails on boxes pushed
-past the viewport, text painted outside its own box, labels squeezed to nothing, buttons under
-30px and buttons spilling out of their row. It only sees what is on screen, so a control that
-needs a particular state (an attachment in the composer, a forked agent) still wants a look of
-its own — and no check of this kind can tell you something is unreadable. Read the screenshots.
+`web/scripts/duo-check.py` drives every pose above as a touch device — the home page, then each
+workspace panel — and fails on boxes pushed past the viewport, panels that scroll sideways, text
+painted outside its own box, labels squeezed to nothing, buttons under 30px and buttons spilling
+out of their row. It only sees what is on screen, so a control that needs a particular state (an
+attachment in the composer, a forked agent) still wants a look of its own — and no check of this
+kind can tell you something is unreadable. Read the screenshots.
 
 ## Keep this in sync
 

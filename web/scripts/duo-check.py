@@ -57,6 +57,11 @@ AUDIT = """(MIN_TAP) => {
         out.push({ kind: "box squeezed to nothing", el: name(el), text: (el.textContent || "").trim().slice(0, 60) });
       continue;
     }
+    // a box that scrolls sideways hides content behind a gesture nobody makes on a phone. Code and
+    // tables are meant to scroll that way; a panel or a list is not.
+    if (el.scrollWidth > el.clientWidth + 1 && /auto|scroll/.test(cs.overflowX) && r.width > 120 &&
+        !el.matches("pre, table, .code-block, .mini-diff, .editor-tabs, .md, .card-body, .msg-output"))
+      out.push({ kind: "panel scrolls sideways", el: name(el), by: el.scrollWidth - el.clientWidth, width: Math.round(r.width) });
     if (!clipped(el)) {
       if (r.right > innerWidth + 1 || r.left < -1)
         out.push({ kind: "past the viewport", el: name(el), right: Math.round(r.right), width: innerWidth });
@@ -107,17 +112,28 @@ async def main() -> int:
     findings, errors = [], []
     if args.shots:
         __import__("os").makedirs(args.shots, exist_ok=True)
+
+    async def audit(page, pose: str, label: str):
+        doc = await page.evaluate("() => [document.documentElement.scrollWidth, innerWidth]")
+        if doc[0] > doc[1] + 1:
+            findings.append(f"{pose:16} {label:9} {'the page scrolls sideways':26} {doc[0]}px of content in {doc[1]}px")
+        for o in await page.evaluate(AUDIT, MIN_TAP):
+            rest = json.dumps({k: v for k, v in o.items() if k not in ("kind", "el")})
+            findings.append(f"{pose:16} {label:9} {o['kind']:26} {o['el'][:44]:44} {rest[:100]}")
+        if args.shots:
+            await page.screenshot(path=f"{args.shots}/{pose}-{label}.png")
     async with async_playwright() as pw:
         browser = await pw.webkit.launch()
         for pose, (w, h) in poses.items():
             ctx = await browser.new_context(viewport={"width": w, "height": h}, device_scale_factor=2, is_mobile=True, has_touch=True)
             page = await ctx.new_page()
             page.on("pageerror", lambda e, p=pose: errors.append(f"{p}: {e}"))
+            # the home page first: it is what Atrium opens on when the URL names no project
+            await page.goto(args.base + "/")
+            await page.wait_for_timeout(1500)
+            await audit(page, pose, "home")
             await page.goto(f"{args.base}/?project={pid}" + (f"&session={sid}" if sid else ""))
             await page.wait_for_timeout(1500)
-            doc = await page.evaluate("() => [document.documentElement.scrollWidth, innerWidth, document.documentElement.dataset.layout]")
-            if doc[0] > doc[1] + 1:
-                findings.append(f"{pose:16} {'(page)':9} the page scrolls sideways: {doc[0]}px wide in {doc[1]}px")
             views = [("chat", None)]
             back = page.locator('button[title="Board, files, changes, git"]')
             if await back.count():  # one screen: the chat covers the workspace
@@ -128,12 +144,8 @@ async def main() -> int:
                 if tab:
                     await page.locator(f'.ws-tabs button[aria-label="{tab}"]').tap()
                     await page.wait_for_timeout(1300)
-                for o in await page.evaluate(AUDIT, MIN_TAP):
-                    rest = json.dumps({k: v for k, v in o.items() if k not in ("kind", "el")})
-                    findings.append(f"{pose:16} {label:9} {o['kind']:26} {o['el'][:44]:44} {rest[:100]}")
-                if args.shots:
-                    await page.screenshot(path=f"{args.shots}/{pose}-{label}.png")
-            print(f"{pose:16} {doc[2]:8} checked", file=sys.stderr)
+                await audit(page, pose, label)
+            print(f"{pose:16} checked", file=sys.stderr)
             await ctx.close()
         await browser.close()
 
