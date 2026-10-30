@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { api, ForkAt, Meta, Project, ProjectInfo, SessionRow } from "./api";
+import { api, ForkAt, Meta, onLoggedOut, Project, ProjectInfo, SessionRow } from "./api";
 import { socket } from "./ws";
 import { throttle } from "./util";
 
@@ -54,6 +54,7 @@ interface AppState {
   reviewVersion: number; // the Code Review Agent's rounds / findings changed
   fsPaths: string[];
   toasts: Toast[];
+  loggedOut: boolean; // a request found the login gone: the page offers to log in again
 
   init: () => Promise<void>;
   refreshMeta: () => Promise<void>;
@@ -130,12 +131,14 @@ export const useApp = create<AppState>((set, get) => {
     reviewVersion: 0,
     fsPaths: [],
     toasts: [],
+    loggedOut: false,
 
     init: async () => {
       applyTheme(get().theme);
       matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => applyTheme(get().theme));
       const [meta] = await Promise.all([api.meta(), get().loadProjects()]);
       set({ meta });
+      onLoggedOut(() => set({ loggedOut: true }));
       const params = new URLSearchParams(location.search);
       const pid = params.get("project") || localStorage.getItem("atrium.project") || get().projects[0]?.id || null;
       if (pid && get().projects.some((p) => p.id === pid)) {

@@ -92,6 +92,7 @@ export interface Meta {
   harnesses: Harness[];
   settings: Settings;
   lsp: Record<string, { server: string }>; // Monaco language id -> language server on this machine
+  auth: boolean; // the login page is on (off: `atrium --no-auth`)
 }
 
 export interface Project {
@@ -481,6 +482,15 @@ export class ApiError extends Error {
   }
 }
 
+/** The login page, coming back here afterwards. */
+export const loginUrl = () => `/login?next=${encodeURIComponent(location.pathname + location.search)}`;
+
+// A request found the login gone (it expired, or the password changed). Until the app has loaded, go to the
+// login page; then the store shows a notice instead, as leaving the page could lose unsaved edits.
+let loggedOut = () => location.assign(loginUrl());
+export const onLoggedOut = (f: () => void) => void (loggedOut = f);
+const checkLogin = (res: Response, data: any) => res.status === 401 && data?.code === "auth_required" && loggedOut();
+
 async function req<T>(method: string, url: string, body?: unknown): Promise<T> {
   const res = await fetch(url, {
     method,
@@ -494,6 +504,7 @@ async function req<T>(method: string, url: string, body?: unknown): Promise<T> {
   } catch {
     data = { error: text };
   }
+  checkLogin(res, data);
   if (!res.ok) throw new ApiError(res.status, data);
   return data as T;
 }
@@ -509,6 +520,7 @@ export const api = {
   meta: () => req<Meta>("GET", "/api/meta"),
   settings: () => req<Settings>("GET", "/api/settings"),
   patchSetting: (path: string, value: unknown) => req<Settings>("PATCH", "/api/settings", { path, value }),
+  logout: () => fetch("/logout", { method: "POST", redirect: "manual" }),
   configFiles: (pid?: string) => req<ConfigFileInfo[]>("GET", `/api/config-files${q({ pid })}`),
   configFile: (id: string, pid?: string) => req<ConfigFileData>("GET", `/api/config-files/${id}${q({ pid })}`),
   saveConfigFile: (id: string, body: { content: string; base_sha: string | null; pid?: string }) =>
@@ -520,6 +532,7 @@ export const api = {
       body: file,
     });
     const data = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+    checkLogin(res, data);
     if (!res.ok) throw new ApiError(res.status, data);
     return data as Upload;
   },

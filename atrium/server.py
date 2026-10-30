@@ -17,6 +17,8 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__, changes, configfiles, fs, gitops, lsp
+from .auth import AUTH_PATH, AuthMiddleware, auth
+from .auth import router as auth_router
 from .config import UPLOADS_DIR, config
 from .events import Subscriber, hub
 from .gitagent import set_view
@@ -54,6 +56,9 @@ def _on_project_loaded(project: Project) -> None:
 async def lifespan(_app: FastAPI):
     for v in _NESTING_VARS:
         os.environ.pop(v, None)
+    # `atrium` has created auth.json already, unless the server was started some other way (uvicorn)
+    if auth.enabled and auth.ensure().get("generated_password"):
+        log.warning("login password: made up, in %s (set your own: atrium --set-password)", AUTH_PATH)
     hub.bind_loop(asyncio.get_running_loop())
     projects.on_create.append(_on_project_loaded)
     sessions.on_turn_end.append(lambda project, _sid: project.tracker and project.tracker.after_turn())
@@ -81,6 +86,8 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Atrium", version=__version__, lifespan=lifespan)
+app.add_middleware(AuthMiddleware)
+app.include_router(auth_router)  # before the SPA's catch-all
 
 
 # ---------------------------------------------------------------------------
@@ -156,7 +163,8 @@ async def _catalog(h: Any) -> dict[str, Any]:
 @app.get("/api/meta")
 async def meta():
     harnesses = await asyncio.gather(*(_catalog(h) for h in all_harnesses()))
-    return {"version": __version__, "harnesses": harnesses, "settings": config.public_settings(), "lsp": await asyncio.to_thread(lsp.available)}
+    return {"version": __version__, "harnesses": harnesses, "settings": config.public_settings(), "lsp": await asyncio.to_thread(lsp.available),
+            "auth": auth.enabled}
 
 
 @app.get("/api/settings")

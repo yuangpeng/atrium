@@ -479,7 +479,7 @@ proxy the agents need. Claude Code's settings can add variables of their own und
 | Variable | |
 |---|---|
 | `ATRIUM_HOME` | Where Atrium keeps its settings and state (default `~/.atrium`). |
-| `ATRIUM_HOST`, `ATRIUM_PORT` | Defaults for `--host` (`127.0.0.1`) and `--port` (`8787`); `make run PORT=8790` sets the port. Atrium has no authentication: keep it on `127.0.0.1`, not `0.0.0.0` or a LAN address. |
+| `ATRIUM_HOST`, `ATRIUM_PORT` | Defaults for `--host` (`127.0.0.1`) and `--port` (`8787`); `make run PORT=8790` sets the port. Every page, API call and WebSocket needs a login ([README → Login](../README.md#login)); across a network, put HTTPS in front. |
 | `ATRIUM_URL` | The address notification links open (default: the one Atrium serves on). |
 | `SERPER_API_KEY`, `JINA_API_KEY` | The web tools' keys; they win over `settings.json`. |
 | `CLAUDE_CONFIG_DIR` | Claude Code's directory (default `~/.claude`): its settings and transcripts. |
@@ -490,7 +490,7 @@ proxy the agents need. Claude Code's settings can add variables of their own und
 
 ## Checking your setup
 
-- `curl -s --noproxy '*' http://127.0.0.1:8787/api/meta` lists each harness: `available`, and
+- `curl -s --noproxy '*' -H "Authorization: Bearer $(.venv/bin/atrium --token)" http://127.0.0.1:8787/api/meta` lists each harness: `available`, and
   `unavailable_reason` when it isn't; `config_model` / `config_effort`, what *Default* resolves to; for
   Codex, `cli` (`path`, `version`, `bundled`). `settings._error` says why `settings.json` couldn't be read.
 - ⚙ Settings keeps the last 20 versions of each file in `~/.atrium/backups/` (`<file>-<date>-<time>`).

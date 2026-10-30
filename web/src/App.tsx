@@ -2,7 +2,7 @@ import type { JSX, ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { Archive, ArchiveRestore, ArrowLeft, ChevronRight, FileDiff, Files, FolderOpen, GitBranch, GitFork, LayoutDashboard, MessageSquare, PanelRightClose, Plug, Unplug } from "lucide-react";
-import { api, SessionRow } from "./api";
+import { api, loginUrl, SessionRow } from "./api";
 import { Panel, useApp } from "./store";
 import { clsx, displayName, tidyNote } from "./util";
 import { Rail, liveLabel, statusClass } from "./components/Rail";
@@ -318,9 +318,15 @@ function NoProject() {
 
 function Toasts() {
   const toasts = useApp((s) => s.toasts);
+  const loggedOut = useApp((s) => s.loggedOut);
   const fullscreen = useFullscreenElement(); // only the fullscreen element is visible: show them in there
   const list = (
     <div className="toasts">
+      {loggedOut && (
+        <div className="toast error">
+          You were logged out. <a href={loginUrl()}>Log in again</a>
+        </div>
+      )}
       {toasts.map((t) => (
         <div key={t.id} className={clsx("toast", t.kind)}>
           {t.text}

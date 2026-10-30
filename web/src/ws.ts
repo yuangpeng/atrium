@@ -2,6 +2,8 @@
 // Also reports whether the page is active (visible and focused): the server skips desktop
 // notifications for sessions whose chat is open in an active page.
 
+import { api } from "./api";
+
 type Handler = (msg: any) => void;
 
 const pageActive = () => document.visibilityState === "visible" && document.hasFocus();
@@ -32,7 +34,9 @@ class Socket {
   private connect() {
     const ws = new WebSocket(this.url());
     this.ws = ws;
+    let opened = false;
     ws.onopen = () => {
+      opened = true;
       this.connected = true;
       this.backoff = 500;
       for (const topic of this.handlers.keys()) ws.send(JSON.stringify({ op: "sub", topic }));
@@ -51,6 +55,8 @@ class Socket {
     };
     ws.onclose = () => {
       this.connected = false;
+      // refused: the server is down (restarting?) or the login is gone, which a request tells (see api.ts)
+      if (!opened) void api.settings().catch(() => undefined);
       setTimeout(() => this.connect(), this.backoff);
       this.backoff = Math.min(this.backoff * 2, 8000);
     };

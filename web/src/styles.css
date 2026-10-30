@@ -704,6 +704,7 @@ details.review-tool > summary::-webkit-details-marker { display: none; }
 .toast { background: var(--text); color: var(--bg); padding: 9px 14px; border-radius: 10px; box-shadow: var(--shadow-lg); font-size: 13px; max-width: 560px; white-space: pre-wrap; animation: fade 0.15s; }
 .toast.error { background: var(--err); color: #fff; }
 .toast.ok { background: var(--ok); color: #fff; }
+.toast a { color: inherit; font-weight: 600; }
 
 /* ---------------------------------------------------------------- markdown */
 .md > *:first-child { margin-top: 0; }

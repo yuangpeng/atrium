@@ -7,7 +7,7 @@ import { useShallow } from "zustand/react/shallow";
 import type { LucideIcon } from "lucide-react";
 import {
   Anchor, Archive, ArchiveRestore, Atom, Bird, Bug, Cat, Cherry, Citrus, Clover, Compass, Cookie, Dog, Feather, Fish, Flame, Flower2, FolderOpen, Gem,
-  Ghost, GitBranch, LayoutList, Leaf, Monitor, Moon, Mountain, Orbit, Origami, Rabbit, Rocket, Sailboat, Search, Settings, Shell,
+  Ghost, GitBranch, LayoutList, Leaf, LogOut, Monitor, Moon, Mountain, Orbit, Origami, Rabbit, Rocket, Sailboat, Search, Settings, Shell,
   Snail, Snowflake, Sprout, SquarePen, Squirrel, Star, Sun, Telescope, Trash2, Turtle, Workflow, X,
 } from "lucide-react";
 import { api, SessionRow } from "../api";
@@ -286,7 +286,7 @@ function AgentsFlyout({ onClose }: { onClose: () => void }) {
 // ---------------------------------------------------------------- rail
 export function Rail() {
   useTick(30000);
-  const { project, sessions, sessionId, subagentId, compactionId, selectSession, selectSubagent, selectCompaction, refreshSessions, setPickerOpen, setSettingsOpen, theme, setTheme, setPanel } =
+  const { meta, project, sessions, sessionId, subagentId, compactionId, selectSession, selectSubagent, selectCompaction, refreshSessions, setPickerOpen, setSettingsOpen, theme, setTheme, setPanel } =
     useApp();
   const draftWaiting = useDrafts((s) => hasContent(s.byProject[project?.id ?? ""]));
   const [tip, setTip] = useState<{ el: HTMLElement; content: ReactNode } | null>(null);
@@ -394,6 +394,11 @@ export function Rail() {
           ))
         }
       </Popover>
+      {meta?.auth && (
+        <button className="rail-btn" onClick={() => void api.logout().finally(() => location.assign("/login"))} aria-label="Log out">
+          <LogOut size={16} />
+        </button>
+      )}
       <div className={clsx("rail-live", live > 0 && "on")} {...hoverProps(<Tip title={`${live} live session${live === 1 ? "" : "s"}`} sub="Agent processes currently attached" />)}>
         {live}
       </div>

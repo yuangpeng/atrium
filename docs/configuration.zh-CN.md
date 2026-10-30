@@ -450,7 +450,7 @@ Claude Code 的配置可以在 `env` 里另加变量；Antigravity 配置的 `en
 | 变量 | 说明 |
 |---|---|
 | `ATRIUM_HOME` | Atrium 存放配置和状态的目录（默认 `~/.atrium`）。 |
-| `ATRIUM_HOST`、`ATRIUM_PORT` | `--host`（`127.0.0.1`）和 `--port`（`8787`）的默认值；`make run PORT=8790` 可以设置端口。Atrium 没有登录认证：请保持只监听 `127.0.0.1`，不要改成 `0.0.0.0` 或局域网地址。 |
+| `ATRIUM_HOST`、`ATRIUM_PORT` | `--host`（`127.0.0.1`）和 `--port`（`8787`）的默认值；`make run PORT=8790` 可以设置端口。所有页面、API 调用和 WebSocket 都要先登录（见 [README → Login](../README.md#login)）；跨网络访问时，请在前面加一层 HTTPS。 |
 | `ATRIUM_URL` | 点击通知时打开的地址（默认是 Atrium 当前服务的地址）。 |
 | `SERPER_API_KEY`、`JINA_API_KEY` | web 工具的 key；优先于 `settings.json`。 |
 | `CLAUDE_CONFIG_DIR` | Claude Code 的目录（默认 `~/.claude`）：它的配置和对话记录。 |
@@ -461,7 +461,7 @@ Claude Code 的配置可以在 `env` 里另加变量；Antigravity 配置的 `en
 
 ## 检查配置
 
-- `curl -s --noproxy '*' http://127.0.0.1:8787/api/meta` 列出每个 harness：`available`（是否可用），不可用时的
+- `curl -s --noproxy '*' -H "Authorization: Bearer $(.venv/bin/atrium --token)" http://127.0.0.1:8787/api/meta` 列出每个 harness：`available`（是否可用），不可用时的
   `unavailable_reason`；`config_model` / `config_effort`，即 *Default* 实际解析成什么；Codex 还有 `cli`
   （`path`、`version`、`bundled`）。`settings._error` 说明 `settings.json` 读取失败的原因。
 - ⚙ Settings 在 `~/.atrium/backups/` 里为每个文件保留最近 20 个版本（`<file>-<date>-<time>`）。要回退，

@@ -143,13 +143,35 @@ export JINA_API_KEY=...     # optional: higher rate limits for web.fetch
 make run              # → http://127.0.0.1:8787   (or: .venv/bin/atrium ~/code/myproject)
 ```
 
-Port 8787 taken? `make run PORT=8790`. To check that the server is up,
-`curl -s http://127.0.0.1:8787/api/meta` lists each harness and whether it is available.
+The first start makes up a password for the login page (see below). Port 8787 taken?
+`make run PORT=8790`. To check that the server is up,
+`curl -s -H "Authorization: Bearer $(.venv/bin/atrium --token)" http://127.0.0.1:8787/api/meta`
+lists each harness and whether it is available.
 
 Development: `make dev-backend` (auto-reload, port 8787) and `make dev-web` (Vite on 5173,
-proxying `/api` and `/ws`).
+proxying `/api`, `/ws`, `/login` and `/logout`).
 
-Atrium binds to `127.0.0.1` and has **no authentication** — don't expose it.
+### Login
+
+Atrium runs agents with full access, edits any file, and starts the commands its settings name, so
+every page, API call and WebSocket needs a login, from this machine too: through a tunnel or a
+reverse proxy running here, everyone's requests come from 127.0.0.1.
+
+- The first start makes up a password: Atrium prints it when it runs in a terminal, and keeps it in
+  `~/.atrium/auth.json` until you set your own with `.venv/bin/atrium --set-password`. A new password
+  logs every browser out (a running Atrium picks it up at once), and is the way back in when you
+  forget it. Log out is at the bottom of the rail.
+- A login is a cookie, valid for 30 days and renewed while you use Atrium; restarts keep it. After 10
+  wrong passwords in 10 minutes, the login page refuses every password for the rest of those minutes
+  (setting a new one lifts that).
+- Scripts send `Authorization: Bearer <token>`; `.venv/bin/atrium --token` prints the token.
+- Across a network, put HTTPS in front (Tailscale Serve, a Cloudflare Tunnel, Caddy…): over plain HTTP
+  the password and the cookie can be read on the way. The reverse proxy has to pass the original `Host`
+  header through, or set `X-Forwarded-Host` (nginx: `proxy_set_header Host $host;`, next to the
+  WebSocket upgrade headers): requests that can change something (POST…, WebSockets) are refused when
+  their `Origin` isn't the host they are addressed to.
+- `--no-auth` turns the login off, for scratch instances: only with a loopback `--host`, and then only
+  requests addressed to localhost are answered.
 
 ## Where things live
 
@@ -157,6 +179,7 @@ Atrium binds to `127.0.0.1` and has **no authentication** — don't expose it.
 |---|---|
 | `~/.atrium/settings.json` | Atrium settings: defaults per harness (mode / model / effort), tracker, Git Agent, Code Review Agent (`review_agent`: auto, harness / model / effort, language), desktop notifications, web keys (`chmod 600`; env vars take precedence), extra MCP servers |
 | `~/.atrium/config.json` | the project list |
+| `~/.atrium/auth.json` | the login: the password's hash (and the made-up password, until you set yours), the secret that signs login cookies, the API token (`chmod 600`) |
 | `~/.atrium/uploads/` | composer attachments |
 | `~/.atrium/backups/` | the previous versions of config files saved from Settings (last 20 each) |
 | `~/.gemini/antigravity-cli/settings.json` | Antigravity's model, custom models (relays) and Gemini API key (`env`) — the Antigravity CLI's own file |
@@ -219,6 +242,7 @@ atrium/
   mcp/web.py             Serper + Jina tools (in-process and stdio MCP)
   watch.py               file + transcript watchers → websocket events
   server.py              FastAPI REST + one multiplexed websocket; serves the built UI
+  auth.py                the login: password, cookies and API token, checked for every request
 web/                     React + TypeScript + Vite UI (Monaco for editor/diffs)
 ```
 

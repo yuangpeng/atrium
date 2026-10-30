@@ -11,8 +11,10 @@ running inside the app you are editing.
   after changing their versions in `pyproject.toml`.
 - Start: `make run` (port 8787; if it is taken, `make run PORT=8790`).
   Development: `make dev-backend` + `make dev-web` (Vite on 5173).
-- Check: `curl -s --noproxy '*' http://127.0.0.1:<port>/api/meta` lists each harness and
-  whether it is available (for Codex also which CLI runs: `cli.path`, `cli.version`).
+- Check: `curl -s --noproxy '*' -H "Authorization: Bearer $(.venv/bin/atrium --token)" http://127.0.0.1:<port>/api/meta`
+  lists each harness and whether it is available (for Codex also which CLI runs: `cli.path`,
+  `cli.version`). Every request needs a login: the browser's cookie, or this token for scripts
+  (`--token` reads `$ATRIUM_HOME/auth.json`: the same `ATRIUM_HOME` as the server's).
 - Antigravity reads `~/.gemini/antigravity-cli/settings.json` (the human's real key and relay). For
   tests without model calls, start the instance with `HOME` set to a temp dir whose
   `.gemini/antigravity-cli/settings.json` makes a local fake of the Gemini API the model
@@ -30,7 +32,9 @@ running inside the app you are editing.
   empties and rewrites `atrium/static`, and the human's UI changes on their next page reload.
 - To try backend changes, start a separate instance with its own state, on a scratch project
   (project state lives in `<project>/.atrium/`, so don't point it at this repo):
-  `ATRIUM_HOME=$(mktemp -d) .venv/bin/atrium --port 8790 --no-browser <scratch dir>`
+  `ATRIUM_HOME=$(mktemp -d) .venv/bin/atrium --port 8790 --no-browser --no-auth <scratch dir>`
+  (`--no-auth`: no login page, and only requests to localhost are answered; leave it out to test
+  the login itself).
 
 ## Keep this in sync
 
