@@ -2,7 +2,7 @@
 // attachments (paste / drop / pick → uploaded to ~/.atrium/uploads), the icon-only harness / permission-mode
 // pickers, the workspace menu, the read-only model chip (and a started agent's harness and workspace), the
 // reasoning-effort slider and the context gauge.
-import type { CSSProperties } from "react";
+import type { CSSProperties, DependencyList, RefObject } from "react";
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import { Check, ChevronDown, ClipboardList, FilePen, FileText, FolderGit2, GitBranchPlus, Hand, Paperclip, RotateCcw, Shield, ShieldAlert, ShieldCheck, X, createLucideIcon } from "lucide-react";
@@ -295,13 +295,38 @@ export function modelName(harness: Harness | undefined, id: string | null | unde
   return /^[a-z]+$/.test(base) ? cap(base) : base.replace(/^gpt/, "GPT");
 }
 
+/** Whether a folding chip of the composer's chips (`data-fold`, holding a hidden `.measure` copy of itself at
+ *  full width) shows its words: only while all the folding chips fit on one line at full width. Else they fold to
+ *  their icons together (the words on hover), so none takes the room another one just gave up. */
+function useRoomy(ref: RefObject<HTMLElement | null>, deps: DependencyList): boolean {
+  const [roomy, setRoomy] = useState(true);
+  useLayoutEffect(() => {
+    const row = ref.current?.closest<HTMLElement>(".bar-chips");
+    if (!row) return;
+    const full = (c: HTMLElement) => {
+      const fold = c.matches("[data-fold]") ? c : c.querySelector<HTMLElement>(":scope > [data-fold]"); // a picker sits in its popover's box
+      return (fold?.querySelector<HTMLElement>(":scope > .measure") ?? c).offsetWidth;
+    };
+    const fit = () => {
+      const kids = [...row.children] as HTMLElement[];
+      const gaps = (parseFloat(getComputedStyle(row).columnGap) || 0) * (kids.length - 1);
+      setRoomy(row.clientWidth >= kids.reduce((w, c) => w + full(c), 0) + gaps);
+    };
+    fit();
+    const ro = new ResizeObserver(fit);
+    ro.observe(row);
+    for (const c of row.children) ro.observe(c);
+    return () => ro.disconnect();
+  }, deps);
+  return roomy;
+}
+
 /** The model, read-only: its maker's mark + name while the chip row has room, else the mark (name on hover). */
 export function ModelChip({ harness, model, faded }: { harness: Harness; model: string | null | undefined; faded?: boolean }) {
   const name = modelName(harness, model);
   const maker = model || ({ "claude-code": "claude", antigravity: "gemini" } as Record<string, string>)[harness.id] || null; // the harness's default model's maker
   const ref = useRef<HTMLSpanElement>(null);
-  const full = useRef<HTMLSpanElement>(null); // invisible copy with the name: the width the chip would need
-  const [roomy, setRoomy] = useState(true);
+  const roomy = useRoomy(ref, [name]);
   const [tipProps, tip] = useTip(
     <>
       <div>
@@ -310,25 +335,11 @@ export function ModelChip({ harness, model, faded }: { harness: Harness; model: 
       {model && model !== name && <div className="k mono">{model}</div>}
     </>,
   );
-  useLayoutEffect(() => {
-    const row = ref.current?.parentElement;
-    if (!row) return;
-    const fit = () => {
-      const others = [...row.children].filter((c) => c !== ref.current).reduce((w, c) => w + (c as HTMLElement).offsetWidth, 0);
-      const gaps = (parseFloat(getComputedStyle(row).columnGap) || 0) * (row.children.length - 1);
-      setRoomy(row.clientWidth - others - gaps >= (full.current?.offsetWidth ?? 0));
-    };
-    fit();
-    const ro = new ResizeObserver(fit);
-    ro.observe(row);
-    for (const c of row.children) ro.observe(c);
-    return () => ro.disconnect();
-  }, [name]);
   return (
-    <span ref={ref} className={clsx("chip model-chip fixed", !roomy && "icon-chip", faded && "faded")} aria-label={`Model: ${name}`} {...tipProps}>
+    <span ref={ref} data-fold className={clsx("chip model-chip fixed", !roomy && "icon-chip", faded && "faded")} aria-label={`Model: ${name}`} {...tipProps}>
       <ModelIcon model={maker} />
       {roomy && <span>{name}</span>}
-      <span ref={full} className="chip model-chip measure" aria-hidden>
+      <span className="chip model-chip measure" aria-hidden>
         <ModelIcon model={maker} />
         <span>{name}</span>
       </span>
@@ -484,6 +495,22 @@ export function NewWorktreeFields({ project, ws, onChange }: { project: ProjectI
   );
 }
 
+/** The new-agent page's workspace picker: its label folds away with the model's when the chips are short of room. */
+export function WorkspacePickChip({ label, onClick }: { label: string; onClick: () => void }) {
+  const ref = useRef<HTMLButtonElement>(null);
+  const roomy = useRoomy(ref, [label]);
+  return (
+    <button ref={ref} data-fold className={clsx("chip", !roomy && "icon-chip")} onClick={onClick} title={roomy ? "Where the agent works" : `Where the agent works: ${label}`}>
+      <FolderGit2 size={13} />
+      {roomy && <span className="ellipsis" style={{ maxWidth: 160 }}>{label}</span>}
+      <span className="chip measure" aria-hidden>
+        <FolderGit2 size={13} />
+        <span className="ellipsis" style={{ maxWidth: 160 }}>{label}</span>
+      </span>
+    </button>
+  );
+}
+
 /** Where a started agent works, labelled like the new-agent page's picker: the branch, or ⎇ a worktree's.
  *  Read-only — until that directory is gone (its worktree was removed): then it shows struck through, and
  *  picks where the agent carries on (`pick`, applied when the next message is sent). */
@@ -492,6 +519,8 @@ export function WorkspaceChip({ project, session, pick, onPick }: { project: Pro
   const worktree = project.is_git && session.worktree;
   const branch = session.branch || mainBranch(project);
   const label = !project.is_git ? project.name : worktree ? `⎇ ${session.branch ?? relTo(project.path, session.cwd)}` : branch;
+  const ref = useRef<HTMLSpanElement>(null);
+  const roomy = useRoomy(ref, [label, gone]);
   const [tipProps, tip] = useTip(
     gone ? (
       <>
@@ -504,7 +533,7 @@ export function WorkspaceChip({ project, session, pick, onPick }: { project: Pro
     ) : (
       <>
         <div>
-          <span className="k">Works in:</span> {worktree ? "Worktree" : "Project directory"}
+          <span className="k">Works in:</span> {worktree ? `Worktree ${label}` : "Project directory"}
         </div>
         {worktree ? (
           <div className="k mono">{relTo(project.path, session.cwd)}</div>
@@ -519,8 +548,13 @@ export function WorkspaceChip({ project, session, pick, onPick }: { project: Pro
   );
   if (!gone)
     return (
-      <span className="chip fixed" aria-label={`Works in: ${label}`} {...tipProps}>
-        <FolderGit2 size={13} /> <span className="ellipsis" style={{ maxWidth: 160 }}>{label}</span>
+      <span ref={ref} data-fold className={clsx("chip fixed", !roomy && "icon-chip")} aria-label={`Works in: ${label}`} {...tipProps}>
+        <FolderGit2 size={13} />
+        {roomy && <span className="ellipsis" style={{ maxWidth: 160 }}>{label}</span>}
+        <span className="chip measure" aria-hidden>
+          <FolderGit2 size={13} />
+          <span className="ellipsis" style={{ maxWidth: 160 }}>{label}</span>
+        </span>
         {tip}
       </span>
     );

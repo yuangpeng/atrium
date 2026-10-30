@@ -65,7 +65,6 @@ function SessionHeader() {
             {s ? displayName(s) : "Session"}
           </span>
         )}
-        {s && s.harness !== "claude-code" && <span className={clsx("harness-badge", s.harness)}>{s.harness}</span>}
         {s?.branch && (
           <span className={clsx("pill mono hide-narrow", s.worktree && "accent", s.workspace_gone && "gone")} title={s.workspace_gone ? `${s.cwd} (removed)` : s.cwd}>
             ⎇ {s.branch}

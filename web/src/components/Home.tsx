@@ -6,7 +6,7 @@ import { EMPTY_DRAFT, NewAgentDraft, Workspace, useDrafts } from "../drafts";
 import { clsx } from "../util";
 import { Popover, Spinner } from "./ui";
 import {
-  AttachButton, AttachmentTray, EffortPicker, HarnessPicker, ModelChip, NewWorktreeFields, PendingUpload, PermissionPicker, WorkspaceMenu, effortOptions,
+  AttachButton, AttachmentTray, EffortPicker, HarnessPicker, ModelChip, NewWorktreeFields, PendingUpload, PermissionPicker, WorkspaceMenu, WorkspacePickChip, effortOptions,
   useAttachments, workspaceLabel,
 } from "../chat/Composer";
 import { mergeCommands, useSlashCommands, useSlashMenu } from "../chat/SlashMenu";
@@ -142,11 +142,7 @@ export function Home() {
               <Popover
                 up
                 width={300}
-                trigger={(_o, toggle) => (
-                  <button className="chip" onClick={toggle} title="Where the agent works">
-                    <FolderGit2 size={13} /> <span className="ellipsis" style={{ maxWidth: 160 }}>{workspaceLabel(project, ws)}</span>
-                  </button>
-                )}
+                trigger={(_o, toggle) => <WorkspacePickChip label={workspaceLabel(project, ws)} onClick={toggle} />}
               >
                 {(close) => <WorkspaceMenu project={project} value={ws} onPick={(ws) => (setWs(ws), close())} />}
               </Popover>

@@ -116,7 +116,6 @@ function AgentTip({ s, glyph }: { s: SessionRow; glyph?: LucideIcon }) {
       <div className="tip-title">
         <AgentAvatar s={s} glyph={glyph} size={22} />
         <span className={clsx("grow", !s.name && "unnamed")}>{displayName(s)}</span>
-        <span className={clsx("harness-badge", s.harness)}>{s.harness === "claude-code" ? "Claude" : s.harness}</span>
       </div>
       {(live || s.status) && (
         <div className="tip-meta">
@@ -226,7 +225,6 @@ function AgentsFlyout({ onClose }: { onClose: () => void }) {
             <span className={clsx("ellipsis", !s.name && "unnamed")} style={{ flex: 1 }}>
               {displayName(s)}
             </span>
-            {s.harness !== "claude-code" && <span className={clsx("harness-badge", s.harness)}>{s.harness}</span>}
             {s.pending > 0 && <span className="badge-n">{s.pending}</span>}
             {drafted.includes(s.id) && (
               <span className="draft-mark" title="Unsent draft">
