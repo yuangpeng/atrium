@@ -113,10 +113,11 @@ html, body { overscroll-behavior: none; } /* the app doesn't rubber-band as a wh
   .rail-sub-more { height: 30px; min-width: 30px; }
   .topbar .t-name .crumb { padding-top: 6px; padding-bottom: 6px; }
   .f-loc { padding: 5px 0; }
-  /* the attachment's remove button, over its corner; the chip keeps room for it beside the name */
-  .attach-x { width: 30px; height: 30px; top: 2px; right: 2px; }
-  .attach-chip:not(.image) { padding-right: 36px; }
-  .attach-chip:not(.image) .attach-x { top: 2px; }
+  /* the attachment's remove button: a fingertip gets 30px, but the circle you see stays 18px —
+     at 30px it covered more than half of a 56px image thumbnail. The padding is the hit area. */
+  .attach-x { width: 30px; height: 30px; padding: 6px; background-clip: content-box; top: 0; right: 0; }
+  .attach-chip:not(.image) { padding-right: 30px; }
+  .attach-chip:not(.image) .attach-x { top: 2px; } /* the circle lands where it does on a desktop */
   .proj-agent { min-height: 30px; }
   .tree-row { height: 32px; }
   .graph-row { height: 34px; }

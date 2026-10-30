@@ -95,24 +95,29 @@ What to get right in a new component:
 How to check it (no device or Xcode needed; WebKit is the engine Safari runs):
 
 ```sh
-# an isolated instance on a scratch project, so nothing touches this repo's .atrium/
-ATRIUM_HOME=$(mktemp -d) .venv/bin/atrium --port 8841 --no-browser --no-auth <scratch dir>
+# an isolated instance on a scratch project, so nothing touches this repo's .atrium/ — and its own
+# Claude directory, so the transcripts you write for it do not land in yours
+export ATRIUM_HOME=$(mktemp -d) CLAUDE_CONFIG_DIR=$(mktemp -d)
+.venv/bin/atrium --port 8841 --no-browser --no-auth <scratch dir>
 uv run --with playwright==1.64.1 python -m playwright install webkit        # once
 uv run --with playwright==1.64.1 python web/scripts/duo-check.py \
     --base http://127.0.0.1:8841 --shots /tmp/duo-shots
 ```
 
-The scratch project needs a few agents with transcripts and some uncommitted edits, or the chat
-is the empty new-agent box and Changes and Git are empty states — almost nothing gets checked.
-`duo-check.py` refuses to run (exit 2) rather than hand you that green light; write the
-transcripts in as `$CLAUDE_CONFIG_DIR/projects/<key>/<uuid>.jsonl`.
+Give that scratch project a few agents and some uncommitted edits first, or the chat is the empty
+new-agent box and Changes and Git are their empty states — almost nothing would be checked, and
+`duo-check.py` exits 2 rather than hand you that green light. An agent is a transcript at
+`$CLAUDE_CONFIG_DIR/projects/<key>/<uuid>.jsonl`, where `<key>` is the project's real path with
+every character that is not a letter or a digit replaced by `-`; one user and one assistant entry
+is enough to make a session, and a `toolUseResult` with `filePath` makes it show up in Changes.
 
 `web/scripts/duo-check.py` drives every pose above as a touch device — the home page, then each
-workspace panel — and fails on boxes pushed past the viewport, panels that scroll sideways, text
-painted outside its own box, labels squeezed to nothing, buttons under 30px and buttons spilling
-out of their row. It only sees what is on screen, so a control that needs a particular state (an
-attachment in the composer, a forked agent, a subagent's breadcrumb) still wants a look of its
-own — and no check of this kind can tell you something is unreadable. Read the screenshots.
+workspace panel — and fails on a pose that resolves to the wrong layout, boxes pushed past the
+viewport, panels that scroll sideways, text painted outside its own box, labels squeezed to
+nothing, buttons under 30px and buttons spilling out of their row. It only sees what is on screen,
+so a control that needs a particular state (an attachment in the composer, a forked agent, a
+subagent's breadcrumb) still wants a look of its own — and no check of this kind can tell you
+something is unreadable. Read the screenshots.
 
 ## Keep this in sync
 
