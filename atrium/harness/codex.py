@@ -19,6 +19,7 @@ import mimetypes
 import os
 import re
 import shlex
+import subprocess
 import threading
 import time
 import uuid
@@ -28,7 +29,7 @@ from typing import Any
 
 from ..config import config
 from .base import Attachment, Compaction, Emit, FileEdit, ForkPoint, Harness, Item, LiveSession, LiveSpec, SessionSummary, SlashCommand, SubagentSummary, ToolSpec
-from .codex_rpc import AppServerClient, RpcError
+from .codex_rpc import AppServerClient, RpcError, bundled_codex
 from .util import TailScan, attachment_note, clip, hhmm, iso_to_epoch, parse_json_loose, short, split_attachment_note, strict_schema, tail_scan, upload_url
 
 log = logging.getLogger("atrium.codex")
@@ -758,6 +759,7 @@ class CodexHarness(Harness):
         self._compaction_cache: dict[str, _CompactionScan] = {}  # rollout path -> what's read of it
         self._compaction_lock = threading.Lock()
         self._skills_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}  # cwd -> (when, skills/list)
+        self._cli_versions: dict[tuple[str, int, int], str | None] = {}  # (path, mtime, size) -> `codex --version`
 
     @property
     def client(self) -> AppServerClient:
@@ -812,7 +814,28 @@ class CodexHarness(Harness):
                 d["config_model"], d["config_effort"] = model, cfg.get("model_reasoning_effort") or entry.get("default_effort")
             except Exception as e:
                 d["catalog_error"] = str(e)
+        d["cli"] = await self._cli()
         return d
+
+    async def _cli(self) -> dict[str, Any]:
+        """Which Codex CLI runs the threads: the app-server's, else the one it would start; its version, and
+        whether it is the bundled one."""
+        c = self.client
+        path = c.path if c.alive else c.resolve_binary()
+        version = None
+        if path:
+            try:
+                st = os.stat(path)
+                key = (path, st.st_mtime_ns, st.st_size)
+                if key not in self._cli_versions:
+                    self._cli_versions[key] = None  # asked once per binary, even when that fails
+                    out = await asyncio.to_thread(subprocess.run, [path, "--version"], capture_output=True, text=True, errors="replace", timeout=10)
+                    self._cli_versions[key] = (out.stdout.split() or [None])[-1]  # "codex-cli 0.160.0"
+                version = self._cli_versions[key]
+            except (OSError, subprocess.SubprocessError):
+                pass
+        bundled = bundled_codex()
+        return {"path": path, "version": version, "bundled": bool(path and bundled and path == bundled[0])}
 
     async def skills(self, cwd: str) -> list[dict[str, Any]]:
         """The enabled skills a thread in ``cwd`` can use (``skills/list``), briefly cached."""

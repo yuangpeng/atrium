@@ -20,6 +20,9 @@ Listener = Callable[[str, dict[str, Any]], None]
 RequestHandler = Callable[[str, dict[str, Any]], Awaitable[Any]]
 
 CLIENT_INFO = {"name": "atrium", "title": "Atrium", "version": "0.1.0"}
+# harnesses.codex.binary values that mean the bundled CLI (else the codex on PATH). "codex" was the default
+# before the CLI was bundled, and settings files seeded back then still say so.
+DEFAULT_BINARIES = ("", "codex")
 
 
 class RpcError(RuntimeError):
@@ -43,9 +46,10 @@ def bundled_codex() -> tuple[str, str | None] | None:
 
 class AppServerClient:
     def __init__(self, binary: str = "", extra_args: list[str] | None = None):
-        self.binary = binary  # "" = the bundled Codex (else the one on PATH); or a command / path
+        self.binary = binary  # "" / "codex" = the bundled Codex (else the one on PATH); or a path / another command
         self.extra_args = extra_args or []
         self.proc: asyncio.subprocess.Process | None = None
+        self.path: str | None = None  # the executable the app-server was started from
         self._next_id = 0
         self._pending: dict[int, asyncio.Future] = {}
         self._thread_listeners: dict[str, Listener] = {}
@@ -64,7 +68,7 @@ class AppServerClient:
         return self.proc is not None and self.proc.returncode is None
 
     def resolve_binary(self) -> str | None:
-        if not self.binary:
+        if self.binary in DEFAULT_BINARIES:
             bundled = bundled_codex()
             return bundled[0] if bundled else shutil.which("codex")
         b = os.path.expanduser(self.binary)
@@ -73,7 +77,7 @@ class AppServerClient:
         return shutil.which(b)
 
     def not_found(self) -> str:
-        if not self.binary:
+        if self.binary in DEFAULT_BINARIES:
             return "Codex CLI not found: the bundled one (openai-codex-cli-bin) isn't installed (run make install) and there is no codex on PATH."
         return f"Codex CLI not found ({self.binary}). Install it, or clear harnesses.codex.binary in Atrium settings to use the bundled one."
 
@@ -84,6 +88,7 @@ class AppServerClient:
             path = self.resolve_binary()
             if not path:
                 raise FileNotFoundError(self.not_found())
+            self.path = path
             env = None
             bundled = bundled_codex()
             if bundled and bundled[1] and path == bundled[0]:  # its helper tools go first on PATH, as in OpenAI's own SDK

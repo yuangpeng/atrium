@@ -114,8 +114,10 @@ A project-centric workbench for coding agents — Claude Code and Codex side by 
 Requirements: Python ≥ 3.11, [uv](https://docs.astral.sh/uv/), Node ≥ 18 (only to build the UI), and
 a working Claude Code login (the Agent SDK bundles the CLI and uses your existing auth/env).
 The [Codex CLI](https://developers.openai.com/codex) is bundled too (OpenAI's `openai-codex-cli-bin`
-wheel, pinned in `pyproject.toml`) and uses your Codex login in `~/.codex`; to run your own Codex
-instead, set `harnesses.codex.binary` to a command or path. No Codex login yet? After `make install`:
+wheel, pinned in `pyproject.toml`) and uses your Codex login in `~/.codex`. To run your own Codex
+instead, set `harnesses.codex.binary` to its path, e.g. `/opt/homebrew/bin/codex` (`""` and `"codex"`,
+the default before it was bundled, both mean the bundled one); `/api/meta` shows which one runs
+(`cli`). No Codex login yet? After `make install`:
 `$(.venv/bin/python -c 'import codex_cli_bin as c; print(c.bundled_codex_path())') login`.
 
 ```bash

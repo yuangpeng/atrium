@@ -37,7 +37,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     },
     # Per-harness defaults for new sessions. model/effort "" = the harness's own default
     # (i.e. whatever ~/.claude/settings.json or ~/.codex/config.toml says). Agents start with full access.
-    # Codex's binary "" = the one bundled with Atrium (openai-codex-cli-bin); a command or path = your own.
+    # Codex's binary "" = the one bundled with Atrium (openai-codex-cli-bin), else codex on PATH; so does "codex",
+    # the default before the CLI was bundled. A path (or another command) = your own.
     "harnesses": {
         "claude-code": {"permission_mode": "bypassPermissions", "model": "", "effort": ""},
         "codex": {"enabled": True, "binary": "", "permission_mode": "full-access", "model": "", "effort": ""},

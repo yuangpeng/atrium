@@ -11,7 +11,7 @@ running inside the app you are editing.
 - Start: `make run` (port 8787; if it is taken, `make run PORT=8790`).
   Development: `make dev-backend` + `make dev-web` (Vite on 5173).
 - Check: `curl -s --noproxy '*' http://127.0.0.1:<port>/api/meta` lists each harness and
-  whether it is available.
+  whether it is available (for Codex also which CLI runs: `cli.path`, `cli.version`).
 
 ## Restarting stops every agent
 
