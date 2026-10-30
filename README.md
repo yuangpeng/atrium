@@ -121,8 +121,9 @@ A project-centric workbench for coding agents — Claude Code, Codex and Antigra
 
 ## Quick start
 
-Requirements: Python ≥ 3.11, [uv](https://docs.astral.sh/uv/), Node ≥ 18 (only to build the UI), and
-a working Claude Code login (the Agent SDK bundles the CLI and uses your existing auth/env).
+Requirements: [uv](https://docs.astral.sh/uv/) and Python 3.12 (`make install`'s venv; uv downloads it
+when missing; Atrium itself runs on ≥ 3.11), Node ≥ 18 (only to build the UI), and a working Claude Code
+login (the Agent SDK bundles the CLI and uses your existing auth/env).
 The [Codex CLI](https://developers.openai.com/codex) is bundled too (OpenAI's `openai-codex-cli-bin`
 wheel, pinned in `pyproject.toml`) and uses your Codex login in `~/.codex`. To run your own Codex
 instead, set `harnesses.codex.binary` to its path, e.g. `/opt/homebrew/bin/codex` (`""` and `"codex"`,
@@ -152,6 +153,20 @@ The first start makes up a password for the login page (see below). Port 8787 ta
 `make run PORT=8790`. To check that the server is up,
 `curl -s -H "Authorization: Bearer $(.venv/bin/atrium --token)" http://127.0.0.1:8787/api/meta`
 lists each harness and whether it is available.
+
+npmjs.org and PyPI only reachable through mirrors (a company network, say)? Tell `make install` where
+they are — uv reads neither pip's `pip.conf` nor `PIP_INDEX_URL`:
+
+```bash
+npm_config_registry=https://<npm mirror>/ UV_DEFAULT_INDEX=https://<PyPI mirror>/simple make install
+```
+
+To keep them, `npm config set registry https://<npm mirror>/` and export `UV_DEFAULT_INDEX` in your
+shell's profile. No uv yet? `pipx install uv` or `pip install uv`: pip reads `pip.conf`, unlike uv.
+`web/package-lock.json` names registry.npmjs.org: npm fetches the same packages from your registry
+instead, and leaves the file as it is. With no Python 3.12 on the machine, uv downloads one from
+GitHub: install 3.12 first, or set `UV_PYTHON_INSTALL_MIRROR` to a mirror of
+[python-build-standalone](https://github.com/astral-sh/python-build-standalone)'s releases.
 
 Development: `make dev-backend` (auto-reload, port 8787) and `make dev-web` (Vite on 5173,
 proxying `/api`, `/ws`, `/login` and `/logout`).
