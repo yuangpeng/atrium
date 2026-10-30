@@ -119,8 +119,11 @@ class Session {
   private readonly fit = new FitAddon();
   private ws: WebSocket | null = null;
   private opened = false; // xterm is in the page (waits until its box has a size: it measures the font then)
-  private replaying = false; // between hello and ready, the replay is drawn at the size the shell has
+  private replaying = false; // between hello and ready: the replay is drawn at the size the shell has, and its queries go unanswered
   private pty = { cols: 0, rows: 0 }; // that size: the page that resized or typed last set it
+  private owner = false; // this page is in charge (atrium/terminal.py): the terminal has its size, and it answers the program's queries
+  private typed = false; // what xterm sends next was typed, pasted or clicked, not an answer to a query
+  private readonly tellsTyped: boolean;
   private backoff = 500;
   private timer = 0;
   private stopped = false; // its socket is done: the terminal was closed, or exited with 0
@@ -128,6 +131,7 @@ class Session {
   ctrl = false; // the key row's Ctrl: applies to the next key typed
   onCtrl: (on: boolean) => void = () => {};
   onExit: (code: number | null) => void = () => {};
+  private readonly onFocus = () => this.takeCharge();
 
   constructor(
     private readonly url: string,
@@ -149,14 +153,26 @@ class Session {
     this.term.loadAddon(new Unicode11Addon());
     this.term.unicode.activeVersion = "11"; // emoji and CJK widths as today's shells and editors count them
     this.term.onTitleChange(onTitle);
+    // xterm sends what is typed and its own answers to the program's queries (the cursor position, its version, a
+    // mode) through the same onData, but tells them apart (CoreService.triggerDataEvent's wasUserInput). Not in its
+    // API: read from its core, as xterm is pinned at 6.0.0. Without it, everything counts as typed.
+    const core = (this.term as unknown as { _core?: { coreService?: { onUserInput?: (listener: () => void) => unknown } } })._core?.coreService;
+    this.tellsTyped = typeof core?.onUserInput === "function";
+    core?.onUserInput?.(() => (this.typed = true));
     this.term.onData((d) => {
-      if (this.ctrl) {
+      const typed = this.typed || !this.tellsTyped;
+      this.typed = false;
+      // a query in the replay was answered when it was asked; one asked now is answered by the page in charge
+      if (this.replaying || (!typed && !this.owner)) return;
+      if (this.ctrl && typed) {
         d = withCtrl(d);
         this.setCtrl(false);
       }
       this.input(encoder.encode(d));
     });
-    this.term.onBinary((d) => this.input(Uint8Array.from(d, (c) => c.charCodeAt(0) & 0xff)));
+    this.term.onBinary((d) => !this.replaying && this.input(Uint8Array.from(d, (c) => c.charCodeAt(0) & 0xff))); // mouse reports
+    // a page being used takes charge: before xterm's own focus handler, which may report the focus to the program
+    this.host.addEventListener("focus", this.onFocus, true);
     this.term.attachCustomKeyEventHandler((e) => {
       if (!isMac || e.type !== "keydown" || e.ctrlKey) return true;
       if (e.metaKey && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "k") {
@@ -181,7 +197,6 @@ class Session {
       this.opened = true;
       this.term.open(this.host);
       this.term.loadAddon(new WebLinksAddon((_e, uri) => window.open(uri, "_blank", "noopener")));
-      this.term.textarea?.addEventListener("focus", () => this.claim());
     }
     this.claim();
   }
@@ -201,8 +216,18 @@ class Session {
     }
   }
 
+  /** The terminal got the focus here: this page takes charge, the server is told even when the size is the same. */
+  private takeCharge() {
+    if (!this.owner) {
+      this.owner = true;
+      this.send(JSON.stringify({ type: "focus" }));
+    }
+    this.claim();
+  }
+
   input(bytes: Uint8Array) {
-    this.claim(); // typing here takes the size back from another page
+    this.owner = true; // a page typing is in charge (the server makes it so)
+    this.claim(); // and gives the terminal its size
     this.send(bytes);
   }
 
@@ -246,6 +271,7 @@ class Session {
         // the terminal from scratch: its recent output follows, drawn at the size it was written for
         this.backoff = 500;
         this.replaying = true;
+        this.owner = !!msg.owner;
         this.pty = { cols: msg.cols, rows: msg.rows };
         this.term.reset();
         this.term.resize(msg.cols, msg.rows);
@@ -255,8 +281,13 @@ class Session {
           this.replaying = false;
           this.claim();
         });
+      } else if (msg.type === "owner") {
+        this.owner = msg.owner;
+        if (msg.owner) this.claim();
       } else if (msg.type === "size") {
         this.pty = { cols: msg.cols, rows: msg.rows };
+        // not on screen here: it follows the program's size, to answer its questions right if this page takes charge
+        if (!this.host.clientWidth) this.term.resize(msg.cols, msg.rows);
       } else if (msg.type === "exit") {
         this.ended(msg.code);
       }
@@ -284,6 +315,7 @@ class Session {
   dispose() {
     this.stopped = this.disposed = true;
     clearTimeout(this.timer);
+    this.host.removeEventListener("focus", this.onFocus, true);
     this.ws?.close();
     this.term.dispose();
   }
@@ -349,6 +381,38 @@ export default function TerminalView({ pid, tid, active, onTitle, onEnd }: Termi
     s?.layout();
     if (!coarse.matches) s?.focus(); // on a phone that would bring the keyboard up for a look at the output
   }, [active]);
+
+  // A phone's keyboard covers the bottom of the page without making it shorter (iOS keeps the layout as it is), and
+  // the key row went under it. While the terminal has the focus on a touch screen, the app is as tall as what can be
+  // seen (responsive.css, --vvh): the key row sits on the keyboard, and the terminal fits the rows left.
+  useEffect(() => {
+    const host = hostRef.current!;
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const root = document.documentElement;
+    let focused = false;
+    const sync = () => {
+      if (!focused) return; // another terminal's, or nobody's
+      if (coarse.matches && Math.abs(vv.scale - 1) < 0.01) {
+        // (a pinch-zoom makes what can be seen smaller as well: that is no keyboard)
+        root.style.setProperty("--vvh", `${Math.round(vv.height)}px`);
+        if (scrollY || vv.offsetTop) scrollTo(0, 0); // Safari scrolled the page to the cursor, which is in view now anyway
+      } else root.style.removeProperty("--vvh");
+    };
+    const focus = () => ((focused = true), sync());
+    const blur = () => ((focused = false), root.style.removeProperty("--vvh"));
+    host.addEventListener("focusin", focus);
+    host.addEventListener("focusout", blur);
+    vv.addEventListener("resize", sync);
+    vv.addEventListener("scroll", sync);
+    return () => {
+      host.removeEventListener("focusin", focus);
+      host.removeEventListener("focusout", blur);
+      vv.removeEventListener("resize", sync);
+      vv.removeEventListener("scroll", sync);
+      if (focused) root.style.removeProperty("--vvh");
+    };
+  }, []);
 
   // the key row keeps the focus where it is, so the keyboard stays up while its keys are tapped: mousedown, not
   // pointerdown (WebKit drops the click of a tap whose pointerdown was cancelled)

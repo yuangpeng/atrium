@@ -81,6 +81,7 @@ The defaults:
   "web": {"serper_api_key": "", "jina_api_key": "", "replace_builtin_web_tools": true},
   "mcp_servers": {},
   "lsp": {"enabled": true, "commands": {}, "python": {"typeCheckingMode": "standard"}},
+  "terminal": {"enabled": true, "shell": ""},
   "ui": {"theme": "system"}
 }
 ```
@@ -194,12 +195,14 @@ These reach agents started afterwards (or woken up after `sessions.idle_close_mi
 | `terminal.shell` | `""` | `""` is your shell (`$SHELL`), started as a login shell: it reads your profile, so `PATH` is the one your terminal app has. A shell's name or path, e.g. `"/opt/homebrew/bin/fish"`, starts that one the same way; an argument list, e.g. `["/bin/bash", "--noprofile"]`, runs as given. |
 
 A terminal lives on the server: a reload, a phone's dropped connection or another device attaches to the
-same shell, and gets its recent output (the last 1 MiB) first. It ends when its tab is closed, when its
-shell exits (with `exit`; any other ending keeps the tab, to be read), or when Atrium stops. The shell starts
-fresh, as in a new terminal window, and your profile sets it up: from Atrium's own environment it only gets who
-you are (`HOME`, `USER`…), the locale, `TMPDIR`, `SSH_AUTH_SOCK`, the proxy variables and `ATRIUM_HOME`, not
-what Atrium was started from (an agent's session, tmux, a virtualenv). It runs with `TERM=xterm-256color`,
-`TERM_PROGRAM=Atrium`, and a UTF-8 `LANG` when no locale is set.
+same shell, and gets its recent output (the last 1 MiB, with the modes its programs set) first. The page used
+last (it attached, typed, resized or was clicked into) gives the terminal its size and answers what programs ask
+the terminal, as in tmux. It ends when its tab is closed, when its shell exits (with `exit`; any other ending
+keeps the tab, to be read), or when Atrium stops. The shell starts fresh, as in a new terminal window, and your
+profile sets it up: from Atrium's own environment it only gets who you are (`HOME`, `USER`…), the locale,
+`TMPDIR`, `SSH_AUTH_SOCK`, the proxy variables and `ATRIUM_HOME`, not what Atrium was started from (an agent's
+session, tmux, a virtualenv). It runs with `TERM=xterm-256color`, `TERM_PROGRAM=Atrium`, and a UTF-8 `LANG`
+when no locale is set.
 
 ## Claude Code
 

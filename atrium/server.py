@@ -1000,11 +1000,13 @@ async def ws_terminal(socket: WebSocket, pid: str, tid: str):
             if msg["type"] == "websocket.disconnect":
                 break
             if msg.get("bytes"):
-                term.write(msg["bytes"])
+                term.write(msg["bytes"], client)
             elif msg.get("text"):
                 ctl = json.loads(msg["text"])
                 if ctl.get("type") == "resize":
-                    term.resize(int(ctl["cols"]), int(ctl["rows"]))
+                    term.resize(int(ctl["cols"]), int(ctl["rows"]), client)
+                elif ctl.get("type") == "focus":
+                    term.put_in_charge(client)
     except (WebSocketDisconnect, RuntimeError, ValueError, KeyError, TypeError):
         pass
     finally:

@@ -6,24 +6,33 @@ first sent its recent output, so a reload, a phone's dropped connection or anoth
 was. It ends when its tab is closed, when its shell exits (an exit status other than 0 keeps the tab, to be
 read), or when Atrium stops.
 
+The recent output is its last REPLAY_BYTES, as they came. A program sets some of the terminal's modes once, when
+it starts (the alternate screen, bracketed paste, the mouse, the cursor keys), so what the dropped output set is
+kept apart and sent first; and a full-screen program is made to draw its whole screen again for a page that
+starts over, which would otherwise only see its last updates.
+
+One page is in charge: the one that attached, typed, resized or was focused last, as in tmux. The terminal has
+its size, and only it answers what the program asks the terminal (the cursor position, the terminal's version, a
+mode): an answer goes to the program as input, so every page answering would type it as many times.
+
 One WebSocket per attached page. Binary frames are the terminal's bytes, both ways: keys in, output out.
-Text frames are JSON: from the page ``{"type": "resize", "cols", "rows"}``; to the page ``hello`` (the
-terminal's size, its recent output follows), ``ready`` (live from here), ``size`` (another page resized it)
-and ``exit`` (``code``). The page that attached, resized or typed last sets the size, as in tmux.
+Text frames are JSON: from the page ``{"type": "resize", "cols", "rows"}`` and ``{"type": "focus"}`` (it is
+being used); to the page ``hello`` (the terminal's size and exit code, whether this page is in charge: its recent
+output follows), ``ready`` (live from here), ``size`` (another page resized it), ``owner`` (``owner``: whether
+this page is in charge now) and ``exit`` (``code``).
 """
 
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import logging
 import os
+import re
 import secrets
 import shutil
 import signal
 import struct
 import sys
-import termios
 import time
 from collections import deque
 from typing import Any, Callable
@@ -40,6 +49,7 @@ RESYNC_BYTES = 2 * 1024 * 1024  # a page this far behind the others is started o
 READ_BYTES = 65536
 MAX_INPUT_BYTES = 1024 * 1024  # keys and pastes the shell hasn't taken yet
 KILL_AFTER_SECONDS = 3  # a shell still there this long after the hangup is killed
+REDRAW_SECONDS = 0.2  # a full-screen program made to redraw has one row less for this long (time to notice it)
 
 # The shell is started through Python: os.login_tty makes the pseudo-terminal its controlling terminal (job
 # control, Ctrl-C reaching the command), which subprocess can't do and macOS doesn't do on its own, without
@@ -74,8 +84,8 @@ def _shell() -> tuple[str, list[str]]:
     """The program and argv of a new terminal. ``terminal.shell``: "" is $SHELL; a shell (name or path) starts
     as a login shell (argv[0] "-zsh", as login(1) starts it: the profile that sets PATH is read, also when
     Atrium itself was started without one); an argument list runs as given."""
-    setting = config.get("terminal.shell") or ""
-    if isinstance(setting, list) and setting:
+    setting = config.get("terminal.shell") or ""  # [] too
+    if isinstance(setting, list):
         exe = shutil.which(str(setting[0]))
         if not exe:
             raise TerminalError(f"terminal.shell: {setting[0]} not found")
@@ -102,12 +112,68 @@ def _clamp(cols: int, rows: int) -> tuple[int, int]:
 
 
 def _set_size(fd: int, cols: int, rows: int) -> None:
+    import fcntl  # POSIX only, like terminals: the module loads anywhere, TerminalManager.available() says where they run
+    import termios
+
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
 
 
 def _exit_line(code: int) -> bytes:
     why = f"killed by signal {-code}" if code < 0 else f"exited with code {code}"
     return f"\r\n\x1b[2m[process {why}]\x1b[0m\r\n".encode()
+
+
+class Modes:
+    """The modes a program sets once, when it starts, and a page attaching later has to be told: the replay may no
+    longer hold where they were set. Read from the output (DECSET / DECRST, as xterm.js applies them)."""
+
+    # a flag each, with its value after a reset: 1 application cursor keys, 7 autowrap, 25 cursor shown,
+    # 66 application keypad (also ESC = / ESC >), 1004 focus events, 2004 bracketed paste
+    FLAGS = {1: False, 7: True, 25: True, 66: False, 1004: False, 2004: False}
+    _SEQ = re.compile(rb"\x1b\[\?([\d;]*)([hl])|\x1b([=>c])|\x1b\[!p")
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self.flags = dict(self.FLAGS)
+        self.alt = False  # the alternate screen: 47, 1047, 1049
+        self.mouse = 0  # which mouse events are reported, one at a time: 9, 1000, 1002, 1003
+        self.encoding = 0  # how: 1006, 1016
+
+    def copy(self) -> Modes:
+        m = Modes()
+        m.flags, m.alt, m.mouse, m.encoding = dict(self.flags), self.alt, self.mouse, self.encoding
+        return m
+
+    def track(self, data: bytes | bytearray) -> None:
+        for m in self._SEQ.finditer(data):
+            params, set_reset, esc = m.groups()
+            if set_reset:
+                on = set_reset == b"h"
+                for p in params.split(b";"):
+                    n = int(p) if p.isdigit() else 0
+                    if n in (47, 1047, 1049):
+                        self.alt = on
+                    elif n in (9, 1000, 1002, 1003):
+                        self.mouse = n if on else 0
+                    elif n in (1006, 1016):
+                        self.encoding = n if on else 0
+                    elif n in self.FLAGS:
+                        self.flags[n] = on
+            elif esc == b"c":  # RIS: everything back
+                self.reset()
+            elif esc:  # DECKPAM / DECKPNM
+                self.flags[66] = esc == b"="
+            else:  # DECSTR: the flags back, not the screen or the mouse
+                self.flags = dict(self.FLAGS)
+
+    def prefix(self) -> bytes:
+        """What sets these modes on a terminal just reset."""
+        out = [b"\x1b[?1049h"] if self.alt else []
+        out += [b"\x1b[?%d%s" % (n, b"h" if on else b"l") for n, on in self.flags.items() if on != self.FLAGS[n]]
+        out += [b"\x1b[?%dh" % n for n in (self.mouse, self.encoding) if n]
+        return b"".join(out)
 
 
 class Client:
@@ -118,6 +184,7 @@ class Client:
         self.term = term
         self.queue: deque[bytearray | dict[str, Any] | None] = deque()
         self.queued = 0  # bytes of output in the queue
+        self.active_at = time.monotonic()  # when it took charge last
         self._wake = asyncio.Event()
 
     def put(self, item: bytes | bytearray | dict[str, Any] | None) -> None:
@@ -135,11 +202,13 @@ class Client:
         self._wake.set()
 
     def start_over(self) -> None:
-        """The terminal from scratch: its size, then its recent output. On attaching, and when far behind."""
+        """The terminal from scratch: its size, then the modes in force where its recent output starts, and that
+        output. On attaching, and when far behind."""
         t = self.term
         self.queue.clear()
         self.queued = 0
-        self.put({"type": "hello", "cols": t.cols, "rows": t.rows, "exit_code": t.exit_code})
+        self.put({"type": "hello", "cols": t.cols, "rows": t.rows, "exit_code": t.exit_code, "owner": t.owner is self})
+        self.put(t.replay_modes.prefix())
         self.put(t.replay)
         self.put({"type": "ready"})
 
@@ -164,14 +233,16 @@ class Terminal:
         self.shell = ""
         self.exit_code: int | None = None  # asyncio's: negative = killed by that signal
         self.replay = bytearray()
+        self.replay_modes = Modes()  # in force where the replay starts: what the output it dropped set
         self.clients: set[Client] = set()
+        self.owner: Client | None = None  # the page in charge (see the module's docstring)
         self._on_exit = on_exit
         self._proc: asyncio.subprocess.Process | None = None
         self._waiter: asyncio.Task[None] | None = None
         self._fd = -1  # the pseudo-terminal's master side
         self._tty = ""  # its device, e.g. ttys012 / pts/3
         self._input = bytearray()
-        self._reading = self._writing = self._eof = self._closing = False
+        self._reading = self._writing = self._eof = self._closing = self._redrawing = False
 
     def describe(self) -> dict[str, Any]:
         return {"id": self.id, "root": self.root, "shell": self.shell, "cols": self.cols, "rows": self.rows,
@@ -225,24 +296,37 @@ class Terminal:
     def _output(self, data: bytes) -> None:
         self.replay += data
         if len(self.replay) > REPLAY_BYTES:
-            # down to 3/4, from the start of a line: less likely to cut an escape sequence or a character in two
-            cut = len(self.replay) - REPLAY_BYTES * 3 // 4
-            nl = self.replay.find(b"\n", cut, cut + 4096)
-            del self.replay[: nl + 1 if nl >= 0 else cut]
+            cut = self._cut()
+            self.replay_modes.track(self.replay[:cut])
+            del self.replay[:cut]
         for c in self.clients:
             if c.queued > RESYNC_BYTES:  # can't keep up with the others: show it where things are now
-                c.start_over()
+                self._start_over(c)
             else:
                 c.put(data)
         if self.clients and all(c.queued > PAUSE_BYTES for c in self.clients):
             self._set_reading(False)  # nobody keeps up: the program waits (its writes block) until a page catches up
+
+    def _cut(self) -> int:
+        """Where the replay starts once it is down to 3/4: at a line, else at an escape sequence, so that neither a
+        sequence (and the mode it sets) nor a character is cut in two."""
+        cut = len(self.replay) - REPLAY_BYTES * 3 // 4
+        for byte, after in ((b"\n", 1), (b"\x1b", 0)):
+            at = self.replay.find(byte, cut, cut + 4096)
+            if at >= 0:
+                return at + after
+        while cut < len(self.replay) and 0x80 <= self.replay[cut] < 0xC0:  # inside a UTF-8 character
+            cut += 1
+        return cut
 
     def resume(self) -> None:
         if not self.clients or any(c.queued <= PAUSE_BYTES for c in self.clients):
             self._set_reading(True)
 
     # ---- input -------------------------------------------------------------
-    def write(self, data: bytes) -> None:
+    def write(self, data: bytes, by: Client | None = None) -> None:
+        if by:
+            self.put_in_charge(by)
         if self._fd < 0 or len(self._input) + len(data) > MAX_INPUT_BYTES:
             return
         self._input += data
@@ -267,7 +351,9 @@ class Terminal:
                 loop.remove_writer(self._fd)
             self._writing = want
 
-    def resize(self, cols: int, rows: int) -> None:
+    def resize(self, cols: int, rows: int, by: Client | None = None) -> None:
+        if by:
+            self.put_in_charge(by)
         cols, rows = _clamp(cols, rows)
         if (cols, rows) == (self.cols, self.rows):
             return
@@ -280,15 +366,59 @@ class Terminal:
         for c in self.clients:
             c.put({"type": "size", "cols": cols, "rows": rows})
 
+    def _redraw(self) -> None:
+        """Make a full-screen program draw its whole screen again, as it does when the size changes: one row less
+        for a moment. A page starting over would otherwise only have the last of its updates, on a blank screen."""
+        if self._fd < 0 or self._redrawing:
+            return
+        try:
+            _set_size(self._fd, self.cols, self.rows - 1 if self.rows > 1 else 2)
+        except OSError:
+            return
+        self._redrawing = True
+
+        def back() -> None:
+            self._redrawing = False
+            if self._fd >= 0:
+                try:
+                    _set_size(self._fd, self.cols, self.rows)
+                except OSError:
+                    pass
+
+        asyncio.get_running_loop().call_later(REDRAW_SECONDS, back)
+
     # ---- pages -------------------------------------------------------------
+    def put_in_charge(self, c: Client) -> None:
+        """``c`` is the page in charge from now on."""
+        c.active_at = time.monotonic()
+        if self.owner is c:
+            return
+        if self.owner:
+            self.owner.put({"type": "owner", "owner": False})
+        self.owner = c
+        c.put({"type": "owner", "owner": True})
+
     def attach(self) -> Client:
         c = Client(self)
-        c.start_over()
         self.clients.add(c)
+        self.put_in_charge(c)
+        self._start_over(c)
         return c
+
+    def _start_over(self, c: Client) -> None:
+        c.start_over()
+        now = self.replay_modes.copy()
+        now.track(self.replay)
+        if now.alt:
+            self._redraw()
 
     def detach(self, c: Client) -> None:
         self.clients.discard(c)
+        if self.owner is c:  # the page used before it takes charge again
+            self.owner = None
+            last = max(self.clients, key=lambda x: x.active_at, default=None)
+            if last:
+                self.put_in_charge(last)
         self.resume()
 
     # ---- the end -------------------------------------------------------------

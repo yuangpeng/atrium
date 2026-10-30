@@ -5,8 +5,9 @@
 /* ---------------------------------------------------------------- every screen */
 html { -webkit-text-size-adjust: 100%; } /* Safari enlarges text in landscape otherwise */
 html, body { overscroll-behavior: none; } /* the app doesn't rubber-band as a whole */
-/* what's on screen: on phones 100vh also counts what Safari's bars cover */
-.app { height: 100dvh; }
+/* what's on screen: on phones 100vh also counts what Safari's bars cover. --vvh: what the keyboard leaves of it,
+   while a terminal has the focus (TerminalView) */
+.app { height: var(--vvh, 100dvh); }
 .modal { max-height: calc(100dvh - 80px); }
 .modal.xl { height: min(820px, calc(100dvh - 60px)); }
 .toast { max-width: min(560px, calc(100vw - 24px)); }
