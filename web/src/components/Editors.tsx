@@ -5,6 +5,7 @@ import Editor, { DiffEditor as MonacoDiff, DiffEditorProps, OnMount, DiffOnMount
 import type * as Monaco from "monaco-editor";
 import { ArrowDown, ArrowUp } from "lucide-react";
 import { useApp } from "../store";
+import { useLayout } from "../layout";
 import { trackEditor } from "../lsp/client";
 import { useDiffPrefs } from "./DiffOptions";
 
@@ -147,6 +148,9 @@ export function DiffEditor({
 }) {
   const theme = useMonacoTheme();
   const prefs = useDiffPrefs();
+  const layout = useLayout();
+  // one screen has no room for two columns, whatever the preference says; the toggle hides there too
+  const sideBySide = prefs.sideBySide && layout !== "single";
   const saveRef = useRef(onSave);
   saveRef.current = onSave;
   const changeRef = useRef(onChange);
@@ -207,7 +211,7 @@ export function DiffEditor({
   return (
     <div className="diff-wrap">
       <div className="diff-cols">
-        {prefs.sideBySide ? (
+        {sideBySide ? (
           <>
             <div className="col" style={{ width: split ?? "50%" }}>
               {labels?.original}
@@ -244,7 +248,7 @@ export function DiffEditor({
             ...baseOptions,
             readOnly: !editable,
             originalEditable: false,
-            renderSideBySide: prefs.sideBySide,
+            renderSideBySide: sideBySide,
             useInlineViewWhenSpaceIsLimited: false, // side by side means side by side, even in a narrow panel
             hideUnchangedRegions: { enabled: prefs.hideUnchanged, contextLineCount: 3, minimumLineCount: 5 },
             ignoreTrimWhitespace: prefs.ignoreWhitespace,

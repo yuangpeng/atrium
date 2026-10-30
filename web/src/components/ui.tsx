@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { X } from "lucide-react";
+import { realHover } from "../layout";
 import { clsx } from "../util";
 
 export function Modal({ title, onClose, children, footer, wide, xl, bodyClass }: { title: ReactNode; onClose: () => void; children: ReactNode; footer?: ReactNode; wide?: boolean; xl?: boolean; bodyClass?: string }) {
@@ -108,9 +109,10 @@ export function Spinner() {
   return <span className="spinner" />;
 }
 
-type TipProps = { onMouseEnter: (e: React.MouseEvent<HTMLElement>) => void; onMouseLeave: () => void; onMouseDown: () => void };
+type TipProps = { onPointerEnter: (e: React.PointerEvent<HTMLElement>) => void; onPointerLeave: () => void; onPointerDown: () => void };
 
-/** Hover tooltip, a dark bubble over the element (after Codex's): spread `props` on the element, render `tip`. */
+/** Hover tooltip, a dark bubble over the element (after Codex's): spread `props` on the element, render `tip`.
+ *  Not for fingers (see realHover). */
 export function useTip(content: ReactNode): [TipProps, ReactNode] {
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const timer = useRef(0);
@@ -120,13 +122,14 @@ export function useTip(content: ReactNode): [TipProps, ReactNode] {
     setAnchor(null);
   };
   const props: TipProps = {
-    onMouseEnter: (e) => {
+    onPointerEnter: (e) => {
+      if (!realHover(e)) return;
       const el = e.currentTarget;
       window.clearTimeout(timer.current);
       timer.current = window.setTimeout(() => setAnchor(el), 250);
     },
-    onMouseLeave: hide,
-    onMouseDown: hide, // a click opens the element's menu instead
+    onPointerLeave: hide,
+    onPointerDown: hide, // a click opens the element's menu instead
   };
   return [props, anchor && content ? createPortal(<TipBubble anchor={anchor}>{content}</TipBubble>, document.body) : null];
 }

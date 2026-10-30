@@ -14,6 +14,7 @@ import { api, SessionRow } from "../api";
 import { useApp } from "../store";
 import { EMPTY_REPLY, hasContent, hasReply, useDrafts } from "../drafts";
 import { clsx, displayName, tidyNote, timeAgo } from "../util";
+import { realHover } from "../layout";
 import { Popover, useInterval, useTick } from "./ui";
 import { RailSubagents } from "./Subagents";
 
@@ -307,8 +308,8 @@ export function Rail() {
   const pickAgent = (s: SessionRow) => (s.id === sessionId && !childOpen ? setCollapsed((c) => !c) : selectSession(s.id));
   const live = sessions.filter((s) => s.live).length;
   const hoverProps = (content: ReactNode) => ({
-    onMouseEnter: (e: React.MouseEvent<HTMLElement>) => setTip({ el: e.currentTarget, content }),
-    onMouseLeave: () => setTip(null),
+    onPointerEnter: (e: React.PointerEvent<HTMLElement>) => realHover(e) && setTip({ el: e.currentTarget, content }),
+    onPointerLeave: () => setTip(null),
   });
   const click = (fn: () => void) => () => (setTip(null), fn());
   const ThemeIcon = theme === "dark" ? Moon : theme === "light" ? Sun : Monitor;

@@ -36,6 +36,66 @@ running inside the app you are editing.
   (`--no-auth`: no login page, and only requests to localhost are answered; leave it out to test
   the login itself).
 
+## Every UI change has to work on a phone, iPhone Duo included
+
+Atrium is deployed and opened from a phone, so **any** change to `web/` (or to the login page in
+`atrium/auth.py`, or the board's HTML in `atrium/board/template.py`) must be checked at the iPhone
+Duo's sizes before it is called done. This is not optional polish: a change that only works at
+desktop width is unfinished.
+
+Safari 27.1 on iPhone Duo reports these viewports (WebKit's own table; SVH = with the browser's
+bars showing):
+
+| Pose | Width | SVH | LVH |
+| --- | --- | --- | --- |
+| Outer display, portrait | 382 | 580 | 618 |
+| Outer display, landscape | 594 | 368 | 406 |
+| Inner display, portrait | 669 | 867 | 902 |
+| Inner display, landscape | 951 | 585 | 620 |
+| One window of two, side by side | 385 | 571 | 609 |
+
+`web/src/layout.ts` turns that into one of five layouts and puts it on `<html data-layout>`;
+`web/src/responsive.css` places the panes per layout, and holds the touch and narrow-screen rules.
+
+- `wide` — a desktop: workspace | chat (draggable splitter) | rail.
+- `dual` — a touch screen with room for both: they split down the middle.
+- `book` / `laptop` — half-folded. The panes land on the two segments, so nothing sits under the
+  hinge. Only Safari with "Viewport Segments API" switched on reports the fold; everything falls
+  back to an even split, and the segment-exact sizes are guarded by the media query that proves
+  the segments exist.
+- `single` — too narrow for both (the outer screen, the inner one in portrait, Split View): the
+  chat and the workspace take turns. Both stay mounted so neither loses its scroll or editors;
+  picking an agent shows the chat, picking a panel shows the workspace.
+
+What to get right in a new component:
+
+- **Nothing may depend on hover.** A finger has no hover, and on iOS a tap that reveals something
+  is swallowed as a hover — the button then needs a second tap. Use `realHover(e)` (`layout.ts`)
+  with `onPointerEnter` for tooltips, and put hover-reveal CSS in `@media (hover: hover)` with
+  something a finger can reach as well (the open row, an always-visible button).
+- **Tap targets ≥ 30px** under `@media (pointer: coarse)`, and the row around them has to grow too.
+- **Text fields ≥ 16px**, or Safari zooms in on focus and stays zoomed.
+- **Use `dvh`, not `vh`**: on a phone `100vh` includes what Safari's bars cover.
+- **A label that must not be cut is not the flex child that grows.** `flex: 1; min-width: 0` on a
+  label collapses it to nothing and its text then paints over its neighbour (what `.drawer-head`
+  did). Let the long explanatory text shrink and ellipsis instead, and hide it outright on a
+  narrow panel.
+- Panels sit inside the `.workspace` container, so prefer `@container (max-width: …)` over
+  `@media` for anything that should follow the panel rather than the window.
+
+How to check it (no device or Xcode needed; the recipe is WebKit, the same engine as Safari):
+
+```sh
+# an isolated instance on a scratch project, so nothing touches this repo's .atrium/
+ATRIUM_HOME=$(mktemp -d) .venv/bin/atrium --port 8841 --no-browser --no-auth <scratch dir>
+# Playwright's WebKit, at each pose above; is_mobile + has_touch to get the touch rules
+uv run --with playwright==1.64.1 python -m playwright install webkit   # once
+```
+
+Screenshot every pose, and walk the DOM for boxes pushed past the viewport, text painted outside
+its own box, boxes squeezed to zero width, and buttons under 26px — eyeballing misses the last
+two. Ignore `.monaco-editor` internals: it is virtualized and legitimately exceeds its bounds.
+
 ## Keep this in sync
 
 The Makefile is the source of truth. If you change how Atrium is installed, built or run,

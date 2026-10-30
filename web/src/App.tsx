@@ -1,10 +1,11 @@
 import type { JSX, ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { Archive, ArchiveRestore, ArrowLeft, ChevronRight, FileDiff, Files, GitBranch, GitFork, LayoutDashboard, MessageSquare, PanelRightClose, Plug, Unplug } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowLeft, ChevronRight, FileDiff, Files, GitBranch, GitFork, LayoutDashboard, MessageSquare, PanelLeftOpen, PanelRightClose, Plug, Unplug } from "lucide-react";
 import { api, loginUrl, SessionRow } from "./api";
 import { Panel, useApp } from "./store";
 import { clsx, displayName, isMac, tidyNote } from "./util";
+import { useLayout } from "./layout";
 import { Rail, liveLabel, statusClass } from "./components/Rail";
 import { NewAgent } from "./components/NewAgent";
 import { HomePage } from "./components/HomePage";
@@ -34,6 +35,15 @@ const MIN_WORKSPACE = 420;
 
 function CloseChat() {
   const setChatOpen = useApp((s) => s.setChatOpen);
+  const setPane = useApp((s) => s.setPane);
+  const single = useLayout() === "single";
+  // on a single screen the chat covers the workspace: this brings the workspace up instead
+  if (single)
+    return (
+      <button className="icon-btn" title="Board, files, changes, git" onClick={() => setPane("workspace")}>
+        <PanelLeftOpen size={15} />
+      </button>
+    );
   return (
     <button className="icon-btn" title="Hide chat" onClick={() => setChatOpen(false)}>
       <PanelRightClose size={15} />
@@ -200,7 +210,8 @@ function ProjectPath({ path, name }: { path: string; name: string }) {
 
 /** Board / Files / Changes / Git — the large area on the left. */
 function Workspace() {
-  const { panel, setPanel, project, chatOpen, setChatOpen } = useApp();
+  const { panel, setPanel, project, chatOpen, setChatOpen, setPane } = useApp();
+  const single = useLayout() === "single";
   if (!project) return null;
   return (
     <main className="workspace">
@@ -212,8 +223,8 @@ function Workspace() {
         ))}
         <span className="grow" />
         <ProjectPath path={project.path} name={project.name} />
-        {!chatOpen && (
-          <button className="icon-btn" title="Show chat" onClick={() => setChatOpen(true)}>
+        {(!chatOpen || single) && (
+          <button className="icon-btn" title="Show chat" onClick={() => (setChatOpen(true), setPane("chat"))}>
             <MessageSquare size={15} />
           </button>
         )}
@@ -238,6 +249,7 @@ function Workspace() {
 /** The selected agent's conversation, or the new-agent composer — right of the workspace. */
 function ChatColumn() {
   const { project, sessionId, subagentId, compactionId, sessions, chatWidth, setChatWidth } = useApp();
+  const wide = useLayout() === "wide"; // elsewhere the screen (and its fold) sets the width, a finger can't hold the splitter
   const [drag, setDrag] = useState(false);
   useEffect(() => {
     if (!drag) return;
@@ -259,19 +271,21 @@ function ChatColumn() {
   if (!project) return null;
   const current = sessions.find((s) => s.id === sessionId);
   return (
-    <section className="chatcol" style={{ width: chatWidth }}>
-      <div
-        className={clsx("resizer", drag && "drag")}
-        onPointerDown={(e) => {
-          if (e.button !== 0) return;
-          // A fast pointer gets past the 6px handle onto the board, an iframe, which would take the moves and the
-          // release (the splitter stalls, then sticks to the pointer). Capture keeps them coming here;
-          // .col-resizing also turns iframes off, for browsers whose capture stops at frames.
-          e.currentTarget.setPointerCapture(e.pointerId);
-          setDrag(true);
-        }}
-        onLostPointerCapture={() => setDrag(false)}
-      />
+    <section className="chatcol" style={wide ? { width: chatWidth } : undefined}>
+      {wide && (
+        <div
+          className={clsx("resizer", drag && "drag")}
+          onPointerDown={(e) => {
+            if (e.button !== 0) return;
+            // A fast pointer gets past the 6px handle onto the board, an iframe, which would take the moves and the
+            // release (the splitter stalls, then sticks to the pointer). Capture keeps them coming here;
+            // .col-resizing also turns iframes off, for browsers whose capture stops at frames.
+            e.currentTarget.setPointerCapture(e.pointerId);
+            setDrag(true);
+          }}
+          onLostPointerCapture={() => setDrag(false)}
+        />
+      )}
       {sessionId && subagentId ? (
         <>
           <SubagentHeader parent={current} aid={subagentId} />
@@ -324,7 +338,8 @@ function Toasts() {
 }
 
 export function App() {
-  const { init, project, pickerOpen, settingsOpen, chatOpen, chatWidth, setChatWidth, goHome } = useApp();
+  const { init, project, pickerOpen, settingsOpen, chatOpen, chatWidth, setChatWidth, goHome, pane } = useApp();
+  const layout = useLayout();
   useEffect(() => {
     void init();
   }, [init]);
@@ -341,6 +356,7 @@ export function App() {
   }, [goHome]);
   // keep the workspace usable when the window shrinks
   useEffect(() => {
+    if (layout !== "wide") return;
     const fit = () => {
       const max = window.innerWidth - RAIL_WIDTH - MIN_WORKSPACE;
       if (chatWidth > max) setChatWidth(Math.max(MIN_CHAT, max));
@@ -348,12 +364,12 @@ export function App() {
     fit();
     window.addEventListener("resize", fit);
     return () => window.removeEventListener("resize", fit);
-  }, [chatWidth, setChatWidth]);
+  }, [chatWidth, setChatWidth, layout]);
 
   return (
-    <div className="app">
+    <div className="app" data-pane={pane}>
       {project ? <Workspace /> : <HomePage />}
-      {project && chatOpen && <ChatColumn />}
+      {project && (chatOpen || layout === "single") && <ChatColumn />}
       <Rail />
       {pickerOpen && <ProjectPicker />}
       {settingsOpen && <SettingsDialog />}

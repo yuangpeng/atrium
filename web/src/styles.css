@@ -98,10 +98,12 @@ a { color: var(--accent-strong); }
 }
 .ws-project:hover { background: var(--hover); color: var(--text-2); }
 /* full path on hover (click copies it) */
-.ws-project:hover::after {
-  content: attr(data-path); position: absolute; top: calc(100% + 6px); right: 0; z-index: 40; white-space: nowrap; pointer-events: none;
-  padding: 5px 9px; border-radius: 7px; background: var(--surface); border: 1px solid var(--border); box-shadow: var(--shadow);
-  font: 12px var(--font-mono); color: var(--text-2);
+@media (hover: hover) {
+  .ws-project:hover::after {
+    content: attr(data-path); position: absolute; top: calc(100% + 6px); right: 0; z-index: 40; white-space: nowrap; pointer-events: none;
+    padding: 5px 9px; border-radius: 7px; background: var(--surface); border: 1px solid var(--border); box-shadow: var(--shadow);
+    font: 12px var(--font-mono); color: var(--text-2);
+  }
 }
 .panel-tab.icon-only { width: 34px; padding: 0; justify-content: center; }
 .chatcol { flex: none; display: flex; flex-direction: column; min-width: 0; background: var(--bg); border-left: 1px solid var(--border); position: relative; container: main / inline-size; }
@@ -510,7 +512,7 @@ body.col-resizing iframe { pointer-events: none; } /* the board's would take the
 .tree-row .g { font: 600 10.5px var(--font-mono); width: 14px; text-align: center; flex: none; }
 .tree-row .g.M { color: var(--warn); } .tree-row .g.A, .tree-row .g.\? { color: var(--ok); } .tree-row .g.D { color: var(--err); } .tree-row .g.• { color: var(--warn); }
 .tree-row .hover-actions { display: none; gap: 0; }
-.tree-row:hover .hover-actions { display: flex; }
+@media (hover: hover) { .tree-row:hover .hover-actions { display: flex; } }
 .editor-tabs { display: flex; overflow-x: auto; border-bottom: 1px solid var(--border); flex: none; background: var(--sidebar); min-height: 35px; }
 .editor-tab { display: flex; align-items: center; gap: 6px; padding: 0 6px 0 12px; height: 35px; border-right: 1px solid var(--border); cursor: pointer; font-size: 12.5px; color: var(--muted); white-space: nowrap; }
 .editor-tab.on { background: var(--bg); color: var(--text); box-shadow: inset 0 2px 0 var(--accent); }
@@ -547,7 +549,8 @@ body.col-resizing iframe { pointer-events: none; } /* the board's would take the
 .ftree .done { color: var(--ok); flex: none; margin-right: 4px; }
 .ftree .orig { font-size: 11px; max-width: 40%; flex: 0 1 auto; }
 .ftree .acts { display: none; flex: none; }
-.ftree .tree-row:hover .acts, .ftree .tree-row.on .acts { display: flex; }
+.ftree .tree-row.on .acts { display: flex; }
+@media (hover: hover) { .ftree .tree-row:hover .acts { display: flex; } }
 .ftree .tree-row.reviewed .nm { color: var(--faint); text-decoration: line-through; text-decoration-color: var(--border-strong); }
 .ftree:focus-visible .tree-row.on { box-shadow: inset 0 0 0 1px var(--accent); }
 .file-nav { display: inline-flex; align-items: center; gap: 1px; flex: none; font: 11px var(--font-mono); color: var(--faint); white-space: nowrap; }
@@ -592,6 +595,7 @@ body.col-resizing iframe { pointer-events: none; } /* the board's would take the
 .drawer { border-top: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; background: var(--bg); }
 .drawer-head { display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: pointer; font-weight: 600; font-size: 13px; flex: none; }
 .drawer-head:hover { background: var(--hover); }
+.drawer-head .hint { flex: 0 1 auto; min-width: 0; font-weight: 400; font-size: 12px; color: var(--faint); }
 /* Code Review Agent: the drawer under an agent's diffs, its findings and messages for the agent */
 .review-drawer { position: relative; }
 .review-drawer .drawer-head { font-weight: 500; }

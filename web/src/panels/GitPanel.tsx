@@ -332,11 +332,10 @@ export function GitPanel() {
       <div className="drawer" style={agentOpen ? { height: "46%" } : undefined}>
         <div className="drawer-head" onClick={() => setAgentOpen((o) => !o)}>
           <Bot size={14} className="muted" />
-          <span className="grow">Git Agent</span>
+          <span>Git Agent</span>
           {agentBusy && <Spinner />}
-          <span className="faint" style={{ fontWeight: 400, fontSize: 12 }}>
-            Ask about history, branches, merges — it can drive the graph
-          </span>
+          <span className="grow" />
+          <span className="hint ellipsis">Ask about history, branches, merges — it can drive the graph</span>
           {agentOpen ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
         </div>
         {agentOpen && agentSid && (

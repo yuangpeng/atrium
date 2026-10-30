@@ -433,15 +433,16 @@ LOGIN_PAGE = Template("""<!doctype html>
   :root { --bg: #faf9f5; --surface: #ffffff; --border: #d4d1c4; --text: #1f1e1d; --muted: #73726c; --accent: #d97757; --accent-strong: #c6613f; --err: #b5443a; --err-soft: #f8e4e1; color-scheme: light; }
   [data-theme="dark"] { --bg: #262624; --surface: #30302e; --border: #4c4b47; --text: #f5f4ef; --muted: #a6a39a; --accent-strong: #e08a6d; --err: #e8857a; --err-soft: #3d2724; color-scheme: dark; }
   * { box-sizing: border-box; }
-  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: var(--bg); color: var(--text);
+  body { margin: 0; min-height: 100dvh; display: grid; place-items: center; background: var(--bg); color: var(--text);
     font: 14px/1.5 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", "PingFang SC", sans-serif; -webkit-font-smoothing: antialiased; }
   form { width: min(340px, calc(100vw - 32px)); padding: 28px; display: flex; flex-direction: column; gap: 14px;
     background: var(--surface); border: 1px solid var(--border); border-radius: 16px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.08); }
   h1 { margin: 0 0 4px; display: flex; align-items: center; gap: 10px; font: 500 22px/1.2 "Tiempos Text", "Iowan Old Style", Charter, Georgia, serif; }
   label { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: var(--muted); }
-  input { height: 36px; padding: 0 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); color: var(--text); font: inherit; font-size: 14px; outline: none; }
+  /* 16px: Safari zooms into a smaller field when it gets focus, and stays zoomed */
+  input { height: 40px; padding: 0 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); color: var(--text); font: inherit; font-size: 16px; outline: none; }
   input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
-  button { height: 36px; border: 0; border-radius: 10px; background: var(--accent-strong); color: #fff; font: inherit; font-weight: 500; cursor: pointer; }
+  button { height: 40px; border: 0; border-radius: 10px; background: var(--accent-strong); color: #fff; font: inherit; font-weight: 500; cursor: pointer; }
   button:hover { background: var(--accent); }
   .error { margin: 0; padding: 8px 10px; border-radius: 8px; background: var(--err-soft); color: var(--err); font-size: 13px; }
   .hint { margin: 0; font-size: 12px; color: var(--muted); }

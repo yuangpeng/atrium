@@ -1,0 +1,109 @@
+/* Phones and foldables, the iPhone Duo first: its sizes and how to check a change are in AGENTS.md.
+   layout.ts sets <html data-layout> (wide | dual | book | laptop | single); the panes are placed here by it.
+   Hover-only things in styles.css sit in @media (hover: hover), with what a finger gets instead below. */
+
+/* ---------------------------------------------------------------- every screen */
+html { -webkit-text-size-adjust: 100%; } /* Safari enlarges text in landscape otherwise */
+html, body { overscroll-behavior: none; } /* the app doesn't rubber-band as a whole */
+/* what's on screen: on phones 100vh also counts what Safari's bars cover */
+.app { height: 100dvh; }
+.modal { max-height: calc(100dvh - 80px); }
+.modal.xl { height: min(820px, calc(100dvh - 60px)); }
+.toast { max-width: min(560px, calc(100vw - 24px)); }
+.rail-flyout { width: min(350px, calc(100vw - 68px)); }
+
+/* ---------------------------------------------------------------- single: the chat and the workspace take turns */
+/* (the Duo's outer screen, its inner screen in portrait, Split View) both stay mounted under the rail; the one behind
+   is hidden, not removed, so it keeps its scroll positions, editors and board */
+[data-layout="single"] .app { position: relative; justify-content: flex-end; }
+[data-layout="single"] .app > .workspace,
+[data-layout="single"] .app > .chatcol { position: absolute; top: 0; bottom: 0; left: 0; right: 52px; width: auto; border-left: 0; }
+[data-layout="single"] .app[data-pane="chat"]:has(> .chatcol) > .workspace,
+[data-layout="single"] .app[data-pane="workspace"] > .chatcol { visibility: hidden; }
+
+/* ---------------------------------------------------------------- dual: both, split at the middle */
+/* a touch screen with room for both (the Duo's inner screen in landscape): the panes meet at its fold */
+[data-layout="dual"] .app:has(> .chatcol) > .workspace { flex: none; width: 50%; }
+[data-layout="dual"] .app > .chatcol { flex: 1; }
+
+/* ---------------------------------------------------------------- book: half-folded, segments side by side */
+/* the workspace fills the left segment; the chat and the rail the right one, past the hinge.
+   iPhone Duo folds down the middle, so half is the right answer on its own; the segment sizes
+   below only refine it, and only while Safari actually reports them. */
+[data-layout="book"] .app:has(> .chatcol) > .workspace { flex: none; width: 50%; }
+[data-layout="book"] .app > .chatcol { flex: 1; }
+@media (horizontal-viewport-segments: 2) {
+  /* max(): a browser that knows the variable but reports nothing for it would otherwise give a pane no width */
+  [data-layout="book"] .app:has(> .chatcol) > .workspace { width: max(30%, env(viewport-segment-width 0 0, 50%)); }
+  [data-layout="book"] .app > .chatcol { margin-left: max(0px, calc(env(viewport-segment-left 1 0, 0px) - env(viewport-segment-right 0 0, 0px))); }
+}
+
+/* ---------------------------------------------------------------- laptop: half-folded, segments stacked */
+/* the standing half shows the workspace; the lying one the chat and the rail, to touch and type on */
+[data-layout="laptop"] .app { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: 50% minmax(0, 1fr); }
+@media (vertical-viewport-segments: 2) {
+  [data-layout="laptop"] .app {
+    grid-template-rows: max(30%, env(viewport-segment-height 0 0, 50%)) minmax(0, 1fr);
+    row-gap: max(0px, calc(env(viewport-segment-top 0 1, 0px) - env(viewport-segment-bottom 0 0, 0px)));
+  }
+}
+[data-layout="laptop"] .app > .workspace { grid-column: 1 / -1; grid-row: 1; min-height: 0; border-bottom: 1px solid var(--border); }
+[data-layout="laptop"] .app > .chatcol { grid-column: 1; grid-row: 2; min-height: 0; border-left: 0; }
+[data-layout="laptop"] .app > .rail { grid-column: 2; grid-row: 2; }
+/* the chat hidden: the workspace takes both segments, beside the rail */
+[data-layout="laptop"] .app:not(:has(> .chatcol)) > .workspace { grid-column: 1; grid-row: 1 / -1; border-bottom: 0; }
+[data-layout="laptop"] .app:not(:has(> .chatcol)) > .rail { grid-row: 1 / -1; }
+
+/* ---------------------------------------------------------------- short screens */
+/* the Duo's outer screen in landscape is 368px tall: a tighter rail leaves room for agents */
+@media (max-height: 480px) {
+  .rail { gap: 2px; padding: 5px 0; }
+  .rail-btn { width: 32px; height: 32px; }
+  .rail-sep { margin: 2px 0; }
+  .rail-agents { gap: 6px; padding: 5px 0; }
+  .rail-live { display: none; }
+  .topbar, .ws-tabs { height: 44px; }
+}
+
+/* ---------------------------------------------------------------- narrow panels */
+/* the workspace is a container (styles.css), so these follow the panel, not the window:
+   on one screen it is the whole width, beside a chat it is half of it */
+@container (max-width: 560px) {
+  .drawer-head .hint { display: none; } /* the drawer's one-line explanation; its title and buttons stay */
+  .diff-cols .col { padding-left: 8px; }
+  .toolbar { padding: 6px 8px; }
+}
+
+/* ---------------------------------------------------------------- phone-width dialogs */
+@media (max-width: 600px) {
+  .modal, .modal.wide, .modal.xl { width: calc(100vw - 16px); max-height: calc(100dvh - 16px); }
+  .modal.xl { height: calc(100dvh - 16px); }
+  .modal-head { padding: 12px 12px 8px 16px; }
+  .modal-body { padding: 4px 16px 14px; }
+  .modal-foot { padding: 10px 12px; }
+  /* settings: the file list over the editor */
+  .modal-body.settings-body { flex-direction: column; }
+  .settings-files { width: auto; max-height: 34%; border-right: 0; border-bottom: 1px solid var(--border); }
+}
+
+/* ---------------------------------------------------------------- touch */
+@media (pointer: coarse) {
+  /* Safari zooms into a field with text under 16px when it gets focus, and stays zoomed */
+  input:not([type="checkbox"], [type="radio"], [type="range"]), textarea, select { font-size: 16px !important; }
+  /* splitters a finger can hold */
+  .hresizer { top: -9px; height: 18px; }
+  /* buttons a fingertip hits: the small ones are 24px, which is half of what it covers.
+     The rows holding them grow to match, so nothing spills out of its row. */
+  .icon-btn.sm { width: 30px; height: 30px; }
+  .btn-sm, .seg button, .chip-toggle { height: 30px; }
+  .tree-row { height: 32px; }
+  .graph-row { height: 34px; }
+  .dir-row, .proj-row, .agent-pick { padding-top: 10px; padding-bottom: 10px; }
+  .menu-item, .slash-item, .pick-item { padding-top: 10px; padding-bottom: 10px; }
+  .editor-tab { height: 40px; }
+  .editor-tabs { min-height: 40px; }
+}
+@media (hover: none) {
+  .msg-fork { opacity: 0.5; } /* fork from an earlier message */
+  .tree-row.on .hover-actions { display: flex; } /* the open file's rename / delete */
+}

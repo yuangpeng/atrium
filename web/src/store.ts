@@ -4,6 +4,8 @@ import { socket } from "./ws";
 import { throttle } from "./util";
 
 export type Panel = "board" | "files" | "changes" | "git";
+/** What a single-screen layout shows (layout.ts): the chat column or the workspace; wider ones show both. */
+export type Pane = "chat" | "workspace";
 const PANELS: Panel[] = ["board", "files", "changes", "git"];
 export type Theme = "light" | "dark" | "system";
 
@@ -38,6 +40,7 @@ interface AppState {
   compactionId: string | null; // ... or the part of its conversation a compaction closed, also read-only
   panel: Panel; // the workspace tab (left, always shown)
   chatOpen: boolean; // the chat column (right)
+  pane: Pane; // the one on screen when they take turns (phones); picking an agent shows the chat, a panel the workspace
   chatWidth: number;
   theme: Theme;
   showArchived: boolean;
@@ -71,6 +74,7 @@ interface AppState {
   selectCompaction: (sid: string, cid: string) => void;
   setPanel: (p: Panel) => void;
   setChatOpen: (v: boolean) => void;
+  setPane: (p: Pane) => void;
   setChatWidth: (w: number) => void;
   setTheme: (t: Theme) => void;
   setShowArchived: (v: boolean) => void;
@@ -120,6 +124,7 @@ export const useApp = create<AppState>((set, get) => {
     compactionId: null,
     panel: PANELS.find((p) => p === localStorage.getItem("atrium.panel")) ?? "board",
     chatOpen: localStorage.getItem("atrium.chatOpen") !== "0",
+    pane: "chat",
     chatWidth: Number(localStorage.getItem("atrium.chatWidth")) || Math.round(Math.min(520, Math.max(400, window.innerWidth * 0.3))),
     theme: (localStorage.getItem("atrium.theme") as Theme) || "system",
     showArchived: false,
@@ -259,28 +264,29 @@ export const useApp = create<AppState>((set, get) => {
 
     selectSession: (sid) => {
       get().setChatOpen(true);
-      set({ sessionId: sid, subagentId: null, compactionId: null });
+      set({ sessionId: sid, subagentId: null, compactionId: null, pane: "chat" });
       syncUrl(get().project?.id ?? null, sid);
     },
     selectSubagent: (sid, aid) => {
       get().setChatOpen(true);
-      set({ sessionId: sid, subagentId: aid, compactionId: null });
+      set({ sessionId: sid, subagentId: aid, compactionId: null, pane: "chat" });
       syncUrl(get().project?.id ?? null, sid, aid);
     },
     selectCompaction: (sid, cid) => {
       get().setChatOpen(true);
-      set({ sessionId: sid, subagentId: null, compactionId: cid });
+      set({ sessionId: sid, subagentId: null, compactionId: cid, pane: "chat" });
       syncUrl(get().project?.id ?? null, sid, null, cid);
     },
 
     setPanel: (p) => {
       localStorage.setItem("atrium.panel", p);
-      set({ panel: p });
+      set({ panel: p, pane: "workspace" });
     },
     setChatOpen: (v) => {
       localStorage.setItem("atrium.chatOpen", v ? "1" : "0");
       set({ chatOpen: v });
     },
+    setPane: (p) => set({ pane: p }),
     setChatWidth: (w) => {
       localStorage.setItem("atrium.chatWidth", String(Math.round(w)));
       set({ chatWidth: w });
