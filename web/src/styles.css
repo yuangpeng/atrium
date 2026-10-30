@@ -521,7 +521,9 @@ body.col-resizing iframe { pointer-events: none; } /* the board's would take the
 .banner.info { background: var(--info-soft); color: var(--info); }
 .banner.subtle { background: var(--surface-2); color: var(--muted); border-bottom: 1px solid var(--border); padding: 5px 12px; }
 .editor-tab.external { font-style: italic; }
-/* terminal panel: its tabs, the terminals (one shown at a time), the key row a finger gets (responsive.css) */
+/* terminal panel: its tabs, the terminals (one shown at a time), the key row a finger gets (responsive.css).
+   Dark in both themes: TerminalPanel sets data-theme="dark" on it, which brings the dark colours along */
+.term-panel { background: var(--bg); color: var(--text); }
 .term-bar { display: flex; flex: none; background: var(--sidebar); border-bottom: 1px solid var(--border); }
 .term-tabs { flex: 1; min-width: 0; border-bottom: 0; }
 .term-title { max-width: 240px; overflow: hidden; text-overflow: ellipsis; }

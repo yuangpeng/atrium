@@ -13,30 +13,26 @@ import { clsx, isMac } from "../util";
 const coarse = matchMedia("(pointer: coarse)");
 const encoder = new TextEncoder();
 
-// VS Code's terminal colours (Light+ / Dark+); the background, the text and the cursor are Atrium's
-const ANSI_LIGHT = {
-  black: "#000000", red: "#cd3131", green: "#107c10", yellow: "#949800", blue: "#0451a5", magenta: "#bc05bc", cyan: "#0598bc", white: "#555555",
-  brightBlack: "#666666", brightRed: "#cd3131", brightGreen: "#14ce14", brightYellow: "#b5ba00", brightBlue: "#0451a5", brightMagenta: "#bc05bc", brightCyan: "#0598bc", brightWhite: "#a5a5a5",
-};
-const ANSI_DARK = {
+// A terminal is dark in both of Atrium's themes: its panel is under data-theme="dark" (TerminalPanel), and the
+// background, the text and the cursor are that panel's colours. The other colours are VS Code's Dark+ terminal ones.
+const ANSI = {
   black: "#000000", red: "#cd3131", green: "#0dbc79", yellow: "#e5e510", blue: "#2472c8", magenta: "#bc3fbc", cyan: "#11a8cd", white: "#e5e5e5",
   brightBlack: "#666666", brightRed: "#f14c4c", brightGreen: "#23d18b", brightYellow: "#f5f543", brightBlue: "#3b8eea", brightMagenta: "#d670d6", brightCyan: "#29b8db", brightWhite: "#e5e5e5",
 };
 
-function theme(): ITheme {
-  const css = getComputedStyle(document.documentElement);
+function theme(el: HTMLElement): ITheme {
+  const css = getComputedStyle(el);
   const v = (name: string) => css.getPropertyValue(name).trim();
-  const dark = document.documentElement.dataset.theme === "dark";
   return {
-    ...(dark ? ANSI_DARK : ANSI_LIGHT),
+    ...ANSI,
     background: v("--bg"),
     foreground: v("--text"),
     cursor: v("--text"),
     cursorAccent: v("--bg"),
-    selectionBackground: dark ? "rgba(217, 119, 87, 0.38)" : "rgba(217, 119, 87, 0.26)",
-    scrollbarSliderBackground: dark ? "rgba(255, 255, 255, 0.16)" : "rgba(31, 30, 29, 0.16)",
-    scrollbarSliderHoverBackground: dark ? "rgba(255, 255, 255, 0.26)" : "rgba(31, 30, 29, 0.26)",
-    scrollbarSliderActiveBackground: dark ? "rgba(255, 255, 255, 0.34)" : "rgba(31, 30, 29, 0.34)",
+    selectionBackground: "rgba(217, 119, 87, 0.38)",
+    scrollbarSliderBackground: "rgba(255, 255, 255, 0.16)",
+    scrollbarSliderHoverBackground: "rgba(255, 255, 255, 0.26)",
+    scrollbarSliderActiveBackground: "rgba(255, 255, 255, 0.34)",
   };
 }
 
@@ -147,7 +143,7 @@ class Session {
       scrollback: 5000,
       cursorBlink: true,
       allowProposedApi: true, // unicode11
-      theme: theme(),
+      theme: theme(host),
     });
     this.term.loadAddon(this.fit);
     this.term.loadAddon(new Unicode11Addon());
@@ -222,10 +218,6 @@ class Session {
 
   paste(text: string) {
     this.term.paste(text); // bracketed when the shell asks for it
-  }
-
-  retheme() {
-    this.term.options.theme = theme();
   }
 
   private send(data: string | Uint8Array) {
@@ -335,8 +327,6 @@ export default function TerminalView({ pid, tid, active, onTitle, onEnd }: Termi
     const ro = new ResizeObserver(() => requestAnimationFrame(() => s.layout())); // not inside the observer's own callback
     ro.observe(host);
     const unTouch = touchScroll(host, s.term);
-    const themeWatch = new MutationObserver(() => s.retheme());
-    themeWatch.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
     const wake = () => document.visibilityState === "visible" && s.reconnect();
     document.addEventListener("visibilitychange", wake);
     window.addEventListener("online", wake);
@@ -345,7 +335,6 @@ export default function TerminalView({ pid, tid, active, onTitle, onEnd }: Termi
     return () => {
       ro.disconnect();
       unTouch();
-      themeWatch.disconnect();
       document.removeEventListener("visibilitychange", wake);
       window.removeEventListener("online", wake);
       coarse.removeEventListener("change", onPointer);

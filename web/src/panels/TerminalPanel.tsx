@@ -90,8 +90,9 @@ export function TerminalPanel({ visible }: { visible: boolean }) {
 
   if (!project) return null;
   const branchOf = (t: TerminalInfo) => (t.root === project.path ? null : project.worktrees.find((w) => w.path === t.root)?.branch ?? basename(t.root));
+  // dark whichever theme Atrium is in: the dark colours apply to everything in here (styles.css, [data-theme="dark"])
   return (
-    <div className="panel-body">
+    <div className="panel-body term-panel" data-theme="dark">
       <div className="term-bar">
         <div className="editor-tabs term-tabs">
           {list?.map((t) => {
