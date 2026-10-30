@@ -15,6 +15,7 @@ import {
   WorkspaceChip, effortOptions, useAttachments,
 } from "./Composer";
 import { mergeCommands, useAtriumCommands, useSlashCommands, useSlashMenu } from "./SlashMenu";
+import { useVoiceInput } from "./Voice";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
 type ResultItem = Extract<Item, { kind: "tool_result" }>;
@@ -483,6 +484,7 @@ export function ChatView({ pid, sid, cwd, compact, forkable, modeLocked, placeho
   const harnessCommands = useSlashCommands(pid, { sid }, text.startsWith("/") || (skills && text.includes("$")));
   const commands = useMemo(() => mergeCommands(forkable ? atrium.commands : [], harnessCommands), [forkable, atrium.commands, harnessCommands]);
   const slash = useSlashMenu({ text, setText, input: inputRef, skills, commands, onRun: (t) => void send(t) });
+  const voice = useVoiceInput({ pid, sid, text, setText, input: inputRef });
 
   return (
     <div className={clsx("chat", compact && "compact")}>
@@ -546,6 +548,7 @@ export function ChatView({ pid, sid, cwd, compact, forkable, modeLocked, placeho
             }}
           />
           {gone && ws?.kind === "new" && project && <NewWorktreeFields project={project} ws={ws} onChange={setWs} />}
+          {voice.strip}
           <div className="composer-bar">
             <div className="bar-chips">
             <AttachButton onClick={att.open} />
@@ -559,6 +562,7 @@ export function ChatView({ pid, sid, cwd, compact, forkable, modeLocked, placeho
             <div className="bar-end">
             <ContextRing used={st.usage?.used} max={st.usage?.max} />
             <EffortPicker efforts={efforts} value={settings.effort} base={baseEffort} onChange={(e) => void setEffort(e)} />
+            {voice.button}
             {running ? (
               <>
                 {canSend && (

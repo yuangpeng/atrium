@@ -10,6 +10,7 @@ import {
   useAttachments, workspaceLabel,
 } from "../chat/Composer";
 import { mergeCommands, useSlashCommands, useSlashMenu } from "../chat/SlashMenu";
+import { useVoiceInput } from "../chat/Voice";
 
 export function NewAgent() {
   const { project, meta, selectSession, toast, refreshSessions, refreshProject } = useApp();
@@ -47,6 +48,7 @@ export function NewAgent() {
   const harnessCommands = useSlashCommands(pid, { harness: harnessId, cwd: wsCwd }, prompt.startsWith("/") || (skills && prompt.includes("$")));
   const commands = useMemo(() => mergeCommands([], harnessCommands), [harnessCommands]);
   const slash = useSlashMenu({ text: prompt, setText: (t) => patch({ prompt: t }), input: ref, skills, commands, onRun: (t) => void start(t) });
+  const voice = useVoiceInput({ pid, cwd: wsCwd, text: prompt, setText: (t) => patch({ prompt: t }), input: ref });
 
   if (!project || !meta) return null;
   // picks left unset follow the harness's defaults from ~/.atrium/settings.json
@@ -130,6 +132,7 @@ export function NewAgent() {
           />
           <AttachmentTray items={att.items} onRemove={att.remove} />
           {ws.kind === "new" && <NewWorktreeFields project={project} ws={ws} onChange={setWs} />}
+          {voice.strip}
           <div className="composer-bar">
             <div className="bar-chips">
             <AttachButton onClick={att.open} />
@@ -155,6 +158,7 @@ export function NewAgent() {
             </div>
             <div className="bar-end">
               <EffortPicker efforts={efforts} value={effort} base={baseEffort} onChange={(effort) => patch({ effort })} />
+              {voice.button}
               <button className="send-btn" disabled={!canStart} onClick={() => void start()} title="Start agent (Enter)">
                 {busy ? <Spinner /> : <ArrowUp size={17} strokeWidth={2.4} />}
               </button>

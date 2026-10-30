@@ -18,7 +18,7 @@ from fastapi import Body, FastAPI, HTTPException, Query, Request, WebSocket, Web
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import __version__, changes, configfiles, fs, gitops, lsp
+from . import __version__, changes, configfiles, fs, gitops, lsp, voice
 from .auth import AUTH_PATH, AuthMiddleware, auth
 from .auth import router as auth_router
 from .config import UPLOADS_DIR, config
@@ -142,6 +142,11 @@ async def _cfg_invalid(_r: Request, e: configfiles.ConfigInvalid):
     return JSONResponse({"error": str(e)}, status_code=422)
 
 
+@app.exception_handler(voice.VoiceError)
+async def _voice(_r: Request, e: voice.VoiceError):
+    return JSONResponse({"error": str(e)}, status_code=e.status)
+
+
 @app.exception_handler(RuntimeError)
 async def _rt(_r: Request, e: RuntimeError):
     log.exception("runtime error")
@@ -238,6 +243,27 @@ async def get_upload(fid: str):
     if not f.is_file():
         raise HTTPException(404)
     return FileResponse(f, headers={"Cache-Control": "private, max-age=86400"})
+
+
+# ---- voice input (the composer's mic) ------------------------------------------
+@app.post("/api/voice/transcribe")
+async def voice_transcribe(request: Request, name: str = Query("voice.wav")):
+    """A recording → its text, as the speech-to-text model heard it."""
+    data = await request.body()
+    if not data:
+        raise HTTPException(400, "empty recording")
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, f"recording too large (max {MAX_UPLOAD_BYTES // 1024 // 1024} MB)")
+    mime = (request.headers.get("content-type") or "").split(";")[0].strip() or None
+    return {"text": await voice.transcribe(data, os.path.basename(name) or "voice.wav", mime)}
+
+
+@app.post("/api/p/{pid}/voice/refine")
+async def voice_refine(pid: str, body: dict[str, Any] = Body(...)):
+    """A transcript → the message it was meant to be, in the context of an agent (``sid``) or of a new one
+    (``cwd``: where it will work); ``draft``: what the composer holds already."""
+    return await voice.refine(P(pid), str(body.get("text") or ""), sid=body.get("sid") or None, cwd=body.get("cwd") or None,
+                              draft=str(body.get("draft") or ""))
 
 
 @app.get("/api/projects")

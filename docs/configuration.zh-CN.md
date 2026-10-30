@@ -13,7 +13,7 @@ Atrium 只有一个属于自己的配置文件：`~/.atrium/settings.json`。其
 
 1. **这个 agent 自己的选择器**（新建 agent 页面、聊天框）：权限模式、模型、effort（推理强度）。
 2. **Atrium 的 `settings.json`**：这些选择器的初始值（`harnesses.<harness>`），以及 Atrium 自身的一切：
-   Tracker、Git、Code Review 这几个 agent，通知，web 工具，额外的 MCP 服务器。
+   Tracker、Git、Code Review 这几个 agent，通知，web 工具，额外的 MCP 服务器，语音输入。
 3. **harness 自己的文件**：登录、端点和中转站（relay）、MCP 服务器、hooks、指令文件；1 和 2 都是
    *Default*（`""`）时，模型和 effort 也由它决定。
 
@@ -56,8 +56,8 @@ Atrium 只有一个属于自己的配置文件：`~/.atrium/settings.json`。其
   不在你的文件里，在你手动加上之前按默认值运行。
 - **不是合法 JSON 的文件会被忽略**：继续用上一次读到的正确配置，`/api/meta` 在 `settings._error` 里给出
   错误。⚙ Settings 不会保存不合法的 JSON。
-- 文件里有密钥（web 工具的 key），所以创建时权限是 600。Atrium 环境变量里的 `SERPER_API_KEY` 和
-  `JINA_API_KEY` 优先于文件。
+- 文件里有密钥（web 工具的 key、语音输入的 key），所以创建时权限是 600。Atrium 环境变量里的
+  `SERPER_API_KEY` 和 `JINA_API_KEY` 优先于文件。
 
 默认值：
 
@@ -76,6 +76,7 @@ Atrium 只有一个属于自己的配置文件：`~/.atrium/settings.json`。其
   "review_agent": {"auto": true, "harness": "claude-code", "model": "", "effort": "", "language": "", "delay_seconds": 15, "max_concurrent": 2},
   "web": {"serper_api_key": "", "jina_api_key": "", "replace_builtin_web_tools": true},
   "mcp_servers": {},
+  "voice": {"base_url": "", "api_key": "", "asr_model": "", "refine_model": "", "refine_effort": "low"},
   "lsp": {"enabled": true, "commands": {}, "python": {"typeCheckingMode": "standard"}},
   "terminal": {"enabled": true, "shell": ""},
   "ui": {"theme": "system"}
@@ -167,6 +168,35 @@ Git Agent 和 Code Review Agent 有自己的模式，不受这些设置影响：
 | `web.jina_api_key` | `""` | 可选的 [Jina Reader](https://jina.ai/reader) key，提高 `web.fetch` 的频率限制。`JINA_API_KEY` 优先。 |
 | `web.replace_builtin_web_tools` | `true` | 让 agent 用 Atrium 的 web 工具代替自带的：Claude Code 去掉 WebFetch，有 Serper key 时再去掉 WebSearch；Antigravity 同样去掉 `read_url_content` 和 `search_web`。Codex 自带的网页搜索在它的 `config.toml` 里设置。 |
 | `mcp_servers` | `{}` | 给 Claude Code 和 Antigravity agent 用的 MCP 服务器：见 [MCP 服务器](#mcp-服务器)。 |
+
+### 语音输入
+
+发送按钮旁边的麦克风（agent 的聊天框、Git 和 Code Review 抽屉、新建 agent 页面都有）把你说的话变成你想打的
+那条消息。它向同一个 OpenAI 兼容的服务器发两次模型请求：
+
+1. **语音转文字。** 录音（16 kHz 单声道 WAV）发到 `<base_url>/v1/audio/transcriptions`。服务器在那里不提供
+   的模型（返回 400、404、405、415 或 422）——比如能听音频的聊天模型 Doubao Seed——改走
+   `/v1/chat/completions`，录音作为 `input_audio` 发送，并带上 `reasoning_effort: "minimal"`：推理模型否则会
+   先想上一分钟。一个模型走哪条路，在它第一次录音时试出来，之后一直记着，直到 Atrium 重启。
+2. **Refine。** 转写结果连同 agent 看到的上下文发到 `<base_url>/v1/responses`：上次压缩（compaction）以来的
+   对话（去掉 thinking，工具调用和结果都缩短）、它工作目录里的文件（`git ls-files`），以及输入框里已有的草稿。
+   模型按你的本意改写：路径、标识符、命令按项目和对话里的写法写出，纠正听错的词，去掉口头禅，把英文改通顺，
+   保留你说的语言。新建 agent 页面还没有对话：上下文就是项目的文件和草稿。
+
+文字插入到草稿里光标所在的位置，发送前你可以先看、再改。在那之前，输入框底栏上方的提示条可以在改写后的
+文字和听到的原文之间切换（*As heard* / *Refined*）；refine 失败时，直接放入听到的原文。录音 5 分钟后自动停止。
+
+| Key | 默认值 | 说明 |
+|---|---|---|
+| `voice.base_url` | `""` | 服务器地址，带不带 `/v1` 都行：`https://api.openai.com` 和 `https://api.openai.com/v1` 是一样的。 |
+| `voice.api_key` | `""` | 以 `Authorization: Bearer …` 发送；为空时不发。永远不会发到浏览器。 |
+| `voice.asr_model` | `""` | 语音转文字的模型，例如 `gpt-4o-transcribe`，或能听音频的聊天模型。`""` = 没有麦克风。 |
+| `voice.refine_model` | `""` | 改写转写结果的模型，走 Responses API。`""` = 直接放入听到的原文。 |
+| `voice.refine_effort` | `"low"` | 它的推理强度，取模型支持的值（`minimal`、`low`、`medium`、`high`……）；low 让听写保持快速。`""` = 不发送，用于不带推理的模型。 |
+
+浏览器只把麦克风给安全的页面：通过 HTTPS 打开的 Atrium，或 `localhost`。在手机上以 `http://<地址>` 打开时，
+麦克风会提示这一点，而不会录音。第一次录音时浏览器会请求麦克风权限；如果被拒绝了，到浏览器里这个网站的
+设置中允许它。
 
 ### 编辑器与界面
 
@@ -492,3 +522,5 @@ Claude Code 的配置可以在 `env` 里另加变量；Antigravity 配置的 `en
 | Codex 里缺少某个 MCP 服务器 | Atrium 的 `mcp_servers` 只给 Claude Code 和 Antigravity；Codex 读 `config.toml` 里的 `[mcp_servers]`。 |
 | Antigravity 不可用，提示 "Needs the API key of …" | 在它配置文件里设置的中转站只用该文件 `env` 里的 key。 |
 | 正在运行的 agent 看不到修改 | harness 配置在 agent 进程启动时才生效：新建的 agent，以及 `sessions.idle_close_minutes` 之后被重新唤醒的 agent。 |
+| 发送按钮旁边没有麦克风 | `voice.base_url` 或 `voice.asr_model` 为空，或者页面是在设置它们之前打开的：在 ⚙ Settings 里保存，或刷新页面。 |
+| 麦克风提示需要安全的页面 | 浏览器只把麦克风给 HTTPS 页面和 `localhost`。 |

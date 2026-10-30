@@ -50,6 +50,8 @@ export interface Settings {
   git_agent: { harness: string; model: string };
   review_agent?: { auto: boolean; harness: string; model: string; effort: string; language: string; delay_seconds: number; max_concurrent: number };
   web: { serper_api_key: boolean; jina_api_key: boolean; replace_builtin_web_tools: boolean };
+  // the composer's mic (chat/Voice.tsx): on once base_url and asr_model are set
+  voice?: { base_url: string; api_key: boolean; asr_model: string; refine_model: string; refine_effort: string };
   ui: { theme: "system" | "light" | "dark" };
   _error?: string | null;
 }
@@ -524,11 +526,12 @@ let loggedOut = () => location.assign(loginUrl());
 export const onLoggedOut = (f: () => void) => void (loggedOut = f);
 const checkLogin = (res: Response, data: any) => res.status === 401 && data?.code === "auth_required" && loggedOut();
 
-async function req<T>(method: string, url: string, body?: unknown): Promise<T> {
+async function req<T>(method: string, url: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   const res = await fetch(url, {
     method,
     headers: body !== undefined ? { "content-type": "application/json" } : undefined,
     body: body !== undefined ? JSON.stringify(body) : undefined,
+    signal,
   });
   const text = await res.text();
   let data: any = null;
@@ -569,6 +572,23 @@ export const api = {
     if (!res.ok) throw new ApiError(res.status, data);
     return data as Upload;
   },
+  /** Voice input: a recording → its text, as the server's speech-to-text model heard it… */
+  transcribe: async (audio: Blob, name: string, signal?: AbortSignal): Promise<{ text: string }> => {
+    const res = await fetch(`/api/voice/transcribe${q({ name })}`, {
+      method: "POST",
+      headers: { "content-type": audio.type || "application/octet-stream" },
+      body: audio,
+      signal,
+    });
+    const data = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+    checkLogin(res, data);
+    if (!res.ok) throw new ApiError(res.status, data);
+    return data;
+  },
+  /** …then the message it was meant to be, in the context of an agent (`sid`) or of a new one (`cwd`). `refined`:
+   *  false when it comes back as heard (no refine model set). */
+  refineVoice: (pid: string, body: { text: string; sid?: string; cwd?: string; draft?: string }, signal?: AbortSignal) =>
+    req<{ text: string; refined: boolean }>("POST", `/api/p/${pid}/voice/refine`, body, signal),
   projects: () => req<Project[]>("GET", "/api/projects"),
   /** `create`: make the folder first (its parent must exist), git-initialised when `git`. */
   addProject: (path: string, create?: { git: boolean }) =>

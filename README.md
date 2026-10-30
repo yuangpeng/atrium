@@ -96,7 +96,11 @@ A project-centric workbench for coding agents — Claude Code, Codex and Antigra
    other files are passed by path. Next to send there is a **reasoning-effort** picker (`Auto` = whatever the harness config
    says; Claude low…max, applied mid-session; Codex per turn, from the model's supported levels;
    Antigravity: Gemini's thinking level, minimal…high, applied from the next turn).
-   Sending while a Codex turn runs steers that turn (Claude and Antigravity queue it). The new-agent page keeps a **draft** per project
+   Sending while a Codex turn runs steers that turn (Claude and Antigravity queue it). The **mic** next to send
+   (once `voice` is set in Atrium's settings) takes dictation for phones: the recording goes to a speech-to-text
+   model, then the transcript and the agent's conversation (thinking left out) to a model that writes what you
+   meant — paths and code as the project spells them, filler dropped, English made fluent — into the draft, to
+   check before sending ([voice input](docs/configuration.md#voice-input)). The new-agent page keeps a **draft** per project
    (name, task, attachments, workspace / harness / mode / model / effort) in the browser's
    localStorage: open another agent, hide the chat or reload, and it's still there until the agent
    starts; a dot on the rail's new-agent button says one is waiting. Every agent's reply box (the Git

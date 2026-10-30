@@ -14,7 +14,8 @@ What an agent gets is decided in three places:
 
 1. **The agent's pickers** (new-agent page, chat): permission mode, model, effort.
 2. **Atrium's `settings.json`**: what those pickers start with (`harnesses.<harness>`), and everything
-   about Atrium itself — the Tracker, Git and Code Review agents, notifications, web tools, extra MCP servers.
+   about Atrium itself — the Tracker, Git and Code Review agents, notifications, web tools, extra MCP servers,
+   voice input.
 3. **The harness's own files**: sign-in, endpoints and relays, MCP servers, hooks, instructions — and the
    model and effort when 1 and 2 leave them on *Default* (`""`).
 
@@ -60,8 +61,8 @@ The permission mode always comes from 1 or 2; the harness's own default mode isn
   it runs with its defaults until you add it.
 - **A file that isn't valid JSON is ignored**: the last good settings stay in use, and `/api/meta` shows
   the error as `settings._error`. ⚙ Settings doesn't save invalid JSON.
-- It holds secrets (the web keys), so it is created with mode 600. `SERPER_API_KEY` and `JINA_API_KEY` in
-  Atrium's environment win over the file.
+- It holds secrets (the web keys, the voice key), so it is created with mode 600. `SERPER_API_KEY` and
+  `JINA_API_KEY` in Atrium's environment win over the file.
 
 The defaults:
 
@@ -80,6 +81,7 @@ The defaults:
   "review_agent": {"auto": true, "harness": "claude-code", "model": "", "effort": "", "language": "", "delay_seconds": 15, "max_concurrent": 2},
   "web": {"serper_api_key": "", "jina_api_key": "", "replace_builtin_web_tools": true},
   "mcp_servers": {},
+  "voice": {"base_url": "", "api_key": "", "asr_model": "", "refine_model": "", "refine_effort": "low"},
   "lsp": {"enabled": true, "commands": {}, "python": {"typeCheckingMode": "standard"}},
   "terminal": {"enabled": true, "shell": ""},
   "ui": {"theme": "system"}
@@ -175,6 +177,39 @@ These reach agents started afterwards (or woken up after `sessions.idle_close_mi
 | `web.jina_api_key` | `""` | Optional [Jina Reader](https://jina.ai/reader) key: higher rate limits for `web.fetch`. `JINA_API_KEY` wins. |
 | `web.replace_builtin_web_tools` | `true` | Agents use Atrium's web tools instead of their own: Claude Code goes without WebFetch, and without WebSearch when there is a Serper key; Antigravity likewise without `read_url_content` and `search_web`. Codex's own web search is set in its `config.toml`. |
 | `mcp_servers` | `{}` | Your MCP servers for Claude Code and Antigravity agents: see [MCP servers](#mcp-servers). |
+
+### Voice input
+
+The mic next to send — in an agent's chat, the Git and Code Review drawers, and on the new-agent page — turns
+what you say into the message you meant to type, with two model calls to one OpenAI-compatible server:
+
+1. **Speech to text.** The recording (16 kHz mono WAV) goes to `<base_url>/v1/audio/transcriptions`. A model the
+   server doesn't serve there (it answers 400, 404, 405, 415 or 422) — a chat model that takes audio, such as
+   Doubao Seed — gets the recording through `/v1/chat/completions` instead, as `input_audio`, with
+   `reasoning_effort: "minimal"`: a reasoning model would otherwise think for a minute first. Which route a model
+   takes is found out on its first recording and remembered until Atrium restarts.
+2. **Refine.** The transcript goes to `<base_url>/v1/responses` together with what the agent sees: its conversation
+   since the last compaction, thinking left out and tool calls and results shortened; the files of its directory
+   (`git ls-files`); and the draft in the composer. The model rewrites it the way you meant it: paths,
+   identifiers and commands spelled as the project and the conversation have them, misheard words fixed, filler
+   dropped, English made fluent, your language kept. On the new-agent page there is no conversation yet: the
+   project's files and the draft are the context.
+
+The text goes into the draft at the caret, to be read and edited before you send it. Until then the strip over
+the composer's bar swaps it for what was heard (*As heard* / *Refined*); when refining fails, the transcript goes
+in as heard. A recording stops by itself after 5 minutes.
+
+| Key | Default | |
+|---|---|---|
+| `voice.base_url` | `""` | The server, with or without `/v1`: `https://api.openai.com` and `https://api.openai.com/v1` are the same. |
+| `voice.api_key` | `""` | Sent as `Authorization: Bearer …`; not sent when empty. It never reaches the browser. |
+| `voice.asr_model` | `""` | The speech-to-text model, e.g. `gpt-4o-transcribe`, or a chat model that takes audio. `""` = no mic. |
+| `voice.refine_model` | `""` | The model that refines the transcript, through the Responses API. `""` = the transcript goes in as heard. |
+| `voice.refine_effort` | `"low"` | Its reasoning effort, one the model takes (`minimal`, `low`, `medium`, `high`…); low keeps dictation quick. `""` = none sent, for models without reasoning. |
+
+Browsers give the microphone only to secure pages: Atrium opened over HTTPS, or on `localhost`. Opened as
+`http://<address>` from a phone, the mic says so instead of recording. The first recording asks for the
+microphone; if that was denied, allow it in the browser's settings for the site.
 
 ### Editor and UI
 
@@ -522,3 +557,5 @@ proxy the agents need. Claude Code's settings can add variables of their own und
 | An MCP server is missing in Codex | Atrium's `mcp_servers` are for Claude Code and Antigravity; Codex reads `[mcp_servers]` in `config.toml`. |
 | Antigravity is unavailable: "Needs the API key of …" | A relay set in its settings file only gets the key in that file's `env`. |
 | A running agent doesn't see a change | Harness settings apply when an agent's process starts: new agents, and agents woken up after `sessions.idle_close_minutes`. |
+| No mic next to send | `voice.base_url` or `voice.asr_model` is empty, or the page was open before they were set: save them in ⚙ Settings, or reload the page. |
+| The mic says it needs a secure page | Browsers give the microphone only to HTTPS pages and `localhost`. |

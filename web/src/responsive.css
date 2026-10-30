@@ -203,3 +203,12 @@ html, body { overscroll-behavior: none; } /* the app doesn't rubber-band as a wh
 [data-compact] :is(.tree, .graph-row, .agent-pick, .wt-row) { font-size: var(--fs); }
 [data-compact] :is(.editor-tab, .seg button, .btn-sm, .graph-row .meta) { font-size: calc(var(--fs) - 0.5px); }
 [data-compact] .section-label { font-size: calc(var(--fs) - 1.5px); }
+
+/* ---------------------------------------------------------------- voice input */
+/* the strip's buttons (chat/Voice.tsx) take a fingertip; the strip grows with them */
+@media (pointer: coarse) {
+  .voice-act { height: 30px; }
+  .voice-strip { min-height: 34px; }
+}
+/* the strip's words at the composer's chips' size */
+[data-compact] :is(.voice-strip, .voice-time, .voice-act) { font-size: calc(var(--fs) - 0.5px); }

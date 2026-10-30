@@ -472,6 +472,45 @@ a { color: var(--accent-strong); }
 .msg-attach-file { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; padding: 3px 8px; border-radius: 8px; background: var(--surface); border: 1px solid var(--border); }
 .composer-hint { max-width: 780px; margin: 6px auto 0; font-size: 11.5px; color: var(--faint); text-align: center; }
 .composer-hint.err { color: var(--err); }
+/* voice input (chat/Voice.tsx): the mic, sized like send beside it, and the strip over the bar while it works */
+.send-btn.mic { background: transparent; color: var(--muted); position: relative; }
+@media (hover: hover) {
+  .send-btn.mic:hover { background: var(--hover); color: var(--text); }
+}
+.send-btn.mic:disabled { opacity: 1; }
+.send-btn.mic.rec { background: var(--err); color: #fff; }
+.send-btn.mic.rec::after { content: ""; position: absolute; inset: -3px; border-radius: 13px; border: 2px solid var(--err); animation: mic-ring 1.4s ease-out infinite; pointer-events: none; }
+@keyframes mic-ring { from { transform: scale(0.92); opacity: 0.7; } to { transform: scale(1.3); opacity: 0; } }
+.voice-strip { display: flex; flex-wrap: wrap; align-items: center; column-gap: 8px; min-height: 30px; margin-top: 6px; padding: 2px 2px 2px 10px; border-radius: 10px; background: var(--surface-2); font-size: 12.5px; color: var(--text-2); }
+.voice-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--err); animation: pulse 1.2s ease-in-out infinite; }
+.voice-time { flex: none; font: 500 12.5px var(--font-mono); font-variant-numeric: tabular-nums; }
+/* how loud the microphone is: --lvl (0..1) is set on it every frame */
+.voice-meter { --lvl: 0; flex: none; display: inline-flex; align-items: center; gap: 2px; height: 16px; }
+.voice-meter i { width: 3px; height: calc(3px + var(--lvl) * 13px * var(--k, 1)); border-radius: 2px; background: var(--err); transition: height 80ms linear; }
+.voice-meter i:nth-child(odd) { --k: 0.55; }
+.voice-meter i:nth-child(3) { --k: 1; }
+.voice-label { flex: none; color: var(--muted); }
+.voice-fill { flex: 1; }
+/* a status that may give way (the hint while recording) */
+.voice-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+/* what was heard, or the error: a line of its own under the status, two or three at most (the room under it is a
+   margin: as padding it would show the top of the first line clipped) */
+.voice-detail {
+  flex: 0 0 100%; min-width: 0; margin-bottom: 5px; padding: 0 8px 0 22px; overflow: hidden; overflow-wrap: anywhere; line-height: 1.45;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+}
+.voice-detail.heard { color: var(--text-2); font-style: italic; }
+.voice-detail.err { color: var(--err); -webkit-line-clamp: 3; }
+.voice-err { flex: none; color: var(--err); }
+.voice-ok { flex: none; color: var(--ok); }
+.voice-act {
+  flex: none; height: 26px; padding: 0 9px; border-radius: 7px; border: 1px solid var(--border-strong); background: var(--surface);
+  color: var(--text-2); font-size: 12px; white-space: nowrap; cursor: pointer;
+}
+@media (hover: hover) {
+  .voice-act:hover { background: var(--hover); }
+}
+.voice-x { flex: none; }
 
 /* ---------------------------------------------------------------- home */
 .home { flex: 1; min-height: 0; display: flex; flex-direction: column; }

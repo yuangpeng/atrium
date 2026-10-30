@@ -82,6 +82,13 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # Extra MCP servers for Claude Code and Antigravity sessions ({"name": {"command": ..., "args": [...]}}).
     # Codex sessions use the [mcp_servers] table of ~/.codex/config.toml instead.
     "mcp_servers": {},
+    # Voice input (the composer's mic), through an OpenAI-compatible server: the recording goes to
+    # <base_url>/v1/audio/transcriptions (asr_model; a chat model that takes audio gets it through
+    # /v1/chat/completions instead), then the transcript, with the agent's conversation (no thinking) as context,
+    # to <base_url>/v1/responses (refine_model), which writes it the way it was meant: paths and code as the
+    # conversation has them, filler dropped, English fixed. No asr_model = no mic; no refine_model = the
+    # transcript as heard. refine_effort "" = none sent (models without reasoning).
+    "voice": {"base_url": "", "api_key": "", "asr_model": "", "refine_model": "", "refine_effort": "low"},
     # Language servers behind the editor (semantic highlighting, go to definition, hover, …).
     # commands: {"python": ["pyright-langserver", "--stdio"]} overrides the auto-detected server.
     "lsp": {
@@ -97,6 +104,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 }
 
 _ENV_SECRETS = {("web", "serper_api_key"): "SERPER_API_KEY", ("web", "jina_api_key"): "JINA_API_KEY"}
+_SECRETS = (*_ENV_SECRETS, ("voice", "api_key"))  # never sent to the browser: only whether they're set
 
 # flat keys of the first version → nested paths
 _LEGACY_KEYS = {
@@ -241,9 +249,9 @@ class Config:
     def public_settings(self) -> dict[str, Any]:
         """Settings safe to send to the browser (secrets reduced to a flag)."""
         s = self.settings
-        for (sec, key), _env in _ENV_SECRETS.items():
-            v = s.get(sec, {}).get(key) or ""
-            s[sec][key] = bool(v)
+        for sec, key in _SECRETS:
+            if isinstance(s.get(sec), dict):
+                s[sec][key] = bool(s[sec].get(key))
         s["_error"] = self.settings_error
         return s
 
