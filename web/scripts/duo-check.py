@@ -21,13 +21,14 @@ import json
 import sys
 import urllib.request
 
-# Safari 27.1's own table (WebKit, "WebKit Features for Safari 27.1"), at SVH: the browser's bars showing.
+# Safari 27.1's own table (WebKit, "WebKit Features for Safari 27.1"), at SVH: the browser's bars
+# showing. The third value is what layout.ts has to resolve that pose to (<html data-layout>).
 POSES = {
-    "outer-portrait": (382, 580),
-    "outer-landscape": (594, 368),
-    "inner-portrait": (669, 867),
-    "inner-landscape": (951, 585),
-    "split-view": (385, 571),
+    "outer-portrait": (382, 580, "single"),
+    "outer-landscape": (594, 368, "single"),
+    "inner-portrait": (669, 867, "single"),
+    "inner-landscape": (951, 585, "dual"),
+    "split-view": (385, 571, "single"),
 }
 MIN_TAP = 30  # keep this the same as the rule in AGENTS.md
 
@@ -130,13 +131,16 @@ async def main() -> int:
             await page.screenshot(path=f"{args.shots}/{pose}-{label}.png")
     async with async_playwright() as pw:
         browser = await pw.webkit.launch()
-        for pose, (w, h) in poses.items():
+        for pose, (w, h, want) in poses.items():
             ctx = await browser.new_context(viewport={"width": w, "height": h}, device_scale_factor=2, is_mobile=True, has_touch=True)
             page = await ctx.new_page()
             page.on("pageerror", lambda e, p=pose: errors.append(f"{p}: {e}"))
             # the home page first: it is what Atrium opens on when the URL names no project
             await page.goto(args.base + "/")
             await page.wait_for_timeout(1500)
+            got = await page.evaluate("() => document.documentElement.dataset.layout")
+            if got != want:
+                findings.append(f"{pose:16} {'(layout)':9} {'wrong layout':26} layout.ts resolved {w}x{h} to {got}, not {want}")
             await audit(page, pose, "home")
             await page.goto(f"{args.base}/?project={pid}&session={sid}")
             await page.wait_for_timeout(1500)
@@ -151,7 +155,7 @@ async def main() -> int:
                     await page.locator(f'.ws-tabs button[aria-label="{tab}"]').tap()
                     await page.wait_for_timeout(1300)
                 await audit(page, pose, label)
-            print(f"{pose:16} checked", file=sys.stderr)
+            print(f"{pose:16} {got or '?':8} checked", file=sys.stderr)
             await ctx.close()
         await browser.close()
 
