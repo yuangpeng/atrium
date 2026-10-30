@@ -42,6 +42,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "harnesses": {
         "claude-code": {"permission_mode": "bypassPermissions", "model": "", "effort": ""},
         "codex": {"enabled": True, "binary": "", "permission_mode": "full-access", "model": "", "effort": ""},
+        # Google Antigravity, through its SDK (installed with Atrium). Where model calls go — the model, a relay,
+        # the Gemini API key — is the Antigravity CLI's own settings file, ~/.gemini/antigravity-cli/settings.json.
+        "antigravity": {"enabled": True, "permission_mode": "always-proceed", "model": "", "effort": ""},
     },
     "sessions": {"idle_close_minutes": 30},
     # Desktop notifications when an agent asks for approval or finishes a turn — skipped while its
@@ -76,7 +79,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "jina_api_key": "",  # env JINA_API_KEY wins (optional, raises rate limits)
         "replace_builtin_web_tools": True,
     },
-    # Extra MCP servers for Claude Code sessions ({"name": {"command": ..., "args": [...]}}).
+    # Extra MCP servers for Claude Code and Antigravity sessions ({"name": {"command": ..., "args": [...]}}).
     # Codex sessions use the [mcp_servers] table of ~/.codex/config.toml instead.
     "mcp_servers": {},
     # Language servers behind the editor (semantic highlighting, go to definition, hover, …).

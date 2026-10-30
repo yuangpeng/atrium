@@ -41,8 +41,9 @@ function CloseChat() {
 }
 
 function SessionHeader() {
-  const { project, sessions, sessionId, toast, refreshSessions, reviewChanges, selectSession, setForkRequest } = useApp();
+  const { project, sessions, sessionId, toast, refreshSessions, reviewChanges, selectSession, setForkRequest, meta } = useApp();
   const s = sessions.find((x) => x.id === sessionId);
+  const canFork = meta?.harnesses.find((h) => h.id === s?.harness)?.can_fork !== false;
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState("");
   if (!project || !sessionId) return null;
@@ -83,14 +84,16 @@ function SessionHeader() {
         )}
       </div>
       <div className="actions">
-        <button
-          className="icon-btn"
-          disabled={busy}
-          onClick={() => setForkRequest({ sid: sessionId, at: null })}
-          title={busy ? "Fork — wait for the turn to end (or stop it); or fork from an earlier message" : "Fork this conversation (try another idea in parallel)"}
-        >
-          <GitFork size={15} />
-        </button>
+        {canFork && (
+          <button
+            className="icon-btn"
+            disabled={busy}
+            onClick={() => setForkRequest({ sid: sessionId, at: null })}
+            title={busy ? "Fork — wait for the turn to end (or stop it); or fork from an earlier message" : "Fork this conversation (try another idea in parallel)"}
+          >
+            <GitFork size={15} />
+          </button>
+        )}
         <button className="icon-btn" onClick={() => reviewChanges(sessionId)} title="Review this agent's changes">
           <FileDiff size={15} />
         </button>

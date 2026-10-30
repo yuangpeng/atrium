@@ -7,11 +7,18 @@ running inside the app you are editing.
 
 - Setup: `make install`, then `make build` (builds the UI into `atrium/static`).
   The Claude Code and Codex CLIs come from the venv (`claude-agent-sdk`, `openai-codex-cli-bin`),
-  not from `PATH`; run `make install` again after changing their versions in `pyproject.toml`.
+  not from `PATH`, and so does Antigravity's runtime (`google-antigravity`); run `make install` again
+  after changing their versions in `pyproject.toml`.
 - Start: `make run` (port 8787; if it is taken, `make run PORT=8790`).
   Development: `make dev-backend` + `make dev-web` (Vite on 5173).
 - Check: `curl -s --noproxy '*' http://127.0.0.1:<port>/api/meta` lists each harness and
   whether it is available (for Codex also which CLI runs: `cli.path`, `cli.version`).
+- Antigravity reads `~/.gemini/antigravity-cli/settings.json` (the human's real key and relay). For
+  tests without model calls, start the instance with `HOME` set to a temp dir whose
+  `.gemini/antigravity-cli/settings.json` makes a local fake of the Gemini API the model
+  (`"customModelsConfig": {"customModels": {"fake": {"modelName": "gemini-api://http://127.0.0.1:<port>/models/fake"}}}, "model": "fake", "env": {"GEMINI_API_KEY": "fake"}`;
+  it gets `POST /v1beta/models/fake:streamGenerateContent?alt=sse`; a relay only gets a key from that file,
+  and the runtime won't start without one). Never write the human's file.
 
 ## Restarting stops every agent
 

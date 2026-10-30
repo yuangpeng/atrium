@@ -1,5 +1,6 @@
 // Settings = the real config files, edited raw: Atrium's settings.json next to each
-// harness's own (~/.claude/settings.json, ~/.codex/config.toml, project-level overrides).
+// harness's own (~/.claude/settings.json, ~/.codex/config.toml, ~/.gemini/antigravity-cli/settings.json,
+// project-level overrides).
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Check, Copy, FileCog, RotateCcw } from "lucide-react";
 import { api, ConfigFileData, ConfigFileInfo } from "../api";
@@ -12,6 +13,7 @@ const GROUPS: { harness: string; label: string }[] = [
   { harness: "atrium", label: "Atrium" },
   { harness: "claude-code", label: "Claude Code" },
   { harness: "codex", label: "Codex" },
+  { harness: "antigravity", label: "Antigravity" },
 ];
 const SCOPE_LABEL: Record<string, string> = { user: "user", project: "project", local: "local" };
 

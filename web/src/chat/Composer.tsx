@@ -290,13 +290,15 @@ export function modelName(harness: Harness | undefined, id: string | null | unde
   if (m) return `${cap(m[1]!)} ${m[2]}${m[3] ? `.${m[3]}` : ""}`;
   m = base.match(/^claude-(\d+)(?:-(\d{1,2}))?-([a-z]+)(?:-\d{8})?$/); // claude-3-5-sonnet-20241022
   if (m) return `${cap(m[3]!)} ${m[1]}${m[2] ? `.${m[2]}` : ""}`;
+  m = base.match(/^gemini-(\d+(?:\.\d+)?)-([a-z-]+)$/); // gemini-3.8-flash
+  if (m) return `Gemini ${m[1]} ${m[2]!.split("-").map(cap).join(" ")}`;
   return /^[a-z]+$/.test(base) ? cap(base) : base.replace(/^gpt/, "GPT");
 }
 
 /** The model, read-only: its maker's mark + name while the chip row has room, else the mark (name on hover). */
 export function ModelChip({ harness, model, faded }: { harness: Harness; model: string | null | undefined; faded?: boolean }) {
   const name = modelName(harness, model);
-  const maker = model || (harness.id === "claude-code" ? "claude" : null); // Claude Code's default is a Claude model
+  const maker = model || ({ "claude-code": "claude", antigravity: "gemini" } as Record<string, string>)[harness.id] || null; // the harness's default model's maker
   const ref = useRef<HTMLSpanElement>(null);
   const full = useRef<HTMLSpanElement>(null); // invisible copy with the name: the width the chip would need
   const [roomy, setRoomy] = useState(true);
@@ -575,10 +577,17 @@ const MODE_INFO: Record<string, Record<string, { icon: LucideIcon; desc: string;
     "auto-review": { icon: ShieldTerminal, desc: "Only ask for actions detected as potentially unsafe" },
     "full-access": { icon: ShieldAlert, desc: "Unrestricted access to the internet and any file on your computer", danger: true },
   },
+  // the Antigravity CLI's presets
+  antigravity: {
+    "request-review": { icon: Hand, desc: "Ask before editing files, running commands, or using the web and MCP tools" },
+    "accept-edits": { icon: FilePen, desc: "Edit files in the workspace without asking; ask for the rest" },
+    "always-proceed": { icon: ShieldAlert, desc: "Run every tool without asking", danger: true },
+  },
 };
 const MODE_DOCS: Record<string, string> = {
   "claude-code": "https://code.claude.com/docs/en/permission-modes",
   codex: "https://developers.openai.com/codex/permissions",
+  antigravity: "https://antigravity.google/docs/permissions",
 };
 
 /** Permission mode: only the mode's icon in the composer; the menu (after Codex's) explains each mode. */

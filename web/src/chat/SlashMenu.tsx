@@ -192,12 +192,13 @@ const atrium = (name: string, description: string, argument_hint = "", aliases: 
 
 /** Atrium's own commands in an agent's chat. They act on Atrium (its new-agent page, name, fork dialog,
  *  effort setting), which the harness's commands of the same name would bypass. `run` is true when it took the text. */
-export function useAtriumCommands({ pid, sid, harness, cwd, running, efforts, effort, setEffort }: {
+export function useAtriumCommands({ pid, sid, harness, cwd, running, canFork, efforts, effort, setEffort }: {
   pid: string;
   sid: string;
   harness: string | undefined;
   cwd: string;
   running: boolean;
+  canFork: boolean; // the harness forks conversations: else no /fork
   efforts: string[];
   effort: string; // what applies now
   setEffort: (e: string) => Promise<boolean>; // false: it failed (and said so)
@@ -213,10 +214,10 @@ export function useAtriumCommands({ pid, sid, harness, cwd, running, efforts, ef
     () => [
       atrium("new", "Start a new agent, here and with this harness", "", ["clear", "reset"]),
       atrium("rename", "Rename this agent", "<name>", ["name"]),
-      atrium("fork", "Fork this conversation into a new agent"),
+      ...(canFork ? [atrium("fork", "Fork this conversation into a new agent")] : []),
       atrium("effort", `Set the reasoning effort: ${levels}`, "[level]"),
     ],
-    [levels],
+    [levels, canFork],
   );
 
   const run = (text: string): boolean => {

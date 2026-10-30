@@ -545,6 +545,8 @@ class SessionManager:
         """
         src_cwd, harness_id = await self.session_info(project, sid)
         harness = get_harness(harness_id)
+        if not harness.can_fork:  # before anything is made for the fork (a worktree, a branch)
+            raise ValueError(f"{harness.label} agents can't be forked yet")
         h = self.handle(sid)
         point = ForkPoint()
         if at:

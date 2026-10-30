@@ -1,7 +1,7 @@
 [project]
 name = "atrium"
 version = "0.1.0"
-description = "A project-centric workbench for coding agents (Claude Code first; harness-agnostic by design)"
+description = "A project-centric workbench for coding agents (Claude Code, Codex, Antigravity; harness-agnostic by design)"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -12,6 +12,7 @@ dependencies = [
     "httpx>=0.27",
     "watchfiles>=0.24",
     "basedpyright>=1.30",  # Python language server for the editor (bundles its own Node)
+    "google-antigravity==0.1.23",  # Antigravity SDK, its runtime in each platform wheel (pinned: moving an agent rewrites the runtime's own state database)
 ]
 
 [project.scripts]

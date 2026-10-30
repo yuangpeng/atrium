@@ -1,6 +1,6 @@
 # Atrium
 
-A project-centric workbench for coding agents — Claude Code and Codex side by side, harness-agnostic by design.
+A project-centric workbench for coding agents — Claude Code, Codex and Antigravity side by side, harness-agnostic by design.
 
 > *Atrium* — the central hall of a house where everyone meets. Here it is the shared space of one
 > project: every agent session, the human, the files, the diffs and the git history, around one board.
@@ -68,18 +68,22 @@ A project-centric workbench for coding agents — Claude Code and Codex side by 
 4. **MCP.** `web.search` (Serper) and `web.fetch` (Jina Reader) are mounted into every agent —
    Claude sees them as `mcp__web__search` / `mcp__web__fetch` (optionally replacing the built-in
    WebSearch/WebFetch); Codex reserves the `web` namespace, so there they are `internet.search` /
-   `internet.fetch`. Extra MCP servers for Claude sessions go under `mcp_servers` in Atrium's
-   settings; Codex uses the `[mcp_servers]` of its own `config.toml`. The web tools are also
+   `internet.fetch`; Antigravity names Atrium's tools `<namespace>_<tool>` (`web_search`,
+   `board_status`…). Extra MCP servers for Claude and Antigravity sessions go under `mcp_servers` in
+   Atrium's settings; Codex uses the `[mcp_servers]` of its own `config.toml`. The web tools are also
    available as a stdio MCP server: `atrium-web-mcp`.
 5. **Several harnesses, one workbench.** Claude Code runs through `claude-agent-sdk`; Codex through
-   `codex app-server` (JSON-RPC over stdio, one process shared by all Codex sessions). Sessions
-   don't convert between harnesses — each continues in its own — but they collaborate through the
-   board, the files and git: a Codex agent sees what a Claude agent published, and vice versa.
+   `codex app-server` (JSON-RPC over stdio, one process shared by all Codex sessions); Google
+   Antigravity through its SDK, `google-antigravity`, whose platform wheels bundle the agent runtime
+   (one runtime process per live session). Sessions don't convert between harnesses — each continues
+   in its own — but they collaborate through the board, the files and git: a Codex agent sees what a
+   Claude agent published, and vice versa.
 6. **The composer.** Paste, drop or pick images and files (stored in `~/.atrium/uploads`): images go
-   to the model as images (base64 for Claude, `localImage` for Codex), other files are passed by
-   path. Next to send there is a **reasoning-effort** picker (`Auto` = whatever the harness config
-   says; Claude low…max, applied mid-session; Codex per turn, from the model's supported levels).
-   Sending while a Codex turn runs steers that turn. The new-agent page keeps a **draft** per project
+   to the model as images (base64 for Claude, `localImage` for Codex, inline media for Antigravity),
+   other files are passed by path. Next to send there is a **reasoning-effort** picker (`Auto` = whatever the harness config
+   says; Claude low…max, applied mid-session; Codex per turn, from the model's supported levels;
+   Antigravity: Gemini's thinking level, minimal…high, applied from the next turn).
+   Sending while a Codex turn runs steers that turn (Claude and Antigravity queue it). The new-agent page keeps a **draft** per project
    (name, task, attachments, workspace / harness / mode / model / effort) in the browser's
    localStorage: open another agent, hide the chat or reload, and it's still there until the agent
    starts; a dot on the rail's new-agent button says one is waiting. Every agent's reply box (the Git
@@ -93,8 +97,9 @@ A project-centric workbench for coding agents — Claude Code and Codex side by 
    This is also how a conversation changes worktree while it has one: an agent stays bound to its
    directory (its process, its transcript, the paths in its history, the uncommitted edits it made
    there), so it is copied rather than moved — tick *Archive the original* to move it. Forks are
-   native to both harnesses (Claude: `fork_session`, the transcript moved under the new directory;
-   Codex: `thread/fork`); the fork's Changes and the Tracker only count what happened after the fork.
+   native to Claude Code (`fork_session`, the transcript moved under the new directory) and Codex
+   (`thread/fork`); the fork's Changes and the Tracker only count what happened after the fork.
+   Antigravity sessions can't be forked: its runtime keeps a conversation's state under its id.
 8. **Agents outlive their worktrees.** Remove a worktree — from the Git panel, or the agent does it
    after merging its branch — and its agents stay in the list with the worktree struck through
    (⎇ ~~feat/x~~). Their process stops, and their Changes show the files as they left them, read-only.
@@ -119,6 +124,36 @@ instead, set `harnesses.codex.binary` to its path, e.g. `/opt/homebrew/bin/codex
 the default before it was bundled, both mean the bundled one); `/api/meta` shows which one runs
 (`cli`). No Codex login yet? After `make install`:
 `$(.venv/bin/python -c 'import codex_cli_bin as c; print(c.bundled_codex_path())') login`.
+Antigravity comes with `make install` (the `google-antigravity` SDK bundles its runtime) and reads
+the Antigravity CLI's own settings file, `~/.gemini/antigravity-cli/settings.json`. It needs a Gemini
+API key — from [Google AI Studio](https://aistudio.google.com/app/api-keys), or a relay's — in that
+file's `env` (for Google's API, the environment's `GEMINI_API_KEY` also works). A relay that speaks the Gemini API is a custom
+model, as the CLI writes it (requests go to `<base_url>/v1beta/models/<model>:streamGenerateContent`,
+the key as `x-goog-api-key`):
+
+```json
+{
+  "modelProvider": "gemini",
+  "customModelsConfig": {"customModels": {"my-model": {
+    "modelName": "gemini-api://relay.example.com/gemini/models/<model>", "label": "My model"}}},
+  "model": "My model",
+  "env": {"GEMINI_API_KEY": "..."}
+}
+```
+
+`model` names a custom model (key or label) or a model id (`gemini-3.8-flash`); `env` also takes
+`GOOGLE_GEMINI_BASE_URL`, and Gemini Enterprise's `GOOGLE_GENAI_USE_VERTEXAI` / `GOOGLE_CLOUD_PROJECT` /
+`GOOGLE_CLOUD_LOCATION`. Which key goes where:
+
+- A relay set in this file (a custom model, or `GOOGLE_GEMINI_BASE_URL` under `env`) gets only this file's
+  `env.GEMINI_API_KEY`, never a `GEMINI_API_KEY` from Atrium's environment. Without one, Atrium says so
+  instead of starting; a relay that takes no key needs a placeholder (the runtime won't start without a key).
+- Google's Gemini API (a model id such as `gemini-3.8-flash`), or a `GOOGLE_GEMINI_BASE_URL` set in Atrium's
+  environment, gets this file's `env.GEMINI_API_KEY`, else the environment's. So with a relay's key in this
+  file, picking one of Google's models sends that key to Google.
+
+The CLI itself reads the key only from the environment. Antigravity's terms
+keep the Google account sign-in to Google's own apps, so Atrium doesn't use it.
 
 ```bash
 make install          # python venv + npm deps
@@ -144,6 +179,8 @@ Atrium binds to `127.0.0.1` and has **no authentication** — don't expose it.
 | `~/.atrium/config.json` | the project list |
 | `~/.atrium/uploads/` | composer attachments |
 | `~/.atrium/backups/` | the previous versions of config files saved from Settings (last 20 each) |
+| `~/.gemini/antigravity-cli/settings.json` | Antigravity's model, custom models (relays) and Gemini API key (`env`) — the Antigravity CLI's own file |
+| `~/.atrium/antigravity/` | Antigravity conversations: the runtime's state (`save/`), its data and JSONL transcripts (`data/brain/<id>/`), Atrium's index (`sessions/`) |
 | `<project>/.atrium/board.html` | the board (generated from `board.json`) |
 | `<project>/.atrium/agents.json` | session → agent name / role / harness / mode / model / effort / turn snapshots |
 | `<project>/.atrium/tracker.json` | tracker transcript offsets + run log |
@@ -155,11 +192,13 @@ Atrium binds to `127.0.0.1` and has **no authentication** — don't expose it.
 `.atrium/` contains a `.gitignore` with `*`, so it never shows up in your repo.
 
 Agent names are also written back to the harness (Claude Code session title, Codex thread name),
-so `claude --resume` and `codex resume` show them.
+so `claude --resume` and `codex resume` show them. Antigravity sessions are Atrium's own: no CLI lists them.
 
 **Settings** edits the real files, raw, in Monaco: Atrium's `settings.json`, Claude Code's
 `~/.claude/settings.json` plus the project's `.claude/settings.json` / `settings.local.json`, and
-Codex's `~/.codex/config.toml` plus the project's `.codex/config.toml`. Saves are validated
+Codex's `~/.codex/config.toml` plus the project's `.codex/config.toml`, and Antigravity's
+`~/.gemini/antigravity-cli/settings.json` (Antigravity sessions also get the `AGENTS.md` / `GEMINI.md`
+rules Antigravity's own apps load). Saves are validated
 (JSON / TOML), refused if the file changed on disk meanwhile, and back up the previous version.
 The editor's language servers are configured under `lsp` there (`enabled`, `commands` to override
 the server per language, `python.typeCheckingMode`).
@@ -182,6 +221,8 @@ atrium/
   harness/codex.py       Codex via `codex app-server`: threads, approvals, dynamic tools, history,
                          rollout digests and patches
   harness/codex_rpc.py   the shared JSON-RPC client for `codex app-server`
+  harness/antigravity.py Antigravity via its SDK (bundled runtime): live sessions, approvals through a
+                         pre-tool hook, history / digests / edits from the runtime's JSONL transcript
   sessions.py            live session manager (start/resume, forks, streaming, permissions, idle
                          reaping, turn snapshots)
   notify.py              desktop notifications (approval requests, finished turns) unless watched
@@ -203,7 +244,7 @@ web/                     React + TypeScript + Vite UI (Monaco for editor/diffs)
 ### Adding another harness (pi, …)
 
 Implement `atrium.harness.base.Harness` and register it in `atrium/harness/__init__.py`
-(`claude_code.py` and `codex.py` are the two references):
+(`claude_code.py`, `codex.py` and `antigravity.py` are the references):
 
 * `available()`, `catalog()` (models + supported efforts), `permission_modes`, `efforts`;
 * `list_sessions(project_dir, roots)` (async), `transcript_path`, `watch_roots`, `transcript_cwd` — discovery;
@@ -213,11 +254,12 @@ Implement `atrium.harness.base.Harness` and register it in `atrium/harness/__ini
   transcript fallback for diff review;
 * `create_live(spec, emit)` → a `LiveSession` (send with attachments / interrupt / set mode, model,
   effort / resolve permission);
-* `fork_point` / `fork_session` (optional) — cut a conversation before a user message and copy it
-  into a new session working in another directory;
+* `fork_point` / `fork_session` (optional; set `can_fork = False` without them) — cut a conversation
+  before a user message and copy it into a new session working in another directory;
 * `config_files(project_dir)` — the harness's own config files for the Settings editor;
 * `complete_json` — one-shot structured completion (used by the tracker when it is set to this harness).
 
 Atrium's own tools are harness-neutral `ToolSpec`s grouped by server (`board.*`, `web.*`,
 `graph.set_view`); expose them however the harness supports tools — in-process MCP for Claude,
-dynamic tools for Codex. Everything else (UI, board, tracker, diffs, git) works unchanged.
+dynamic tools for Codex, Python tools for Antigravity. Everything else (UI, board, tracker, diffs,
+git) works unchanged.

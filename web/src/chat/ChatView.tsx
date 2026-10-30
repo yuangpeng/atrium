@@ -399,9 +399,10 @@ export function ChatView({ pid, sid, cwd, compact, forkable, modeLocked, placeho
 
   const running = st.state === "running" || st.state === "starting" || st.state === "waiting";
   const blocks = useMemo(() => toBlocks(st.items), [st.items]);
-  const forks = useMemo(() => (forkable ? forkPoints(st.items) : null), [st.items, forkable]);
-  const onFork = useCallback((at: ForkAt, text: string) => setForkRequest({ sid, at, text }), [sid, setForkRequest]);
   const harness = meta?.harnesses.find((h) => h.id === (harnessId ?? "claude-code")) ?? meta?.harnesses[0];
+  const canFork = forkable && harness?.can_fork !== false;
+  const forks = useMemo(() => (canFork ? forkPoints(st.items) : null), [st.items, canFork]);
+  const onFork = useCallback((at: ForkAt, text: string) => setForkRequest({ sid, at, text }), [sid, setForkRequest]);
   const gone = !!row?.workspace_gone;
   const moveTo: MoveWorkspace | null = !gone || !ws ? null : ws.kind === "new" ? { kind: "new", branch: ws.branch.trim(), base: ws.base.trim() || undefined } : ws;
   const placed = !gone || (!!moveTo && (moveTo.kind !== "new" || !!moveTo.branch)); // a removed worktree: somewhere picked to go on
@@ -475,7 +476,9 @@ export function ChatView({ pid, sid, cwd, compact, forkable, modeLocked, placeho
   const baseEffort = defaults.effort || st.effort || harness?.config_effort; // in effect while no effort is picked
   const pendingList = Object.values(st.pending);
   // slash commands: Atrium's own in an agent's chat, then the harness's
-  const atrium = useAtriumCommands({ pid, sid, harness: harness?.id, cwd, running, efforts, effort: settings.effort || baseEffort || "", setEffort });
+  const atrium = useAtriumCommands({
+    pid, sid, harness: harness?.id, cwd, running, canFork: harness?.can_fork !== false, efforts, effort: settings.effort || baseEffort || "", setEffort,
+  });
   const skills = harness?.id === "codex";
   const harnessCommands = useSlashCommands(pid, { sid }, text.startsWith("/") || (skills && text.includes("$")));
   const commands = useMemo(() => mergeCommands(forkable ? atrium.commands : [], harnessCommands), [forkable, atrium.commands, harnessCommands]);

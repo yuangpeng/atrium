@@ -254,6 +254,7 @@ class Harness(ABC):
     review_agent_mode: str = "dontAsk"  # the Review agent's: its pre-approved read-only tools, nothing else, never asks
     models: list[dict[str, Any]] = []  # [{id, label, efforts?: [..], default_effort?}]
     efforts: list[str] = []  # reasoning-effort levels when a model does not list its own
+    can_fork: bool = True  # implements fork_point / fork_session
 
     def available(self) -> tuple[bool, str | None]:
         """Whether the harness can run here (binary installed, enabled in settings…)."""
@@ -375,4 +376,5 @@ class Harness(ABC):
             "permission_modes": self.permission_modes,
             "models": self.models,
             "efforts": self.efforts,
+            "can_fork": self.can_fork,
         }

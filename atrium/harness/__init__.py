@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .antigravity import AntigravityHarness
 from .base import Harness, LiveSession, LiveSpec, SessionSummary, ToolSpec
 from .claude_code import ClaudeCodeHarness
 from .codex import CodexHarness
@@ -25,5 +26,6 @@ def all_harnesses() -> list[Harness]:
 
 register(ClaudeCodeHarness())
 register(CodexHarness())
+register(AntigravityHarness())
 
 __all__ = ["Harness", "LiveSession", "LiveSpec", "SessionSummary", "ToolSpec", "get_harness", "all_harnesses", "register"]

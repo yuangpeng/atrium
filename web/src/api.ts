@@ -20,6 +20,7 @@ export interface Harness {
   // what a session gets when Atrium doesn't pick: from ~/.claude/settings.json / config.toml (or the CLI's own default)
   config_model?: string | null;
   config_effort?: string | null;
+  can_fork?: boolean; // false: its sessions can't be forked (Antigravity)
 }
 
 /** A slash command the composer offers: the harness's built-ins, custom commands, skills… or Atrium's own. */
