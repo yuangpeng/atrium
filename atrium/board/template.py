@@ -36,6 +36,9 @@ html,body{margin:0;background:var(--bg);color:var(--text);font:14px/1.55 var(--s
 /* else Safari enlarges the text of a block wider than the phone's screen: most of the board on the iPhone Duo's inner
    screen, or in landscape. The app's own rule (web/src/responsive.css) doesn't reach into this iframe. */
 html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
+/* a path or a URL with nowhere to break (an agent is named after its first prompt) breaks at the edge it meets, not
+   runs past it and widens the board */
+body{overflow-wrap:break-word}
 a{color:var(--accent2)}
 .wrap{max-width:1180px;margin:0 auto;padding:28px 28px 64px}
 header.top{display:flex;justify-content:space-between;align-items:flex-end;gap:24px;padding-bottom:18px;border-bottom:1px solid var(--line)}
@@ -46,7 +49,7 @@ h1{font:500 30px/1.15 var(--serif);margin:0;letter-spacing:-.01em}
 .meta b{color:var(--text2);font-weight:600}
 h2{font:500 19px/1.3 var(--serif);margin:34px 0 14px;display:flex;align-items:center;gap:10px}
 h2 .count{font:500 12px var(--sans);color:var(--muted);background:var(--bg2);border:1px solid var(--line);border-radius:99px;padding:1px 8px}
-.overview{margin-top:18px;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px 20px}
+.overview{margin-top:18px;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px 20px;overflow-x:auto} /* a wide table scrolls in it, as in a card */
 .overview:empty{display:none}
 .overview ul{margin:4px 0;padding-left:20px}
 .agents{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px}
@@ -91,7 +94,9 @@ h2 .count{font:500 12px var(--sans);color:var(--muted);background:var(--bg2);bor
 .timeline .when{color:var(--faint);font-size:11.5px;margin-left:6px}
 .empty{color:var(--muted);background:var(--panel);border:1px dashed var(--line2);border-radius:14px;padding:26px;text-align:center}
 .cols{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:28px}
-@media (max-width:900px){.cols{grid-template-columns:1fr}}
+/* minmax(0,…), not 1fr: a 1fr column is never narrower than its widest card's code block, table or image, and that
+   made the whole board wider than a phone; this way those scroll inside their card (.card-body) */
+@media (max-width:900px){.cols{grid-template-columns:minmax(0,1fr)}}
 /* ---- design system for agent-authored cards ---- */
 table{border-collapse:collapse;width:100%;font-size:13px;margin:.6em 0}
 th,td{border-bottom:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}

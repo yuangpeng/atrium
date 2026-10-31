@@ -83,7 +83,11 @@ and `theme-color` follows it (`layout.ts`).
 Apart from the layout, `<html data-compact>` marks a phone-sized touch screen (every pose above):
 type, bars and the rail a size down (the block at the end of `responsive.css`). The chat's reading
 size is `--fs` (12px there); size new chat text from it, not in px. The board is an iframe and has
-its own narrow-width rules in `atrium/board/template.py`.
+its own narrow-width rules in `atrium/board/template.py`. Agents write what is in it, so nothing they
+write may make it wider than its frame, which a finger then drags sideways: a code block, a table or
+an image scrolls inside its card, a path with nowhere to break breaks at the edge, and a grid column
+that holds their content is `minmax(0, 1fr)` (a `1fr` one is never narrower than what it holds).
+`duo-check.py` adds content that wide to the board and reports one that scrolls sideways.
 
 What to get right in a new component:
 

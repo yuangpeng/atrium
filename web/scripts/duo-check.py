@@ -160,6 +160,21 @@ AUDIT = """([MIN_TAP, inset]) => {
   return out.filter((o) => { const k = JSON.stringify(o); if (seen.has(k)) return false; seen.add(k); return true; });
 }"""
 
+# The board is a page of its own (an iframe, atrium/board/template.py) and agents write what is in it: none of that may
+# make it wider than its frame, which a finger then drags sideways. A scratch board seldom holds anything wide, so the
+# check adds a tile, a result card and a timeline entry as wide as agents' get, then measures the board's page.
+WIDE_BOARD = """() => {
+  const path = "/data/codes/atrium/.atrium/worktrees/fix-duo_font/no_tools_gpt55_1001_2131_oupai/atrium/board/template.py";
+  const add = (sel, html) => document.querySelector(sel).insertAdjacentHTML("afterbegin", html);
+  add(".agents", `<div class="tile"><div class="row"><span class="dot"></span><span class="name">${path}</span>
+    <span class="pill">Working</span></div><div class="doing">Editing ${path}</div></div>`);
+  add(".results", `<article class="card"><header><span class="who">Agent</span><span class="title">${path}</span></header>
+    <div class="card-body"><pre>${"git -C /data/codes/atrium push origin main && ".repeat(3)}</pre>
+    <table><tr><th>File</th><th>Change</th></tr><tr><td><code>${path}</code></td><td>+12 -3</td></tr></table><p>${path}</p></div></article>`);
+  add(".timeline", `<li><span class="who">${path}</span> wrote it</li>`);
+  return [document.documentElement.scrollWidth, document.documentElement.clientWidth];
+}"""
+
 
 _direct = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # never via $http_proxy: this is localhost
 
@@ -254,6 +269,14 @@ async def main() -> int:
                 await page.locator(f'.ws-tabs button[aria-label="{tab}"]').tap()
                 await page.wait_for_timeout(1300)
                 await audit(page, pose, tab.lower(), inset)
+                if tab == "Board":  # its own page, with what agents write in it at its widest (WIDE_BOARD)
+                    board = next((f for f in page.frames if "/board.html" in f.url), None)
+                    if not board:
+                        findings.append(f"{pose:16} {'board':9} {'no board':26} the Board panel shows no board.html frame")
+                    else:
+                        sw, cw = await board.evaluate(WIDE_BOARD)
+                        if sw > cw + 1:
+                            findings.append(f"{pose:16} {'board':9} {'the board scrolls sideways':26} {sw}px of content in its {cw}px frame")
                 if tab == "Git":  # its second view: the worktrees and the agents in each
                     await page.locator('.toolbar button[aria-label="Worktrees"]').tap()
                     await page.wait_for_timeout(600)
