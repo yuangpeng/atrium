@@ -33,6 +33,9 @@ CSS = r"""
 }
 *{box-sizing:border-box}
 html,body{margin:0;background:var(--bg);color:var(--text);font:14px/1.55 var(--sans);-webkit-font-smoothing:antialiased}
+/* else Safari enlarges the text of a block wider than the phone's screen: most of the board on the iPhone Duo's inner
+   screen, or in landscape. The app's own rule (web/src/responsive.css) doesn't reach into this iframe. */
+html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 a{color:var(--accent2)}
 .wrap{max-width:1180px;margin:0 auto;padding:28px 28px 64px}
 header.top{display:flex;justify-content:space-between;align-items:flex-end;gap:24px;padding-bottom:18px;border-bottom:1px solid var(--line)}
@@ -129,7 +132,7 @@ h1{font-size:20px}
 .headline{font-size:13px;margin-top:6px}
 h2{font-size:15px;margin:22px 0 10px}
 .overview{padding:10px 14px;margin-top:12px}
-.agents{grid-template-columns:1fr;gap:10px}
+.agents{grid-template-columns:minmax(0,1fr);gap:10px} /* 0: a long name ellipsizes, not widens every tile past the screen */
 .tile{padding:10px 12px;gap:6px}
 .tile .name{font-size:13px}.tile .doing{font-size:12px}.tile .summary{font-size:11.5px}
 .card>header{padding:8px 12px}.card>header .title{font-size:13.5px}

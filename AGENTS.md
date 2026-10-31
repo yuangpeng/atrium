@@ -98,6 +98,10 @@ What to get right in a new component:
   zoomed; `index.html` adds `maximum-scale=1` on iOS only, which stops that while pinch zoom keeps
   working there. Don't add it (or `user-scalable=no`) for other platforms: Android takes it
   literally and blocks zooming.
+- **Every page sets `-webkit-text-size-adjust: 100%` on `html`, an iframe's too** (`responsive.css`
+  for the app, `atrium/board/template.py` for the board). Without it Safari enlarges the text of
+  any block wider than the phone's screen, which on the Duo means most of the inner screen.
+  `duo-check.py` can't see this: Playwright's WebKit is built without that inflation.
 - **Use `dvh`, not `vh`**: on a phone `100vh` includes what Safari's bars cover.
 - **The page reaches under the notch and the home indicator** (`viewport-fit=cover`, for the Home
   Screen app, which has no Safari bars): something fixed to an edge of the window adds
