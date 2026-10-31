@@ -91,12 +91,19 @@ AUDIT = """([MIN_TAP, inset]) => {
       out.push({ kind: "text outside its box", el: name(el), by: el.scrollWidth - el.clientWidth, text: (el.textContent || "").trim().slice(0, 60) });
     if (!clipped(el) && (r.right > innerWidth + 1 || r.left < -1))
       out.push({ kind: "past the viewport", el: name(el), right: Math.round(r.right), width: innerWidth });
-    // under an inset, a control sits beneath the clock, the camera or the home indicator
+    // under an inset, a control sits beneath the clock, the camera or the home indicator. A list may scroll on under
+    // the bottom one: what is in it only has to be able to come up clear of it, so it is checked scrolled to the end.
     if (inset && el.matches("button, [role=button], input, textarea, select, a[href]")) {
       const v = shown(el, r);
-      if (v && (v.top < it - 1 || v.right > innerWidth - ir + 1 || v.bottom > innerHeight - ib + 1 || v.left < il - 1))
-        out.push({ kind: "control under an inset", el: name(el), box: [v.left, v.top, v.right, v.bottom].map(Math.round),
+      let sc = el.parentElement;
+      while (sc && sc !== document.body && !/auto|scroll/.test(getComputedStyle(sc).overflowY)) sc = sc.parentElement;
+      const d = sc && sc !== document.body ? sc.scrollHeight - sc.clientHeight - sc.scrollTop : 0;
+      const end = shown(el, { left: r.left, right: r.right, top: r.top - d, bottom: r.bottom - d });
+      if ((v && (v.top < it - 1 || v.right > innerWidth - ir + 1 || v.left < il - 1)) || (end && end.bottom > innerHeight - ib + 1)) {
+        const b = v || end;
+        out.push({ kind: "control under an inset", el: name(el), box: [b.left, b.top, b.right, b.bottom].map(Math.round),
                    text: (el.textContent || el.getAttribute("aria-label") || el.title || "").trim().slice(0, 40) });
+      }
     }
     const button = el.tagName === "BUTTON" || el.getAttribute("role") === "button";
     if (button && !el.disabled) {
@@ -129,6 +136,13 @@ AUDIT = """([MIN_TAP, inset]) => {
     return got;
   };
   for (const x of runs(cols, xs)) out.push({ kind: "bare page", el: "a strip top to bottom", x });
+  // a pane padded over the bottom inset: what it holds stops a strip short of the edge, lists cut off above it
+  if (ib) {
+    // (between the side insets: under the clock's column a pane is padded on purpose)
+    const short = xs.filter((x) => x > il && x < innerWidth - ir &&
+      document.elementFromPoint(x, innerHeight - Math.ceil(ib / 2))?.matches(".app > .workspace, .app > .chatcol"));
+    if (short.length) out.push({ kind: "blank strip at the bottom", el: "a pane's own padding", x: `${Math.min(...short)}-${Math.max(...short)}` });
+  }
   for (const y of runs(rows, ys)) out.push({ kind: "bare page", el: "a strip side to side", y });
   const rest = bare.flatMap((row, j) => row.flatMap((b, i) => (b && !cols[i] && !rows[j] ? [[xs[i], ys[j]]] : [])));
   if (rest.length) {

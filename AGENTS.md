@@ -58,7 +58,10 @@ bars showing):
 Added to the Home Screen, Atrium opens as an app with no Safari bars: the whole screen, under the
 device's safe-area insets. On iPhone Duo the clock and Wi-Fi run down the right edge (an 84px inset)
 and the home indicator along the bottom (34px): 466 × 678 on the outer display in portrait, 951 × 669
-on the inner one in landscape (measured from the device's screenshots).
+on the inner one in landscape (measured from the device's screenshots). The page only gets the status
+bar's strip because `index.html` asks for `apple-mobile-web-app-status-bar-style: black-translucent`:
+without it iOS keeps that strip (the Duo's whole right column) for itself, out of the page, and
+`env(safe-area-inset-*)` reports 0 there.
 
 `web/src/layout.ts` turns that into one of five layouts and puts it on `<html data-layout>`;
 `web/src/responsive.css` places the panes per layout, and holds the touch and narrow-screen rules.
@@ -111,10 +114,14 @@ What to get right in a new component:
 - **The page reaches under the notch and the home indicator** (`viewport-fit=cover`, for the Home
   Screen app, which has no Safari bars): something fixed to an edge of the window adds
   `env(safe-area-inset-*)` (0 on a desktop). So do the panes: each runs its background out to the
-  edges it meets and pads its content by the insets there, `--edge-top/right/bottom/left`
-  (`responsive.css`; 0 on an edge it doesn't meet). `.app` has no padding, or bare strips of page
-  show round the panes. Something in a pane that has to reach the edge itself, because its
-  background differs from the pane's (the dark terminal), uses the same variables.
+  edges it meets, `--edge-top/right/bottom/left` (`responsive.css`; 0 on an edge it doesn't meet),
+  and pads its content by the top and side insets. `.app` has no padding, or bare strips of page
+  show round the panes. The bottom one is left to what the pane ends on: a bar (the composer, a
+  folded drawer, the editor's status line) pads under its controls by `--edge-bottom`, and a list
+  scrolls on under the home indicator with that much more room at its end. Padding the pane instead
+  ends it on a blank strip, its lists cut off above it; a new component that can end a pane takes
+  `--edge-bottom` itself. Something whose background differs from its pane's (the dark terminal)
+  runs out to the side edges through the same variables.
 - **Fullscreen through `useFullscreen`** (`components/ui.tsx`, the element gets `fs-host`).
   iPhone's Safari has no fullscreen for page elements, so there the element fills the window.
 - **Style scrollbars for a mouse only** (`@media (hover: hover) and (pointer: fine)`). WebKit's
@@ -153,7 +160,8 @@ drawer that doesn't lead back to the chat, boxes pushed past the viewport,
 panels that scroll sideways, text painted outside its own box, labels squeezed to nothing, buttons
 under 30px, buttons spilling out of their row, and bare page showing between the panes. It also
 drives the Home Screen poses with their insets (Playwright's WebKit reports none, so it writes them
-into the CSS), where a control under an inset is a finding too. It only sees what is on screen, so
+into the CSS), where a control under an inset is a finding too (in a list, scrolled to its end), and
+so is a pane that stops a blank strip short of the bottom. It only sees what is on screen, so
 a control that needs a particular state (an attachment in the composer, a forked agent, a
 subagent's breadcrumb, an open menu, a panel in fullscreen) still wants a look of its own — and no
 check of this kind can tell you something is unreadable. Read the screenshots.

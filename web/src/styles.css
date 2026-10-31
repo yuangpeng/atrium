@@ -548,12 +548,12 @@ body.col-resizing iframe { pointer-events: none; } /* the board's would take the
 .vsplit { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 @container (max-width: 860px) {
   .split.stack { flex-direction: column; }
-  .split.stack > .side, .split.stack > .side.wide { width: auto; max-width: none; max-height: 34%; border-right: 0; border-bottom: 1px solid var(--border); flex: none; }
+  .split.stack > .side, .split.stack > .side.wide { width: auto; max-width: none; max-height: 34%; border-right: 0; border-bottom: 1px solid var(--border); flex: none; padding-bottom: 0; }
   .split.stack > .col-resizer { display: none; } /* stacked, the list takes the whole width */
 }
 @container (max-width: 640px) {
   .split.stack-files { flex-direction: column; }
-  .split.stack-files > .side { width: auto; max-height: 32%; border-right: 0; border-bottom: 1px solid var(--border); flex: none; }
+  .split.stack-files > .side { width: auto; max-height: 32%; border-right: 0; border-bottom: 1px solid var(--border); flex: none; padding-bottom: 0; }
 }
 .diff-head { display: flex; flex-direction: column; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
 .diff-head .r1 { display: flex; align-items: center; gap: 8px; min-width: 0; }
