@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { api, ForkAt, Meta, onLoggedOut, Project, ProjectInfo, SessionRow } from "./api";
 import { socket } from "./ws";
 import { throttle } from "./util";
+import { syncThemeColor } from "./layout";
 
 export type Panel = "board" | "files" | "changes" | "git" | "terminal";
 /** What a single-screen layout shows (layout.ts): the chat column or the workspace; wider ones show both. */
@@ -107,8 +108,7 @@ function syncUrl(pid: string | null, sid: string | null, aid: string | null = nu
 function applyTheme(t: Theme) {
   const dark = t === "dark" || (t === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
   document.documentElement.dataset.theme = dark ? "dark" : "light";
-  // the browser's bars (and a Home Screen app's status bar) in the page's own background
-  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", dark ? "#262624" : "#faf9f5");
+  syncThemeColor();
 }
 
 export function resolvedTheme(): "light" | "dark" {

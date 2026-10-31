@@ -36,6 +36,12 @@ function compute(): Layout {
   return queries.touch.matches ? "dual" : "wide";
 }
 
+/** The browser's bars, and a Home Screen app's status bar, in the page's background: the theme sets it, and on a phone
+ *  responsive.css makes it the rail's where the rail runs down the right edge (iPhone Duo's clock column). */
+export function syncThemeColor() {
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", getComputedStyle(document.body).backgroundColor);
+}
+
 let current = compute();
 let compact = queries.compact.matches;
 document.documentElement.dataset.layout = current;
@@ -49,6 +55,7 @@ for (const q of Object.values(queries))
     compact = queries.compact.matches;
     document.documentElement.dataset.layout = next;
     document.documentElement.toggleAttribute("data-compact", compact);
+    syncThemeColor();
     listeners.forEach((l) => l());
   });
 

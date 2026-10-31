@@ -25,12 +25,11 @@ html, body { overscroll-behavior: none; } /* the app doesn't rubber-band as a wh
 .app > .workspace { --edge-left: env(safe-area-inset-left); }
 .app > .rail { --edge-right: env(safe-area-inset-right); width: calc(var(--rail-w) + var(--edge-right)); } /* its padding: styles.css */
 /* The bottom is not padded here: padded, every pane ended on a blank strip, its lists cut off a strip above the edge.
-   What a pane ends on reaches the edge and keeps clear of the inset itself: a bar (the composer, a folded drawer, the
-   editor's status line) pads under its controls, so its background runs on; a list scrolls on under the inset, with
-   that much more room at its end, so its last row can still come up clear of it. */
+   What a pane ends on reaches the edge and keeps clear of the inset itself: a bar (a folded drawer, the editor's status
+   line) pads under its controls, so its background runs on; a list scrolls on under the inset, with that much more
+   room at its end, so its last row can still come up clear of it. The composer keeps just its own gap, the one at its
+   sides, and sits on the inset's upper part: lifted clear of all of it, it floated over a blank strip. */
 .app > :is(.workspace, .chatcol) { padding: var(--edge-top) var(--edge-right) 0 var(--edge-left); }
-.composer { padding-bottom: max(14px, var(--edge-bottom, 0px)); } /* its own padding where that is more */
-.chat.compact .composer { padding-bottom: max(10px, var(--edge-bottom, 0px)); }
 .sub-foot { padding-bottom: calc(9px + var(--edge-bottom, 0px)); }
 .drawer:has(> .drawer-head:last-child) { padding-bottom: var(--edge-bottom, 0px); } /* folded to its head */
 .editor-status { height: auto; min-height: calc(24px + var(--edge-bottom, 0px)); padding-bottom: var(--edge-bottom, 0px); }
@@ -72,6 +71,10 @@ html, body { overscroll-behavior: none; } /* the app doesn't rubber-band as a wh
 /* a touch screen with room for both (the Duo's inner screen in landscape): the panes meet at its fold */
 [data-layout="dual"] .app:has(> .chatcol) > .workspace { flex: none; width: 50%; }
 [data-layout="dual"] .app > .chatcol { flex: 1; }
+/* A Home Screen app can't draw under the status bar, and on iPhone Duo's inner screen that is a column down the right
+   edge, beside the rail: iOS paints it in the page's background (<body>, and theme-color, which follows it: layout.ts).
+   The rail's, so the clock's column reads as the rail's own. Nothing else shows <body>. */
+[data-compact]:is([data-layout="dual"], [data-layout="book"]) body { background: var(--sidebar); }
 
 /* ---------------------------------------------------------------- book: half-folded, segments side by side */
 /* the workspace fills the left segment; the chat and the rail the right one, past the hinge.
@@ -210,7 +213,7 @@ html, body { overscroll-behavior: none; } /* the app doesn't rubber-band as a wh
 [data-compact] .msg-error { font-size: calc(var(--fs) - 0.5px); }
 [data-compact] .tool-row { font-size: calc(var(--fs) - 0.5px); padding: 4px 10px; }
 [data-compact] .tool-row .brief { font-size: calc(var(--fs) - 1px); }
-[data-compact] .composer, [data-compact] .chat.compact .composer { padding: 0 8px max(8px, var(--edge-bottom, 0px)); }
+[data-compact] .composer, [data-compact] .chat.compact .composer { padding: 0 8px 8px; }
 [data-compact] .composer-box { padding: 8px 8px 6px 12px; border-radius: 14px; }
 [data-compact] .composer-input { font-size: calc(var(--fs) + 1px); }
 [data-compact] .composer-bar { gap: 4px; margin-top: 4px; }

@@ -33,13 +33,14 @@ POSES = {
     "inner-landscape": (951, 585, "dual"),
     "split-view": (385, 571, "single"),
 }
-# Added to the Home Screen, Atrium opens as an app with no Safari bars: the whole screen, and the insets the device
-# reports for it (top, right, bottom, left), measured from iPhone Duo's own screenshots. Its clock and Wi-Fi run down
-# the right edge, the home indicator along the bottom. Playwright's WebKit reports no insets, so the check writes
+# Added to the Home Screen, Atrium opens as an app with no Safari bars, under the insets the device reports (top,
+# right, bottom, left), measured from iPhone Duo's own screenshots: the home indicator along the bottom, and its clock
+# and Wi-Fi down the right edge. The outer display hands the page that column, as an inset; the inner one in landscape
+# keeps it out of the page, which is 84px narrower for it. Playwright's WebKit reports no insets, so the check writes
 # these into the CSS's env(safe-area-inset-*) as it loads.
 APP_POSES = {
     "app-outer-portrait": (466, 678, "single", (0, 84, 34, 0)),
-    "app-inner-landscape": (951, 669, "dual", (0, 84, 34, 0)),
+    "app-inner-landscape": (867, 669, "dual", (0, 0, 34, 0)),
 }
 MIN_TAP = 30  # keep this the same as the rule in AGENTS.md
 
@@ -93,13 +94,15 @@ AUDIT = """([MIN_TAP, inset]) => {
       out.push({ kind: "past the viewport", el: name(el), right: Math.round(r.right), width: innerWidth });
     // under an inset, a control sits beneath the clock, the camera or the home indicator. A list may scroll on under
     // the bottom one: what is in it only has to be able to come up clear of it, so it is checked scrolled to the end.
+    // The composer sits on that inset's upper part on purpose (AGENTS.md).
     if (inset && el.matches("button, [role=button], input, textarea, select, a[href]")) {
       const v = shown(el, r);
       let sc = el.parentElement;
       while (sc && sc !== document.body && !/auto|scroll/.test(getComputedStyle(sc).overflowY)) sc = sc.parentElement;
       const d = sc && sc !== document.body ? sc.scrollHeight - sc.clientHeight - sc.scrollTop : 0;
       const end = shown(el, { left: r.left, right: r.right, top: r.top - d, bottom: r.bottom - d });
-      if ((v && (v.top < it - 1 || v.right > innerWidth - ir + 1 || v.left < il - 1)) || (end && end.bottom > innerHeight - ib + 1)) {
+      if ((v && (v.top < it - 1 || v.right > innerWidth - ir + 1 || v.left < il - 1)) ||
+          (end && end.bottom > innerHeight - ib + 1 && !el.closest(".composer"))) {
         const b = v || end;
         out.push({ kind: "control under an inset", el: name(el), box: [b.left, b.top, b.right, b.bottom].map(Math.round),
                    text: (el.textContent || el.getAttribute("aria-label") || el.title || "").trim().slice(0, 40) });
@@ -139,8 +142,12 @@ AUDIT = """([MIN_TAP, inset]) => {
   // a pane padded over the bottom inset: what it holds stops a strip short of the edge, lists cut off above it
   if (ib) {
     // (between the side insets: under the clock's column a pane is padded on purpose)
-    const short = xs.filter((x) => x > il && x < innerWidth - ir &&
-      document.elementFromPoint(x, innerHeight - Math.ceil(ib / 2))?.matches(".app > .workspace, .app > .chatcol"));
+    const short = xs.filter((x) => {
+      const hit = x > il && x < innerWidth - ir && document.elementFromPoint(x, innerHeight - Math.ceil(ib / 2));
+      if (!hit || !hit.matches(".app > .workspace, .app > .chatcol")) return false;
+      const box = hit.getBoundingClientRect(), cs = getComputedStyle(hit); // its border is no strip
+      return x >= box.left + parseFloat(cs.borderLeftWidth) && x < box.right - parseFloat(cs.borderRightWidth);
+    });
     if (short.length) out.push({ kind: "blank strip at the bottom", el: "a pane's own padding", x: `${Math.min(...short)}-${Math.max(...short)}` });
   }
   for (const y of runs(rows, ys)) out.push({ kind: "bare page", el: "a strip side to side", y });
