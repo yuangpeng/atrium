@@ -658,10 +658,11 @@ body.col-resizing iframe { pointer-events: none; } /* the board's would take the
 /* browser fullscreen (Changes, a commit) */
 .fs-host:fullscreen { background: var(--bg); container-type: inline-size; }
 .fs-host:fullscreen .hresizer { display: none; }
-/* where the browser has no fullscreen for it (iPhone's Safari): the element fills the window (ui.tsx) */
+/* where the browser has no fullscreen for it (iPhone's Safari): the element fills the window (ui.tsx). Not padded at
+   the bottom, like a pane: what it ends on keeps clear of the home indicator itself (--edge-bottom, responsive.css) */
 .fs-host[data-fs-fill] {
   position: fixed; inset: 0; z-index: 45; height: auto !important; min-height: 0; background: var(--bg); container-type: inline-size;
-  padding: env(safe-area-inset-top) env(safe-area-inset-right) var(--safe-bottom) env(safe-area-inset-left);
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
 }
 .fs-host[data-fs-fill] .hresizer { display: none; }
 /* the panes are size containers, and a container holds a fixed box inside it: they let go meanwhile */

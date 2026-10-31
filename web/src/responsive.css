@@ -36,8 +36,9 @@ html, body { overscroll-behavior: none; } /* the app doesn't rubber-band as a wh
 .homepage { padding-bottom: calc(48px + var(--edge-bottom, 0px)); }
 .rv-empty { padding-bottom: calc(20px + var(--edge-bottom, 0px)); }
 .split > .side { padding-bottom: var(--edge-bottom, 0px); } /* beside the content it runs to the bottom; stacked, it doesn't (styles.css) */
-/* full screen on a phone (ui.tsx) pads all four insets itself */
-.fs-host[data-fs-fill] { --edge-top: 0px; --edge-right: 0px; --edge-bottom: 0px; --edge-left: 0px; }
+/* full screen on a phone (ui.tsx) pads the top and the sides itself, and meets the bottom as a pane does: padded there,
+   the review ended on a blank strip */
+.fs-host[data-fs-fill] { --edge-top: 0px; --edge-right: 0px; --edge-bottom: var(--safe-bottom); --edge-left: 0px; }
 /* the terminal is dark in either theme (TerminalPanel): it runs out to the sides itself, through the workspace's
    padding, where the workspace's own light background would show as strips beside it */
 .app > .workspace[data-panel="terminal"] > .panel-body { margin: 0 calc(-1 * var(--edge-right)) 0 calc(-1 * var(--edge-left)); }

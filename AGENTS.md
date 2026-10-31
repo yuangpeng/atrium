@@ -131,7 +131,9 @@ What to get right in a new component:
   strip). Something whose background differs from its pane's (the dark terminal) runs out to the side
   edges through the same variables.
 - **Fullscreen through `useFullscreen`** (`components/ui.tsx`, the element gets `fs-host`).
-  iPhone's Safari has no fullscreen for page elements, so there the element fills the window.
+  iPhone's Safari has no fullscreen for page elements, so there the element fills the window, and
+  meets its edges as a pane does: the top and the sides padded by the insets, the bottom left to
+  what it ends on (`--edge-bottom`; padded there, the review ended on a blank strip).
 - **Style scrollbars for a mouse only** (`@media (hover: hover) and (pointer: fine)`). WebKit's
   mobile layout leaves a styled scrollbar no room, takes its width off `clientWidth` anyway, and
   every scroll box then scrolls sideways by it.
@@ -162,7 +164,8 @@ every character that is not a letter or a digit replaced by `-`; one user and on
 is enough to make a session, and a `toolUseResult` with `filePath` makes it show up in Changes.
 
 `web/scripts/duo-check.py` drives every pose above as a touch device — the home page, the chat,
-the rail's drawer where it is one, each workspace panel, then back to the chat through the drawer —
+the rail's drawer where it is one, each workspace panel (the review also full screen), then back to
+the chat through the drawer —
 and fails on a pose that resolves to the wrong layout or misses the phone sizes (`data-compact`), a
 drawer that doesn't lead back to the chat, boxes pushed past the viewport,
 panels that scroll sideways, text painted outside its own box, labels squeezed to nothing, buttons
@@ -171,7 +174,7 @@ drives the Home Screen poses with their insets (Playwright's WebKit reports none
 into the CSS), where a control under an inset is a finding too (in a list, scrolled to its end; the
 composer aside), and so is a pane that stops a blank strip short of the bottom. It only sees what is
 on screen, so a control that needs a particular state (an attachment in the composer, a forked
-agent, a subagent's breadcrumb, an open menu, a panel in fullscreen) still wants a look of its own —
+agent, a subagent's breadcrumb, an open menu, the editor or a commit in fullscreen) still wants a look of its own —
 and no check of this kind can tell you something is unreadable. Read the screenshots.
 
 ## Keep this in sync

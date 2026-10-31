@@ -4,7 +4,7 @@ on a phone, iPhone Duo included".
 
 It drives Safari's engine (Playwright's WebKit) at each pose, as a touch device — the home page,
 the chat, the rail's drawer where the screen is too narrow for a docked one, then each workspace
-panel, and back to the chat through the drawer — and walks the DOM for the mistakes that are easy to make and hard to see: boxes pushed
+panel (the review also full screen), and back to the chat through the drawer — and walks the DOM for the mistakes that are easy to make and hard to see: boxes pushed
 past the viewport, text painted outside its own box, boxes squeezed to nothing (a label with
 `flex: 1; min-width: 0` collapses and paints over its neighbour), and buttons too small for a
 fingertip. Every pose also has to get the phone sizes (<html data-compact>, layout.ts).
@@ -139,12 +139,13 @@ AUDIT = """([MIN_TAP, inset]) => {
     return got;
   };
   for (const x of runs(cols, xs)) out.push({ kind: "bare page", el: "a strip top to bottom", x });
-  // a pane padded over the bottom inset: what it holds stops a strip short of the edge, lists cut off above it
+  // a pane padded over the bottom inset: what it holds stops a strip short of the edge, lists cut off above it. So
+  // does something shown full screen, which fills the window on a phone (ui.tsx)
   if (ib) {
     // (between the side insets: under the clock's column a pane is padded on purpose)
     const short = xs.filter((x) => {
       const hit = x > il && x < innerWidth - ir && document.elementFromPoint(x, innerHeight - Math.ceil(ib / 2));
-      if (!hit || !hit.matches(".app > .workspace, .app > .chatcol")) return false;
+      if (!hit || !hit.matches(".app > .workspace, .app > .chatcol, .fs-host[data-fs-fill]")) return false;
       const box = hit.getBoundingClientRect(), cs = getComputedStyle(hit); // its border is no strip
       return x >= box.left + parseFloat(cs.borderLeftWidth) && x < box.right - parseFloat(cs.borderRightWidth);
     });
@@ -277,6 +278,12 @@ async def main() -> int:
                         sw, cw = await board.evaluate(WIDE_BOARD)
                         if sw > cw + 1:
                             findings.append(f"{pose:16} {'board':9} {'the board scrolls sideways':26} {sw}px of content in its {cw}px frame")
+                if tab == "Changes":  # the review full screen: on a phone it fills the window itself (ui.tsx)
+                    await page.locator('.toolbar button[aria-label="Full-screen review"]').tap()
+                    await page.wait_for_timeout(800)
+                    await audit(page, pose, "review-fs", inset)
+                    await page.locator('.toolbar button[aria-label="Exit full screen"]').tap()
+                    await page.wait_for_timeout(400)
                 if tab == "Git":  # its second view: the worktrees and the agents in each
                     await page.locator('.toolbar button[aria-label="Worktrees"]').tap()
                     await page.wait_for_timeout(600)
