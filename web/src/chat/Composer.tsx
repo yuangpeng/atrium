@@ -10,7 +10,7 @@ import { api, Attachment, Harness, ProjectInfo, SessionRow, Upload } from "../ap
 import type { Workspace } from "../drafts";
 import { useApp } from "../store";
 import { clsx, relTo, shortPath } from "../util";
-import { Popover, Spinner, useTip } from "../components/ui";
+import { ImageViewer, Popover, Spinner, useTip } from "../components/ui";
 import { HarnessIcon, ModelIcon } from "../components/BrandIcons";
 
 export interface PendingUpload {
@@ -139,15 +139,17 @@ export function AttachButton({ onClick }: { onClick: () => void }) {
   );
 }
 
-/** Attachments shown inside a sent user message. */
+/** Attachments shown inside a sent user message: an image opens over the page. */
 export function MessageAttachments({ items }: { items: Attachment[] }) {
+  const [viewing, setViewing] = useState<Attachment | null>(null);
   return (
     <div className="msg-attachments">
+      {viewing?.url && <ImageViewer src={viewing.url} alt={viewing.name} onClose={() => setViewing(null)} />}
       {items.map((a, i) =>
         a.mime?.startsWith("image") && a.url ? (
-          <a key={i} href={a.url} target="_blank" rel="noreferrer" className="msg-attach-img" title={a.path || a.name}>
+          <button key={i} className="msg-attach-img" onClick={() => setViewing(a)} aria-label={`View ${a.name}`} data-tip={a.path || a.name}>
             <img src={a.url} alt={a.name} />
-          </a>
+          </button>
         ) : (
           <span key={i} className="msg-attach-file" title={a.path || a.name}>
             <FileText size={13} /> {a.name}

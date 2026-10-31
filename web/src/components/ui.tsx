@@ -31,6 +31,26 @@ export function Modal({ title, onClose, children, footer, wide, xl, bodyClass }:
   );
 }
 
+/** An image over the whole page, fit to the window; ✕, Escape or a tap beside the image closes it. Opening it in a
+ *  new tab instead would strand the Home Screen app, which has no back button. In a portal: the panes are size
+ *  containers, which would hold a fixed box inside them. */
+export function ImageViewer({ src, alt, onClose }: { src: string; alt: string; onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  return createPortal(
+    <div className="image-viewer" role="dialog" aria-label={alt} onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <img src={src} alt={alt} />
+      <button className="image-viewer-x" onClick={onClose} aria-label="Close" data-tip="Close (Esc)" autoFocus>
+        <X size={20} />
+      </button>
+    </div>,
+    document.body,
+  );
+}
+
 /** Anchored popover menu; closes on outside click / Escape. `within` (an ancestor selector) keeps the menu inside that box. */
 export function Popover({
   trigger,
