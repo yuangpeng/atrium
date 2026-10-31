@@ -8,9 +8,10 @@ import { DiffOptions } from "../components/DiffOptions";
 import { FileNav, FileTree, useFileTree } from "../components/FileTree";
 import { ReviewBadge, ReviewDrawer } from "../components/ReviewDrawer";
 import { LockToggle, useEditLock } from "../components/EditLock";
-import { Spinner, useFullscreen } from "../components/ui";
+import { Spinner, startColResize, useFullscreen } from "../components/ui";
 
 const ST: Record<string, string> = { created: "A", modified: "M", deleted: "D", "created+deleted": "–" };
+const LIST_KEY = "atrium.changesListWidth";
 
 const BASELINE_LABEL: Record<string, string> = { snapshot: "git snapshot", transcript: "from transcript", head: "HEAD", unknown: "unknown" };
 const BASELINE_HINT: Record<string, string> = {
@@ -24,6 +25,19 @@ const BASELINE_HINT: Record<string, string> = {
 const changePath = (f: ChangeFile) => (f.rel.startsWith("/") ? shortPath(f.rel) : f.rel);
 const gitPath = (f: GitStatusFile) => f.path;
 const toReview = (f: ChangeFile) => !f.reviewed && !f.unchanged;
+
+/** The list beside the diff, as wide as its splitter was last dragged (both views, remembered); until then the width
+ *  in styles.css (narrower on a phone). Put `ref` and `style` on the list, `drag` on the `.col-resizer` after it. */
+function useListWidth() {
+  const ref = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(() => Number(localStorage.getItem(LIST_KEY)) || 0);
+  useEffect(() => void (width && localStorage.setItem(LIST_KEY, String(width))), [width]);
+  return {
+    ref,
+    style: width ? ({ "--list-w": `${width}px` } as React.CSSProperties) : undefined,
+    drag: (e: React.PointerEvent<HTMLElement>) => startColResize(e, ref, setWidth),
+  };
+}
 
 export function ChangesPanel() {
   const [mode, setMode] = useState<"agents" | "tree">("agents");
@@ -70,6 +84,7 @@ function AgentChangesView() {
   const [edited, setEdited] = useState<string | null>(null);
   const tree = useFileTree(files, changePath);
   const locked = useEditLock((s) => s.locked);
+  const list = useListWidth();
 
   useEffect(() => {
     if (changesSession) setSid(changesSession);
@@ -186,7 +201,7 @@ function AgentChangesView() {
 
   return (
     <div className="split stack">
-      <div className="side wide">
+      <div ref={list.ref} className="side wide" style={list.style}>
         <div className="section-label">Agents with changes</div>
         {agents === null && (
           <div style={{ padding: 12 }}>
@@ -198,7 +213,7 @@ function AgentChangesView() {
           <div key={a.session.id} className={clsx("agent-pick", a.session.id === sid && "on")} onClick={() => setSid(a.session.id)}>
             <span className="dot" style={{ background: agentColor(a.session.id) }} />
             <span className="grow ellipsis">{displayName(a.session)}</span>
-            <span className="mono faint" style={{ fontSize: 11 }}>
+            <span className="num mono faint" style={{ fontSize: 11 }}>
               <span style={{ color: "var(--ok)" }}>+{a.added}</span> <span style={{ color: "var(--err)" }}>−{a.removed}</span>
             </span>
             <ReviewBadge r={reviews[a.session.id]} />
@@ -258,6 +273,7 @@ function AgentChangesView() {
           </>
         )}
       </div>
+      <div className="col-resizer" onPointerDown={list.drag} />
       <div className="content">
         {cur && detail ? (
           <>
@@ -368,6 +384,7 @@ function WorkingTreeView() {
   const [amend, setAmend] = useState(false);
   const [busy, setBusy] = useState(false);
   const locked = useEditLock((s) => s.locked);
+  const list = useListWidth();
 
   const load = useCallback(() => api.gitSummary(pid, root).then(setSum).catch((e) => toast(e.message, "error")), [pid, root, toast]);
   const loadThrottled = useMemo(() => throttle(() => void load(), 1500), [load]);
@@ -492,7 +509,7 @@ function WorkingTreeView() {
 
   return (
     <div className="split stack">
-      <div className="side wide">
+      <div ref={list.ref} className="side wide" style={list.style}>
         {project!.worktrees.length > 1 && (
           <div style={{ padding: "8px 8px 0" }}>
             <select className="select" style={{ height: 30, fontSize: 12.5 }} value={root} onChange={(e) => (setRoot(e.target.value), setSel(null))}>
@@ -546,6 +563,7 @@ function WorkingTreeView() {
           </div>
         </div>
       </div>
+      <div className="col-resizer" onPointerDown={list.drag} />
       <div className="content">
         {sel && diff ? (
           <>

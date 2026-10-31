@@ -129,6 +129,7 @@ html, body { overscroll-behavior: none; } /* the app doesn't rubber-band as a wh
   /* a horizontal splitter sits on the seam, so widening it takes from the row above: 6px up is
      enough to grab with a finger and still leaves most of that row tappable */
   .hresizer { top: -6px; height: 12px; }
+  .split > .col-resizer { width: 12px; margin: 0 -6px; } /* Changes' list | diff: 6px over each, the same */
   /* buttons a fingertip hits: several are 16–24px, which is well under what it covers.
      The rows holding them grow to match, so nothing spills out of its row. */
   .icon-btn.sm { width: 30px; height: 30px; }
@@ -172,7 +173,7 @@ html, body { overscroll-behavior: none; } /* the app doesn't rubber-band as a wh
    Type and chrome a size down from a desktop's. --fs is the chat's reading size (16px on a desktop); the chat's other
    sizes follow it, so it is the one to change. The board (an iframe) has its own copy in atrium/board/template.py.
    Buttons stay at least 30px for a fingertip (above). */
-[data-compact] { --fs: 12px; --rail-w: 44px; }
+[data-compact] { --fs: 12px; --rail-w: 44px; --list-w-default: 220px; } /* --list-w-default: Changes' list, beside its diff */
 [data-compact] .msg-text, [data-compact] .chat.compact .msg-text { font-size: var(--fs); line-height: 1.6; }
 [data-compact] .msg-user { font-size: var(--fs); padding: 7px 11px; border-radius: 14px 14px 4px 14px; }
 [data-compact] .chat-inner, [data-compact] .chat.compact .chat-inner { padding: 12px 12px 20px; gap: 10px; }

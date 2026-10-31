@@ -244,6 +244,40 @@ export function startRowResize(e: React.PointerEvent<HTMLElement>, ref: RefObjec
   document.body.style.userSelect = "none";
 }
 
+/** A vertical splitter (`.col-resizer`, right after the box): drag it to set the box's width in px, from `min` up to
+ *  what leaves `rest` px of the parent beside it. Pointer events and capture, as in startRowResize. */
+export function startColResize(e: React.PointerEvent<HTMLElement>, ref: RefObject<HTMLElement | null>, set: (px: number) => void, min = 180, rest = 320) {
+  if (e.button !== 0) return;
+  e.preventDefault();
+  const el = ref.current;
+  const box = el?.parentElement?.getBoundingClientRect();
+  if (!el || !box) return;
+  const left = el.getBoundingClientRect().left;
+  const handle = e.currentTarget;
+  try {
+    handle.setPointerCapture(e.pointerId);
+  } catch {
+    /* the pointer is already gone: the drag below still works */
+  }
+  const move = (ev: PointerEvent) => {
+    if (ev.pointerId !== e.pointerId) return;
+    set(Math.round(Math.max(min, Math.min(box.width - rest, ev.clientX - left))));
+  };
+  const up = (ev: PointerEvent) => {
+    if (ev.pointerId !== e.pointerId) return;
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", up);
+    window.removeEventListener("pointercancel", up);
+    handle.classList.remove("drag");
+    document.body.classList.remove("col-resizing");
+  };
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", up);
+  window.addEventListener("pointercancel", up);
+  handle.classList.add("drag");
+  document.body.classList.add("col-resizing"); // the cursor, no text selection, iframes out of the way (styles.css)
+}
+
 export function useInterval(fn: () => void, ms: number | null) {
   const saved = useRef(fn);
   saved.current = fn;

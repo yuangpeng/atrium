@@ -531,12 +531,20 @@ body.col-resizing iframe { pointer-events: none; } /* the board's would take the
 .panel-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .split { display: flex; flex: 1; min-height: 0; }
 .split > .side { width: 250px; flex: none; border-right: 1px solid var(--border); overflow: auto; display: flex; flex-direction: column; min-height: 0; }
-.split > .side.wide { width: 300px; }
+/* Changes' list: as wide as its splitter left it (--list-w, ChangesPanel), else the default (a phone's: responsive.css) */
+.split > .side.wide { width: var(--list-w, var(--list-w-default, 300px)); max-width: calc(100% - 320px); container: list / inline-size; }
 .split > .content { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+/* the splitter after the list: takes no room, its handle lies over the seam, half on each side (a finger's: responsive.css) */
+.split > .col-resizer { flex: none; width: 6px; margin: 0 -3px; position: relative; z-index: 5; cursor: col-resize; touch-action: none; }
+.col-resizer.drag { background: color-mix(in srgb, var(--accent) 35%, transparent); }
+@media (hover: hover) { .col-resizer:hover { background: color-mix(in srgb, var(--accent) 35%, transparent); } }
+/* a narrow list: the line counts go, the names keep the room */
+@container list (max-width: 260px) { .agent-pick .num, .ftree .num { display: none; } }
 .vsplit { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 @container (max-width: 860px) {
   .split.stack { flex-direction: column; }
-  .split.stack > .side, .split.stack > .side.wide { width: auto; max-height: 34%; border-right: 0; border-bottom: 1px solid var(--border); flex: none; }
+  .split.stack > .side, .split.stack > .side.wide { width: auto; max-width: none; max-height: 34%; border-right: 0; border-bottom: 1px solid var(--border); flex: none; }
+  .split.stack > .col-resizer { display: none; } /* stacked, the list takes the whole width */
 }
 @container (max-width: 640px) {
   .split.stack-files { flex-direction: column; }
