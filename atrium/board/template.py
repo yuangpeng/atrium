@@ -168,6 +168,15 @@ JS = r"""
     var d = e.data || {};
     if(d.type === 'atrium:board-html' && d.html){
       var doc = new DOMParser().parseFromString(d.html, 'text/html');
+      // From a newer Atrium than this page (the host pushes right after a restart): its stylesheet comes in too, or an
+      // open board keeps the old layout, the Home Screen app's until it is closed. A new script can't come in that way:
+      // the page loads again, at the theme it shows.
+      var js = doc.getElementById('board-js'), css = doc.getElementById('board-css'), own = document.getElementById('board-css');
+      if(js && js.textContent !== document.getElementById('board-js').textContent){
+        location.replace(location.pathname + '?theme=' + document.documentElement.getAttribute('data-theme'));
+        return;
+      }
+      if(css && css.textContent !== own.textContent) own.textContent = css.textContent;
       var next = doc.querySelector('.wrap'), cur = document.querySelector('.wrap');
       if(next && cur){ cur.innerHTML = next.innerHTML; tick(); }
     }
@@ -262,7 +271,7 @@ def render_board(state: dict[str, Any], project_name: str, project_path: str) ->
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{_e(project_name)} · Atrium Board</title>
-<style>{CSS}</style></head>
+<style id="board-css">{CSS}</style></head>
 <body><div class="wrap">
 <header class="top">
   <div>
@@ -280,6 +289,6 @@ def render_board(state: dict[str, Any], project_name: str, project_path: str) ->
   <div><h2>Timeline</h2><ul class="timeline">{tl_html}</ul></div>
 </div>
 </div>
-<script>{JS}</script>
+<script id="board-js">{JS}</script>
 </body></html>
 """
