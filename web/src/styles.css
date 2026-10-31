@@ -965,6 +965,7 @@ details.review-tool > summary::-webkit-details-marker { display: none; }
 .homepage > * { max-width: 1180px; margin-left: auto; margin-right: auto; }
 .home-top { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 12px; }
 .home-top h1 { margin: 0 14px 0 2px; font: 500 22px/1.2 var(--font-serif); }
+.home-top .btn { width: 32px; padding: 0; } /* Open folder, New folder: their icons, the words in their tips */
 .home-search { flex: 0 1 380px; display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 8px 0 10px; border: 1px solid var(--border-strong); border-radius: 9px; background: var(--surface); color: var(--faint); }
 .home-search:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
 .home-search input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; font-size: 13px; }

@@ -142,11 +142,11 @@ export function HomePage() {
             <span className="kbd">{isMac ? "⌘K" : "Ctrl K"}</span>
           </label>
           <span className="grow" />
-          <button className="btn" onClick={() => setPickerOpen("open")}>
-            <FolderOpen size={14} /> Open folder…
+          <button className="btn" aria-label="Open folder" data-tip="Open a folder" onClick={() => setPickerOpen("open")}>
+            <FolderOpen size={16} />
           </button>
-          <button className="btn btn-primary" onClick={() => setPickerOpen("create")}>
-            <FolderPlus size={14} /> New folder…
+          <button className="btn btn-primary" aria-label="New folder" data-tip="New folder" onClick={() => setPickerOpen("create")}>
+            <FolderPlus size={16} />
           </button>
           <RailToggle />
         </header>
