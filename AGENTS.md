@@ -55,6 +55,11 @@ bars showing):
 | Inner display, landscape | 951 | 585 | 620 |
 | One window of two, side by side | 385 | 571 | 609 |
 
+Added to the Home Screen, Atrium opens as an app with no Safari bars: the whole screen, under the
+device's safe-area insets. On iPhone Duo the clock and Wi-Fi run down the right edge (an 84px inset)
+and the home indicator along the bottom (34px): 466 × 678 on the outer display in portrait, 951 × 669
+on the inner one in landscape (measured from the device's screenshots).
+
 `web/src/layout.ts` turns that into one of five layouts and puts it on `<html data-layout>`;
 `web/src/responsive.css` places the panes per layout, and holds the touch and narrow-screen rules.
 
@@ -105,7 +110,11 @@ What to get right in a new component:
 - **Use `dvh`, not `vh`**: on a phone `100vh` includes what Safari's bars cover.
 - **The page reaches under the notch and the home indicator** (`viewport-fit=cover`, for the Home
   Screen app, which has no Safari bars): something fixed to an edge of the window adds
-  `env(safe-area-inset-*)` (0 on a desktop).
+  `env(safe-area-inset-*)` (0 on a desktop). So do the panes: each runs its background out to the
+  edges it meets and pads its content by the insets there, `--edge-top/right/bottom/left`
+  (`responsive.css`; 0 on an edge it doesn't meet). `.app` has no padding, or bare strips of page
+  show round the panes. Something in a pane that has to reach the edge itself, because its
+  background differs from the pane's (the dark terminal), uses the same variables.
 - **Fullscreen through `useFullscreen`** (`components/ui.tsx`, the element gets `fs-host`).
   iPhone's Safari has no fullscreen for page elements, so there the element fills the window.
 - **Style scrollbars for a mouse only** (`@media (hover: hover) and (pointer: fine)`). WebKit's
@@ -142,10 +151,12 @@ the rail's drawer where it is one, each workspace panel, then back to the chat t
 and fails on a pose that resolves to the wrong layout or misses the phone sizes (`data-compact`), a
 drawer that doesn't lead back to the chat, boxes pushed past the viewport,
 panels that scroll sideways, text painted outside its own box, labels squeezed to nothing, buttons
-under 30px and buttons spilling out of their row. It only sees what is on screen, so a control that
-needs a particular state (an attachment in the composer, a forked agent, a subagent's breadcrumb,
-an open menu, a panel in fullscreen) still wants a look of its own — and no check of this kind can
-tell you something is unreadable. Read the screenshots.
+under 30px, buttons spilling out of their row, and bare page showing between the panes. It also
+drives the Home Screen poses with their insets (Playwright's WebKit reports none, so it writes them
+into the CSS), where a control under an inset is a finding too. It only sees what is on screen, so
+a control that needs a particular state (an attachment in the composer, a forked agent, a
+subagent's breadcrumb, an open menu, a panel in fullscreen) still wants a look of its own — and no
+check of this kind can tell you something is unreadable. Read the screenshots.
 
 ## Keep this in sync
 

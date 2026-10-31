@@ -225,7 +225,7 @@ function Workspace() {
   }, [panel]);
   if (!project) return null;
   return (
-    <main className="workspace">
+    <main className="workspace" data-panel={panel}>
       <div className="ws-tabs">
         {TABS.filter((t) => t.id !== "terminal" || terminal).map((t) => (
           <button key={t.id} className={clsx("panel-tab icon-only", panel === t.id && "on")} onClick={() => setPanel(t.id)} aria-label={t.label} data-tip={t.label}>

@@ -13,10 +13,22 @@ html, body { overscroll-behavior: none; } /* the app doesn't rubber-band as a wh
 .toast { max-width: min(560px, calc(100vw - 24px)); }
 .rail-flyout { right: calc(var(--rail-w) + 8px + env(safe-area-inset-right)); width: min(350px, calc(100vw - var(--rail-w) - 16px)); }
 /* the page reaches under the notch, the status bar and the home indicator (viewport-fit=cover, index.html: a web app
-   added to the Home Screen has no Safari bars around it); what is drawn stays out of them. 0 on a desktop. The bottom
-   one goes while the keyboard is up (--vvh, above): the page then ends on the keyboard, not on the home indicator. */
+   added to the Home Screen has no Safari bars around it). 0 on a desktop. The bottom one goes while the keyboard is up
+   (--vvh, above): the page then ends on the keyboard, not on the home indicator. */
 :root { --safe-bottom: max(0px, calc(env(safe-area-inset-bottom) - (100dvh - var(--vvh, 100dvh)))); }
-.app { padding: env(safe-area-inset-top) env(safe-area-inset-right) var(--safe-bottom) env(safe-area-inset-left); }
+/* So do the panes: one that meets an edge of the screen runs its background out to it, and keeps what it draws clear
+   of the inset there (--edge-*). Padding .app instead left strips of bare page round them: beside the rail, where
+   iPhone Duo shows its clock and Wi-Fi down the right edge, and under every pane, over the home indicator.
+   Side by side, each pane meets the top and the bottom, the workspace the left edge and the rail the right one;
+   single and laptop (below) change that where the panes overlap or stack. */
+.app > :is(.workspace, .chatcol, .rail) { --edge-top: env(safe-area-inset-top); --edge-right: 0px; --edge-bottom: var(--safe-bottom); --edge-left: 0px; }
+.app > .workspace { --edge-left: env(safe-area-inset-left); }
+.app > .rail { --edge-right: env(safe-area-inset-right); width: calc(var(--rail-w) + var(--edge-right)); } /* its padding: styles.css */
+.app > :is(.workspace, .chatcol) { padding: var(--edge-top) var(--edge-right) var(--edge-bottom) var(--edge-left); }
+/* the terminal is dark in either theme (TerminalPanel): it runs out to those edges itself, through the workspace's
+   padding, where the workspace's own light background would show as strips round it */
+.app > .workspace[data-panel="terminal"] > .panel-body { margin: 0 calc(-1 * var(--edge-right)) calc(-1 * var(--edge-bottom)) calc(-1 * var(--edge-left)); }
+.term-panel { padding: 0 var(--edge-right, 0px) var(--edge-bottom, 0px) var(--edge-left, 0px); }
 .toasts { bottom: calc(18px + var(--safe-bottom)); }
 .rail-flyout { top: calc(10px + env(safe-area-inset-top)); bottom: calc(10px + var(--safe-bottom)); }
 
@@ -26,15 +38,14 @@ html, body { overscroll-behavior: none; } /* the app doesn't rubber-band as a wh
 [data-layout="single"] .app { position: relative; justify-content: flex-end; }
 [data-layout="single"] .app > .workspace,
 [data-layout="single"] .app > .chatcol {
-  position: absolute; top: env(safe-area-inset-top); bottom: var(--safe-bottom); left: env(safe-area-inset-left); right: env(safe-area-inset-right);
-  width: auto; border-left: 0;
+  position: absolute; inset: 0; width: auto; border-left: 0;
+  --edge-left: env(safe-area-inset-left); --edge-right: env(safe-area-inset-right); /* each is the whole screen */
 }
 [data-layout="single"] .app[data-pane="chat"]:has(> .chatcol) > .workspace,
 [data-layout="single"] .app[data-pane="workspace"] > .chatcol { visibility: hidden; }
 /* the rail is a drawer over them: the top bars open it (RailToggle), going anywhere closes it */
 [data-layout="single"] .rail {
-  position: fixed; top: 0; right: 0; bottom: 0; z-index: 66; width: calc(var(--rail-w) + env(safe-area-inset-right));
-  padding-top: calc(9px + env(safe-area-inset-top)); padding-bottom: calc(10px + var(--safe-bottom)); padding-right: env(safe-area-inset-right);
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 66;
   box-shadow: var(--shadow-lg); transform: translateX(105%); visibility: hidden; transition: transform 0.18s ease, visibility 0s linear 0.18s;
 }
 /* open: no transform at all, which would hold the rail's own fixed flyout and cards inside it */
@@ -75,11 +86,15 @@ html, body { overscroll-behavior: none; } /* the app doesn't rubber-band as a wh
 /* the chat hidden: the workspace takes both segments, beside the rail */
 [data-layout="laptop"] .app:not(:has(> .chatcol)) > .workspace { grid-column: 1; grid-row: 1 / -1; border-bottom: 0; }
 [data-layout="laptop"] .app:not(:has(> .chatcol)) > .rail { grid-row: 1 / -1; }
+/* the screen's edges then: the top and both sides are the workspace's, the bottom the chat's and the rail's */
+[data-layout="laptop"] .app:has(> .chatcol) > .workspace { --edge-right: env(safe-area-inset-right); --edge-bottom: 0px; }
+[data-layout="laptop"] .app:has(> .chatcol) > .rail { --edge-top: 0px; }
+[data-layout="laptop"] .app > .chatcol { --edge-top: 0px; --edge-left: env(safe-area-inset-left); }
 
 /* ---------------------------------------------------------------- short screens */
 /* the Duo's outer screen in landscape is 368px tall: a tighter rail leaves room for agents */
 @media (max-height: 480px) {
-  .rail { gap: 2px; padding: 5px 0; }
+  .rail { gap: 2px; --rail-pad-top: 5px; --rail-pad-bottom: 5px; }
   .rail-btn { width: 32px; height: 32px; }
   .rail-sep { margin: 2px 0; }
   .rail-agents { gap: 6px; padding: 5px 0; }
@@ -197,13 +212,12 @@ html, body { overscroll-behavior: none; } /* the app doesn't rubber-band as a wh
 [data-compact] :is(.ws-tabs, .topbar) :is(.icon-btn, .panel-tab) svg { width: 14px; height: 14px; }
 [data-compact] .ws-project { font-size: calc(var(--fs) - 0.5px); }
 /* the rail */
-[data-compact] .rail { gap: 3px; padding-top: 6px; padding-bottom: 8px; }
+[data-compact] .rail { gap: 3px; --rail-pad-top: 6px; --rail-pad-bottom: 8px; }
 [data-compact] .rail-btn { width: 30px; height: 30px; border-radius: 8px; }
 [data-compact] .rail-btn svg { width: 15px; height: 15px; }
 [data-compact] .rail-agent { width: 30px; height: 30px; }
 [data-compact] .rail-agents { gap: 6px; }
 [data-compact] .rail-agent .st { width: 10px; height: 10px; }
-[data-compact][data-layout="single"] .rail { padding-top: calc(6px + env(safe-area-inset-top)); padding-bottom: calc(8px + var(--safe-bottom)); }
 /* panels */
 [data-compact] .toolbar { gap: 4px; min-height: 40px; }
 [data-compact] :is(.toolbar .title, .drawer-head) { font-size: calc(var(--fs) + 0.5px); }

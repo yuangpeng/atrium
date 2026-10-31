@@ -191,7 +191,12 @@ a { color: var(--accent-strong); }
 .bar.done > span { background: var(--ok); }
 
 /* ---------------------------------------------------------------- rail */
-.rail { width: var(--rail-w); flex: none; background: var(--sidebar); border-left: 1px solid var(--border); display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 9px 0 10px; min-height: 0; }
+/* its padding: its own, plus the screen's insets on the edges it meets (--edge-*, responsive.css) */
+.rail {
+  width: var(--rail-w); flex: none; background: var(--sidebar); border-left: 1px solid var(--border); display: flex; flex-direction: column; align-items: center; gap: 4px; min-height: 0;
+  --rail-pad-top: 9px; --rail-pad-bottom: 10px;
+  padding: calc(var(--rail-pad-top) + var(--edge-top, 0px)) var(--edge-right, 0px) calc(var(--rail-pad-bottom) + var(--edge-bottom, 0px)) 0;
+}
 .rail-btn { width: 34px; height: 34px; border-radius: 9px; border: 0; background: transparent; color: var(--muted); cursor: pointer; display: grid; place-items: center; flex: none; }
 .rail-btn:hover { background: var(--hover); color: var(--text); }
 .rail-btn.on { background: var(--active); color: var(--text); }
@@ -728,7 +733,10 @@ body.col-resizing iframe { pointer-events: none; } /* the board's would take the
 .rv-auto { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 400; color: var(--muted); cursor: pointer; }
 .rv-auto input { margin: 0; }
 .rv-outbox { background: var(--info-soft); color: var(--info); }
-.rv-empty { height: auto; flex: 1; padding: 20px; font-size: 13px; }
+/* a short drawer (a phone in landscape) scrolls it rather than spill its button out of the panel; safe: centred, its
+   top would be cut off instead of scrolled to */
+.rv-empty { height: auto; flex: 1; min-height: 0; overflow-y: auto; justify-content: safe center; padding: 20px; font-size: 13px; }
+.rv-empty > * { flex: none; } /* scrolled, not squeezed */
 .rv-empty > div { max-width: 460px; }
 .rv-badge { display: inline-flex; align-items: center; gap: 3px; color: var(--muted); font-size: 11px; flex: none; }
 .rv-badge.open { color: var(--info); font-weight: 600; }
