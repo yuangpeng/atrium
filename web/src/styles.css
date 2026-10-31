@@ -697,7 +697,17 @@ body.col-resizing iframe { pointer-events: none; } /* the board's would take the
 }
 .note-box { margin: 8px 12px 0; padding: 9px 12px; border-radius: 10px; background: var(--info-soft); color: var(--text-2); font-size: 13px; display: flex; gap: 8px; align-items: flex-start; }
 .note-box .ico { color: var(--info); display: inline-flex; margin-top: 2px; }
-.wt-row { display: flex; gap: 10px; align-items: center; padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 13px; }
+/* a worktree (GitPanel's Worktrees): its branch and buttons on one line, then its path and the agents working in it,
+   both under the branch name. A chip is at most a line wide: an untitled agent's name is its first prompt. */
+.wt-row { padding: 8px 12px 10px; border-bottom: 1px solid var(--border); font-size: 13px; }
+.wt-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.wt-head > :is(svg, .pill) { flex: none; }
+.wt-branch { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
+.wt-path, .wt-agents { margin-left: 24px; }
+.wt-path { font-size: 11.5px; }
+.wt-agents { margin-top: 6px; }
+.wt-agents .chip-toggle { max-width: 100%; font-family: var(--font-ui); }
+.wt-agents .chip-toggle > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .drawer { border-top: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; background: var(--bg); }
 .drawer-head { display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: pointer; font-weight: 600; font-size: 13px; flex: none; }
 .drawer-head:hover { background: var(--hover); }

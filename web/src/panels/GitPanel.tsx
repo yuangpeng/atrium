@@ -1,7 +1,7 @@
 import type { JSX } from "react";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Bot, ChevronDown, ChevronUp, ExternalLink, FolderGit2, GitBranch, GitBranchPlus, GitGraph, Layers, Lightbulb, ListChecks, Maximize2, Minimize2,
+  Bot, ChevronDown, ChevronUp, ExternalLink, FolderGit2, FolderOpen, GitBranch, GitBranchPlus, GitGraph, Layers, Lightbulb, ListChecks, Maximize2, Minimize2,
   RefreshCw, Sparkles, Square, SquareCheck, Trash2, Wand, X,
 } from "lucide-react";
 import { api, Branch, Commit, CommitDetail, CommitFile, GitSummary, GitView } from "../api";
@@ -588,6 +588,8 @@ function CommitView({ detail, onClose }: { detail: CommitDetail; onClose: () => 
 }
 
 // ---------------------------------------------------------------- worktrees
+const AGENTS_SHOWN = 6; // a worktree's agents before "+N": the main checkout can hold dozens
+
 function Worktrees({ summary, onChanged }: { summary: GitSummary | null; onChanged: () => void }) {
   const { project, toast, sessions, selectSession, openFile } = useApp();
   const pid = project!.id;
@@ -595,6 +597,8 @@ function Worktrees({ summary, onChanged }: { summary: GitSummary | null; onChang
   const [base, setBase] = useState("");
   const [existing, setExisting] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [open, setOpen] = useState<Set<string>>(new Set()); // worktrees showing all their agents
+  const toggle = (path: string) => setOpen((o) => (o.has(path) ? new Set([...o].filter((x) => x !== path)) : new Set([...o, path])));
   const wts = summary?.worktrees ?? [];
 
   const add = async () => {
@@ -634,32 +638,42 @@ function Worktrees({ summary, onChanged }: { summary: GitSummary | null; onChang
         const agents = sessions.filter((s) => s.cwd === w.path && s.role === "worker");
         return (
           <div key={w.path} className="wt-row">
-            <FolderGit2 size={16} className={w.main ? "muted" : ""} style={w.main ? undefined : { color: "var(--accent-strong)" }} />
-            <div className="grow">
-              <div className="row">
-                <b className="mono" style={{ fontSize: 12.5 }}>{w.branch ?? "(detached)"}</b>
-                {w.main && <span className="pill">main checkout</span>}
-                {w.locked && <span className="pill warn">locked</span>}
-                {w.prunable && <span className="pill err">prunable</span>}
-              </div>
-              <div className="muted mono ellipsis" style={{ fontSize: 11.5 }}>{w.main ? w.path : relTo(project!.path, w.path)}</div>
-              {agents.length > 0 && (
-                <div className="chips" style={{ marginTop: 4 }}>
-                  {agents.map((a) => (
-                    <button key={a.id} className="chip-toggle on" onClick={() => selectSession(a.id)} style={{ fontFamily: "var(--font-ui)" }}>
-                      {a.name || a.title}
-                    </button>
-                  ))}
-                </div>
+            <div className="wt-head">
+              <FolderGit2 size={16} className={w.main ? "muted" : ""} style={w.main ? undefined : { color: "var(--accent-strong)" }} />
+              <b className="wt-branch mono">{w.branch ?? "(detached)"}</b>
+              {w.main && <span className="pill">main checkout</span>}
+              {w.locked && <span className="pill warn">locked</span>}
+              {w.prunable && <span className="pill err">prunable</span>}
+              <span className="grow" />
+              <button className="icon-btn sm" onClick={() => openFile("", w.path)} aria-label="Browse files" data-tip="Browse files">
+                <FolderOpen size={14} />
+              </button>
+              {!w.main && (
+                <button className="icon-btn sm" onClick={() => void remove(w.path)} aria-label="Remove worktree" data-tip="Remove worktree">
+                  <Trash2 size={13} />
+                </button>
               )}
             </div>
-            <button className="btn btn-sm btn-ghost" onClick={() => openFile("", w.path)} title="Browse files">
-              Files
-            </button>
-            {!w.main && (
-              <button className="icon-btn sm" title="Remove worktree" onClick={() => void remove(w.path)}>
-                <Trash2 size={13} />
-              </button>
+            <div className="wt-path muted mono ellipsis">{w.main ? w.path : relTo(project!.path, w.path)}</div>
+            {agents.length > 0 && (
+              <div className="wt-agents chips">
+                {(open.has(w.path) ? agents : agents.slice(0, AGENTS_SHOWN)).map((a) => (
+                  <button key={a.id} className="chip-toggle on" onClick={() => selectSession(a.id)} data-tip={displayName(a)}>
+                    <span>{displayName(a)}</span>
+                  </button>
+                ))}
+                {agents.length > AGENTS_SHOWN && (
+                  open.has(w.path) ? (
+                    <button className="chip-toggle" onClick={() => toggle(w.path)} aria-label="Show fewer" data-tip="Show fewer">
+                      <ChevronUp size={13} />
+                    </button>
+                  ) : (
+                    <button className="chip-toggle" onClick={() => toggle(w.path)} data-tip={`Show all ${agents.length} agents`}>
+                      +{agents.length - AGENTS_SHOWN}
+                    </button>
+                  )
+                )}
+              </div>
             )}
           </div>
         );

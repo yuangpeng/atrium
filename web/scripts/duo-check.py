@@ -165,6 +165,11 @@ async def main() -> int:
                 await page.locator(f'.ws-tabs button[aria-label="{tab}"]').tap()
                 await page.wait_for_timeout(1300)
                 await audit(page, pose, tab.lower())
+                if tab == "Git":  # its second view: the worktrees and the agents in each
+                    await page.locator('.toolbar button[aria-label="Worktrees"]').tap()
+                    await page.wait_for_timeout(600)
+                    await audit(page, pose, "worktrees")
+                    await page.locator('.toolbar button[aria-label="Graph"]').tap()
             # the way back from a panel: the open agent, picked in the drawer, brings its chat up and the drawer goes
             if await drawer.count():
                 await drawer.first.tap()
