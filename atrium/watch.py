@@ -30,6 +30,7 @@ from typing import NamedTuple
 
 from anyio import to_thread
 from watchfiles import Change
+# Not watchfiles' public API (awatch drives these): pyproject.toml keeps watchfiles below 2.
 from watchfiles._rust_notify import RustNotify
 from watchfiles.main import _default_force_polling  # what awatch makes of force_polling=None: the env var, or WSL
 
@@ -45,8 +46,9 @@ _IGNORED_PARTS = tuple(f"/{d}/" for d in _SKIP_DIRS)
 _NOT_WALKED = _SKIP_DIRS | {".git", ".atrium"}
 # FSEvents and ReadDirectoryChangesW watch a tree as cheaply as a directory, with no walk: the roots are watched as they are
 _NATIVE_TREES = sys.platform in ("darwin", "win32")
-# Watched in a project at most: inotify has a limit, and the event loop is held while the watches are added (~15µs each).
-# Only reached when git can't say what it ignores, or in a very big tree.
+# Watched in a checkout (the project, and each of its worktrees) at most: inotify has a limit, and the event loop is
+# held while the watches are added (~15µs each, every checkout's at every move). Only reached when git can't say
+# what it ignores, or in a very big tree.
 _MAX_DIRS = 10_000
 _GIT_TIMEOUT = 120  # seconds for git to say what it ignores: it reads every directory it doesn't, on a cold network disk
 _REPLAN_GAP = 2.0  # seconds from one move of the watch to the next: a burst of new directories is planned once
@@ -61,8 +63,9 @@ def _project_filter(change: Change, path: str) -> bool:
         return False
     if "/.git/" in path:
         tail = path.split("/.git/", 1)[1]
-        # worktrees itself: made by the first `git worktree add`, the watch on .git only sees it come
-        return tail in ("HEAD", "index", "worktrees") or tail.startswith("refs/") or tail.startswith("worktrees/")
+        # worktrees itself: made by the first `git worktree add`, the watch on .git only sees it come;
+        # info/exclude: ignores, like a .gitignore, so what is watched follows it (ProjectWatcher._changed)
+        return tail in ("HEAD", "index", "worktrees", "info/exclude") or tail.startswith("refs/") or tail.startswith("worktrees/")
     return not path.endswith((".atrium-tmp", ".swp", "~"))
 
 
@@ -123,36 +126,43 @@ def _git_ignored(d: str) -> set[str]:
 
 
 def _project_dirs(project: Project) -> _Plan:
-    """The directories to watch: the project's and each worktree's (a root of its own), less what git
-    ignores there or in a submodule (it has ignores of its own), at most ``_MAX_DIRS``, the shallowest
-    first; and in .git what ``_project_filter`` lets through (HEAD, index, refs/, worktrees/)."""
+    """The directories to watch: the project's and each worktree's, each a checkout of its own, less what
+    git ignores there or in a submodule (it has ignores of its own), at most ``_MAX_DIRS`` a checkout, the
+    shallowest first; and in .git what ``_project_filter`` lets through (HEAD, index, info/exclude, refs/,
+    worktrees/)."""
     roots = project.roots()
     if _NATIVE_TREES:
         top = [r for r in roots if r == project.path or not r.startswith(project.path + os.sep)]
         return _Plan(top, frozenset(top))
     out: list[str] = []
-    for root in roots:
+    seen = set(roots)  # a worktree inside the project is walked as a checkout of its own, not as part of it
+    for n, root in enumerate(roots, 1):
         git = os.path.join(root, ".git")
         if os.path.isdir(git):
-            out += [git, *_walk(os.path.join(git, "refs")), *_walk(os.path.join(git, "worktrees"))]
-    seen, ignored = set(out) | set(roots), set()
-    queue = deque(roots)  # breadth first: past the limit, the deepest go unwatched
-    while queue and len(out) < _MAX_DIRS:
-        d = queue.popleft()
-        try:
-            with os.scandir(d) as it:
-                entries = list(it)
-        except OSError:  # gone, or not ours to read
-            continue
-        out.append(d)
-        if d in roots or any(e.name == ".git" for e in entries):
-            ignored |= _git_ignored(d)
-        for e in entries:
-            if e.path not in seen and e.is_dir(follow_symlinks=False):
-                seen.add(e.path)
-                if e.name not in _NOT_WALKED and e.path not in ignored:
-                    queue.append(e.path)
-    _say(f"limit {project.path}", f"file watch: more than {_MAX_DIRS} directories in {project.path}, the deepest aren't watched" if queue else None)
+            meta = [git, *(d for sub in ("info", "refs", "worktrees") for d in _walk(os.path.join(git, sub)))]
+            out += meta
+            seen.update(meta)
+        start = len(out)
+        ignored: set[str] = set()
+        queue = deque([root])  # breadth first: past the limit, the deepest go unwatched
+        while queue and len(out) - start < _MAX_DIRS:
+            d = queue.popleft()
+            try:
+                with os.scandir(d) as it:
+                    entries = list(it)
+            except OSError:  # gone, or not ours to read
+                continue
+            out.append(d)
+            if d == root or any(e.name == ".git" for e in entries):
+                ignored |= _git_ignored(d)
+            for e in entries:
+                if e.path not in seen and e.is_dir(follow_symlinks=False):
+                    seen.add(e.path)
+                    if e.name not in _NOT_WALKED and e.path not in ignored:
+                        queue.append(e.path)
+        cut = (f"file watch: more than {_MAX_DIRS} directories in {root} (checkout {n} of {len(roots)} in {project.path}), "
+               f"the deepest aren't watched; the limit is _MAX_DIRS in atrium/watch.py, per checkout")
+        _say(f"limit {root}", cut if queue else None)
     return _Plan(list(dict.fromkeys(out)), frozenset(seen))
 
 
@@ -302,7 +312,8 @@ class _DirWatcher:
     @staticmethod
     def _notify(dirs: list[str]) -> RustNotify:
         # on the event loop: it holds the GIL while it adds the watches anyway (not recursive: no walk, ~15µs each)
-        return RustNotify(dirs, False, _default_force_polling(None), 300, _NATIVE_TREES, False)
+        return RustNotify(watch_paths=dirs, debug=False, force_polling=_default_force_polling(None), poll_delay_ms=300,
+                          recursive=_NATIVE_TREES, ignore_permission_denied=False)
 
     async def _open(self, plan: _Plan) -> tuple[RustNotify | None, _Plan]:
         """A watch of the plan's directories (None for none), less those gone since it was made."""
@@ -415,8 +426,9 @@ class ProjectWatcher(_DirWatcher):
     async def _changed(self, changes: set[tuple[Change, str]]) -> None:
         topic = f"project:{self.project.id}"
         files: list[str] = []
-        git_changed = worktrees_changed = False
+        git_changed = worktrees_changed = ignores_changed = False
         for change, path in changes:
+            ignores_changed |= path.endswith(("/.gitignore", "/.git/info/exclude"))
             if "/.git/" in path:
                 git_changed = True
                 tail = path.split("/.git/", 1)[1]
@@ -432,6 +444,8 @@ class ProjectWatcher(_DirWatcher):
             hub.publish(topic, {"type": "git_changed"})
         if worktrees_changed:  # the worktree pickers, and agents whose worktree went away; and a root to watch, or one less
             hub.publish(topic, {"type": "worktrees_changed"})
+            self.replan()
+        if ignores_changed:  # what is watched follows what git ignores: a directory no longer ignored is watched now
             self.replan()
 
 
