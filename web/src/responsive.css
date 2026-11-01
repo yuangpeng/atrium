@@ -192,6 +192,16 @@ html, body { overscroll-behavior: none; } /* the app doesn't rubber-band as a wh
   .editor-tabs { min-height: 40px; }
   /* a phone's keyboard has no Esc, Tab, Ctrl or arrows: a row of them under the terminal (TerminalView) */
   .term-keys { display: flex; }
+  /* The bars along the top of the panes are layers of their own, over everything else in their pane. iOS gives a touch
+     to a scroll box only if the topmost layer under the finger belongs to it, so no list below can take a bar's touches.
+     A guess at the phone's dead workspace tabs (a swipe on them scrolled Changes' list), not confirmed on the device;
+     styles.css (.split > .side) tries the list's side of it.
+     A bar is a stacking context, so the menus that open from it are only as high as it is: 40 keeps them over Monaco's
+     and xterm's layers (up to 11) and the splitters (5), and under the review in full screen (45, styles.css). The tabs
+     are a level over the panel's toolbar, which comes after them. will-change makes the layer, and also makes the bar
+     the containing block of a position: fixed box inside it: a popup there that must be fixed goes through a portal. */
+  :is(.topbar, .panel-body > .toolbar, .term-bar) { position: relative; z-index: 40; will-change: transform; }
+  .ws-tabs { position: relative; z-index: 41; will-change: transform; }
 }
 @media (hover: none) {
   .msg-fork { opacity: 0.5; } /* fork from an earlier message */

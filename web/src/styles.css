@@ -535,7 +535,12 @@ body.col-resizing iframe { pointer-events: none; } /* the board's would take the
 .panel-tab .count { font-size: 11px; background: var(--warn); color: #fff; border-radius: 9px; padding: 0 6px; font-weight: 700; }
 .panel-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .split { display: flex; flex: 1; min-height: 0; }
-.split > .side { width: 250px; flex: none; border-right: 1px solid var(--border); overflow: auto; display: flex; flex-direction: column; min-height: 0; }
+/* a stacking context (position + z-index; the `container` of Changes' list doesn't make one: container-type no longer
+   implies layout containment), so what gets a layer of its own in it (a spinner, a pulsing review badge, a row drawn over
+   them) stays inside its scroll layer; outside one, WebKit makes such a layer follow the list's scroll from beside it.
+   A guess at why on iOS the list took the touches of the bars above it, not confirmed on the device (responsive.css
+   lifts those bars too) */
+.split > .side { width: 250px; flex: none; border-right: 1px solid var(--border); overflow: auto; display: flex; flex-direction: column; min-height: 0; position: relative; z-index: 0; }
 /* Changes' list: as wide as its splitter left it (--list-w, ChangesPanel), else the default (a phone's: responsive.css) */
 .split > .side.wide { width: var(--list-w, var(--list-w-default, 300px)); max-width: calc(100% - 320px); container: list / inline-size; }
 .split > .content { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
@@ -563,7 +568,7 @@ body.col-resizing iframe { pointer-events: none; } /* the board's would take the
 
 /* ---------------------------------------------------------------- files */
 .tree { padding: 6px 4px 20px; font-size: 13px; user-select: none; }
-.tree-row { display: flex; align-items: center; gap: 4px; height: 26px; padding-right: 6px; border-radius: 6px; cursor: pointer; position: relative; }
+.tree-row { display: flex; align-items: center; gap: 4px; height: 26px; padding-right: 6px; border-radius: 6px; cursor: pointer; }
 .tree-row:hover { background: var(--hover); }
 .tree-row.on { background: var(--active); }
 .tree-row .chev { width: 14px; display: inline-flex; color: var(--faint); flex: none; }
