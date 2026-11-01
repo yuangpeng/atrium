@@ -390,8 +390,10 @@ a { color: var(--accent-strong); }
 .slash-empty { display: flex; align-items: center; gap: 8px; padding: 8px 10px; font-size: 12.5px; color: var(--muted); }
 .composer-box:focus-within { border-color: color-mix(in srgb, var(--accent) 55%, var(--border-strong)); }
 .composer-input { width: 100%; border: 0; outline: none; resize: none; background: transparent; font-size: 15px; line-height: 1.5; max-height: 280px; min-height: 24px; padding: 2px 0; }
-/* chips wrap on the left; effort + send stay at the bottom right however narrow the column */
-.composer-bar { display: flex; align-items: flex-end; gap: 6px; margin-top: 6px; }
+/* one line: the chat column is never narrower than the bar needs, its chips folded (useChatFloor). Where there is no
+   room for that anyway (a phone's screen; a window that keeps the workspace its 420px, App.tsx), the chips wrap on the
+   left; effort + send stay at the bottom right */
+.composer-bar { display: flex; align-items: flex-end; gap: 6px; margin-top: 6px; --icon-chip: 30px; }
 .bar-chips { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .bar-end { flex: none; display: flex; align-items: center; gap: 6px; }
 .composer-bar .chip.faded { color: var(--faint); }
@@ -407,8 +409,8 @@ a { color: var(--accent-strong); }
 .send-btn.stop { background: var(--text); color: var(--bg); }
 .composer-box.dragging { border-color: var(--accent); border-style: dashed; background: color-mix(in srgb, var(--accent-soft) 45%, var(--surface)); }
 .composer-icon { width: 30px; height: 28px; color: var(--muted); flex: none; }
-/* icon-only pickers (harness, permission mode): the words live in their menus */
-.composer-bar .chip.icon-chip { width: 30px; padding: 0; justify-content: center; }
+/* icon-only pickers (harness, permission mode): the words live in their menus. A folding chip folds to this too */
+.composer-bar .chip.icon-chip { width: var(--icon-chip); padding: 0; justify-content: center; }
 .composer-bar .chip.open { background: var(--active); }
 .composer-bar .chip.danger, .pick-item.danger { --danger: color-mix(in srgb, var(--err) 60%, var(--warn)); color: var(--danger); }
 .composer-bar .chip.danger { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }

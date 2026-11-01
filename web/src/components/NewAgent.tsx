@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, FolderGit2 } from "lucide-react";
+import { ArrowUp } from "lucide-react";
 import { api } from "../api";
 import { useApp } from "../store";
 import { EMPTY_DRAFT, NewAgentDraft, Workspace, useDrafts } from "../drafts";
 import { clsx } from "../util";
 import { Popover, Spinner } from "./ui";
 import {
-  AttachButton, AttachmentTray, EffortPicker, HarnessPicker, ModelChip, NewWorktreeFields, PendingUpload, PermissionPicker, WorkspaceMenu, WorkspacePickChip, effortOptions,
-  useAttachments, workspaceLabel,
+  AttachButton, AttachmentTray, EffortPicker, HarnessPicker, ModelChip, NewWorktreeFields, PendingUpload, PermissionPicker, ProjectDirChip, WorkspaceMenu, WorkspacePickChip,
+  effortOptions, useAttachments, useChatFloor, workspaceLabel,
 } from "../chat/Composer";
 import { mergeCommands, useSlashCommands, useSlashMenu } from "../chat/SlashMenu";
 import { useVoiceInput } from "../chat/Voice";
@@ -49,6 +49,7 @@ export function NewAgent() {
   const commands = useMemo(() => mergeCommands([], harnessCommands), [harnessCommands]);
   const slash = useSlashMenu({ text: prompt, setText: (t) => patch({ prompt: t }), input: ref, skills, commands, onRun: (t) => void start(t) });
   const voice = useVoiceInput({ pid, cwd: wsCwd, text: prompt, setText: (t) => patch({ prompt: t }), input: ref });
+  const barRef = useChatFloor();
 
   if (!project || !meta) return null;
   // picks left unset follow the harness's defaults from ~/.atrium/settings.json
@@ -133,7 +134,7 @@ export function NewAgent() {
           <AttachmentTray items={att.items} onRemove={att.remove} />
           {ws.kind === "new" && <NewWorktreeFields project={project} ws={ws} onChange={setWs} />}
           {voice.strip}
-          <div className="composer-bar">
+          <div className="composer-bar" ref={barRef}>
             <div className="bar-chips">
             <AttachButton onClick={att.open} />
             <PermissionPicker harness={harness} value={mode} onChange={(mode) => patch({ mode })} />
@@ -146,9 +147,7 @@ export function NewAgent() {
                 {(close) => <WorkspaceMenu project={project} value={ws} onPick={(ws) => (setWs(ws), close())} />}
               </Popover>
             ) : (
-              <span className="chip" style={{ cursor: "default" }}>
-                <FolderGit2 size={13} /> {project.name}
-              </span>
+              <ProjectDirChip project={project} />
             )}
             {/* another harness: back to its defaults */}
             {meta.harnesses.length > 1 && (

@@ -44,6 +44,7 @@ interface AppState {
   pane: Pane; // the one on screen when they take turns (phones); picking an agent shows the chat, a panel the workspace
   railOpen: boolean; // the rail as a drawer over the panes (single layout); going anywhere closes it
   chatWidth: number;
+  chatFloor: number; // the chat column's least width that keeps its composer's bar on one line (useChatFloor); 0 without one
   theme: Theme;
   showArchived: boolean;
   pickerOpen: false | "open" | "create"; // the folder dialog: open one, or make a new one
@@ -80,6 +81,7 @@ interface AppState {
   setPane: (p: Pane) => void;
   setRailOpen: (v: boolean) => void;
   setChatWidth: (w: number) => void;
+  setChatFloor: (w: number) => void;
   setTheme: (t: Theme) => void;
   setShowArchived: (v: boolean) => void;
   setPickerOpen: (v: false | "open" | "create") => void;
@@ -132,6 +134,7 @@ export const useApp = create<AppState>((set, get) => {
     pane: "chat",
     railOpen: false,
     chatWidth: Number(localStorage.getItem("atrium.chatWidth")) || Math.round(Math.min(520, Math.max(400, window.innerWidth * 0.3))),
+    chatFloor: 0,
     theme: (localStorage.getItem("atrium.theme") as Theme) || "system",
     showArchived: false,
     pickerOpen: false,
@@ -302,6 +305,10 @@ export const useApp = create<AppState>((set, get) => {
     setChatWidth: (w) => {
       localStorage.setItem("atrium.chatWidth", String(Math.round(w)));
       set({ chatWidth: w });
+    },
+    // measured on every resize of the bar: only a change re-renders those that read the whole store
+    setChatFloor: (w) => {
+      if (get().chatFloor !== w) set({ chatFloor: w });
     },
     setTheme: (t) => {
       localStorage.setItem("atrium.theme", t);

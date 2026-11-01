@@ -12,7 +12,7 @@ import { BoardToolRow, PermissionCard, ToolRow, isBoardTool, useOpenSubagent } f
 import { ReviewToolBlock, isReviewTool } from "./ReviewCards";
 import {
   AttachButton, AttachmentTray, ContextRing, EffortPicker, HarnessChip, MessageAttachments, ModelChip, NewWorktreeFields, PendingUpload, PermissionPicker,
-  WorkspaceChip, effortOptions, useAttachments,
+  WorkspaceChip, effortOptions, useAttachments, useChatFloor,
 } from "./Composer";
 import { mergeCommands, useAtriumCommands, useSlashCommands, useSlashMenu } from "./SlashMenu";
 import { useVoiceInput } from "./Voice";
@@ -485,6 +485,7 @@ export function ChatView({ pid, sid, cwd, compact, forkable, modeLocked, placeho
   const commands = useMemo(() => mergeCommands(forkable ? atrium.commands : [], harnessCommands), [forkable, atrium.commands, harnessCommands]);
   const slash = useSlashMenu({ text, setText, input: inputRef, skills, commands, onRun: (t) => void send(t) });
   const voice = useVoiceInput({ pid, sid, text, setText, input: inputRef });
+  const barRef = useChatFloor(running && !canSend); // the queue button's room while it's away: typing doesn't move the column
 
   return (
     <div className={clsx("chat", compact && "compact")}>
@@ -549,7 +550,7 @@ export function ChatView({ pid, sid, cwd, compact, forkable, modeLocked, placeho
           />
           {gone && ws?.kind === "new" && project && <NewWorktreeFields project={project} ws={ws} onChange={setWs} />}
           {voice.strip}
-          <div className="composer-bar">
+          <div className="composer-bar" ref={barRef}>
             <div className="bar-chips">
             <AttachButton onClick={att.open} />
             {/* the new-agent page's chips, in its order; harness and workspace can't change any more (the

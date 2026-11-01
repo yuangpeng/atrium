@@ -265,12 +265,18 @@ function Workspace() {
 
 /** The selected agent's conversation, or the new-agent composer — right of the workspace. */
 function ChatColumn() {
-  const { project, sessionId, subagentId, compactionId, sessions, chatWidth, setChatWidth } = useApp();
+  const { project, sessionId, subagentId, compactionId, sessions, chatWidth, setChatWidth, chatFloor } = useApp();
   const wide = useLayout() === "wide"; // elsewhere the screen (and its fold) sets the width, a finger can't hold the splitter
+  // never so narrow that the composer's bar breaks onto a second line, unless the workspace would get less than its
+  // MIN_WORKSPACE for it: the workspace comes first, and in a window that has no room for both the chips wrap (styles.css)
+  const min = Math.max(MIN_CHAT, chatFloor);
   const [drag, setDrag] = useState(false);
   useEffect(() => {
     if (!drag) return;
-    const move = (e: PointerEvent) => setChatWidth(Math.max(MIN_CHAT, Math.min(window.innerWidth - RAIL_WIDTH - MIN_WORKSPACE, window.innerWidth - RAIL_WIDTH - e.clientX)));
+    const move = (e: PointerEvent) => {
+      const max = window.innerWidth - RAIL_WIDTH - MIN_WORKSPACE;
+      setChatWidth(Math.max(MIN_CHAT, Math.min(max, Math.max(min, window.innerWidth - RAIL_WIDTH - e.clientX))));
+    };
     const up = () => setDrag(false);
     document.body.classList.add("col-resizing");
     window.addEventListener("pointermove", move);
@@ -284,11 +290,14 @@ function ChatColumn() {
       window.removeEventListener("pointercancel", up);
       window.removeEventListener("blur", up);
     };
-  }, [drag, setChatWidth]);
+  }, [drag, setChatWidth, min]);
   if (!project) return null;
   const current = sessions.find((s) => s.id === sessionId);
   return (
-    <section className="chatcol" style={wide ? { width: chatWidth } : undefined}>
+    // the bar may need more than the width last dragged to (a running agent's queue button): the column grows for it,
+    // up to the workspace's MIN_WORKSPACE (as CSS, so that it holds while the window shrinks: App's fit only renders
+    // when it has to narrow chatWidth)
+    <section className="chatcol" style={wide ? { width: Math.max(chatWidth, min), maxWidth: `max(${MIN_CHAT}px, 100vw - ${RAIL_WIDTH + MIN_WORKSPACE}px)` } : undefined}>
       {wide && (
         <div
           className={clsx("resizer", drag && "drag")}

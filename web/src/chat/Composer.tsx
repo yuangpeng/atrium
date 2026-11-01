@@ -323,6 +323,63 @@ function useRoomy(ref: RefObject<HTMLElement | null>, deps: DependencyList): boo
   return roomy;
 }
 
+/** A ref for the composer's bar (`.composer-bar`) that keeps the chat column from getting narrower than the bar on one
+ *  line (`chatFloor`, App.tsx): the folding chips folded to their icons, the end of the bar as it is now (a running
+ *  agent's stop button, the context ring). `spare`: room for one more button at the end, one that comes and goes with
+ *  what is typed (a running agent's queue button), so that typing doesn't move the column. A composer in a panel leaves
+ *  the column alone. */
+export function useChatFloor(spare = false) {
+  const setChatFloor = useApp((s) => s.setChatFloor);
+  const spareRef = useRef(spare);
+  const fitRef = useRef<() => void>(undefined);
+  useLayoutEffect(() => {
+    spareRef.current = spare;
+    fitRef.current?.();
+  }, [spare]);
+  return useCallback(
+    (bar: HTMLElement | null) => {
+      const col = bar?.closest<HTMLElement>(".chatcol");
+      const chips = bar?.querySelector<HTMLElement>(":scope > .bar-chips");
+      const end = bar?.querySelector<HTMLElement>(":scope > .bar-end");
+      const box = bar?.parentElement, composer = box?.parentElement; // .composer-box in .composer
+      if (!bar || !col || !chips || !end || !box || !composer) return;
+      const px = (el: Element, ...props: string[]) => {
+        const cs = getComputedStyle(el);
+        return props.reduce((sum, p) => sum + (parseFloat(cs.getPropertyValue(p)) || 0), 0);
+      };
+      const width = (el: Element) => el.getBoundingClientRect().width;
+      const fit = () => {
+        const icon = px(bar, "--icon-chip"); // what a folding chip is folded
+        const kids = [...chips.children] as HTMLElement[];
+        const folds = (c: HTMLElement) => c.matches("[data-fold]") || !!c.querySelector(":scope > [data-fold]"); // a picker sits in its popover's box
+        const row = kids.reduce((w, c) => w + (folds(c) ? icon : width(c)), 0) + px(chips, "column-gap") * (kids.length - 1) + px(bar, "column-gap") + width(end);
+        const last = end.lastElementChild; // the send or stop button: the spare one is as wide
+        const room = spareRef.current && last ? width(last) + px(end, "column-gap") : 0;
+        // around the bar: the column's border and insets, the composer's padding, the box's padding and border
+        const around = width(col) - width(composer) + px(composer, "padding-left", "padding-right") + px(box, "padding-left", "padding-right", "border-left-width", "border-right-width");
+        setChatFloor(Math.ceil(row + room + around));
+      };
+      fitRef.current = fit;
+      fit();
+      const ro = new ResizeObserver(fit);
+      const watch = () => {
+        ro.disconnect();
+        for (const el of [bar, end, ...chips.children]) ro.observe(el);
+      };
+      watch();
+      const mo = new MutationObserver(() => (watch(), fit())); // a chip came or went
+      mo.observe(chips, { childList: true });
+      return () => {
+        ro.disconnect();
+        mo.disconnect();
+        fitRef.current = undefined;
+        setChatFloor(0);
+      };
+    },
+    [setChatFloor],
+  );
+}
+
 /** The model, read-only: its maker's mark + name while the chip row has room, else the mark (name on hover). */
 export function ModelChip({ harness, model, faded }: { harness: Harness; model: string | null | undefined; faded?: boolean }) {
   const name = modelName(harness, model);
@@ -513,6 +570,33 @@ export function WorkspacePickChip({ label, onClick }: { label: string; onClick: 
         <span className="ellipsis" style={{ maxWidth: 160 }}>{label}</span>
       </span>
     </button>
+  );
+}
+
+/** The new-agent page's workspace outside git, where there is nothing to pick: the project directory, named like the
+ *  picker and folding with it, so that no project name widens the bar (useChatFloor). */
+export function ProjectDirChip({ project }: { project: ProjectInfo }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  const roomy = useRoomy(ref, [project.name]);
+  const [tipProps, tip] = useTip(
+    <>
+      <div>
+        <span className="k">Works in:</span> Project directory
+      </div>
+      <div className="k mono">{shortPath(project.path)}</div>
+    </>,
+    { tap: true }, // shown, not picked: a tap only has this to give
+  );
+  return (
+    <span ref={ref} data-fold className={clsx("chip", !roomy && "icon-chip")} style={{ cursor: "default" }} aria-label={`Works in: ${project.name}`} {...tipProps}>
+      <FolderGit2 size={13} />
+      {roomy && <span className="ellipsis" style={{ maxWidth: 160 }}>{project.name}</span>}
+      <span className="chip measure" aria-hidden>
+        <FolderGit2 size={13} />
+        <span className="ellipsis" style={{ maxWidth: 160 }}>{project.name}</span>
+      </span>
+      {tip}
+    </span>
   );
 }
 
