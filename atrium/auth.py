@@ -66,6 +66,9 @@ SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 # what a browser fetches to add Atrium to a Home Screen, maybe without the login cookie: the name, colours and icon
 APP_FILES = ("/manifest.json", "/apple-touch-icon.png", "/icon-512.png", "/icon-maskable-512.png")
 OPEN = {("GET", "/login"), ("POST", "/login"), ("POST", "/logout")} | {("GET", f) for f in APP_FILES}
+# what an HTML page previewed in the Files panel loads: the page is sandboxed, so the browser sends no cookie with it;
+# the key in the URL lets it in, and the route checks that itself (fs.Sites)
+SITE_PREFIX = "/api/site/"
 
 
 def _b64(b: bytes) -> str:
@@ -336,7 +339,7 @@ class AuthMiddleware:
             if _hostname(conn.headers.get("host", "")) in LOOPBACK:
                 return await self.app(scope, receive, send)
             return await _refuse(scope, receive, send, 403, "Atrium runs without a login (--no-auth): it only answers to localhost")
-        if not ws and (method, path) in OPEN:
+        if not ws and ((method, path) in OPEN or (method in SAFE_METHODS and path.startswith(SITE_PREFIX))):
             return await self.app(scope, receive, send)
         by_token = auth.token_ok(conn)
         exp = None if by_token else auth.login_expiry(conn)

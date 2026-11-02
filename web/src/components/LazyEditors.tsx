@@ -3,6 +3,7 @@ import { Spinner } from "./ui";
 
 const LazyCode = lazy(() => import("./Editors").then((m) => ({ default: m.CodeEditor })));
 const LazyDiff = lazy(() => import("./Editors").then((m) => ({ default: m.DiffEditor })));
+const LazyPreview = lazy(() => import("./FilePreview").then((m) => ({ default: m.FilePreview })));
 
 const fallback = (
   <div className="empty-state">
@@ -22,6 +23,14 @@ export function DiffEditor(props: React.ComponentProps<typeof LazyDiff>) {
   return (
     <Suspense fallback={fallback}>
       <LazyDiff {...props} />
+    </Suspense>
+  );
+}
+
+export function FilePreview(props: React.ComponentProps<typeof LazyPreview>) {
+  return (
+    <Suspense fallback={fallback}>
+      <LazyPreview {...props} />
     </Suspense>
   );
 }

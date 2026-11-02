@@ -1,10 +1,10 @@
 import type { JSX } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, ChevronRight, CircleAlert, Eye, EyeOff, File, FilePlus, Folder, FolderOpen, FolderPlus, Lock, Maximize2, Minimize2, Pencil, RefreshCw, Save, Trash2, TriangleAlert, X } from "lucide-react";
+import { ChevronDown, ChevronRight, CircleAlert, Code, ExternalLink, Eye, EyeOff, File, FilePlus, Folder, FolderOpen, FolderPlus, Lock, Maximize2, Minimize2, Pencil, RefreshCw, Save, Trash2, TriangleAlert, X } from "lucide-react";
 import { api, ApiError, DirEntry } from "../api";
 import { FileTarget, useApp } from "../store";
-import { basename, clsx, languageFor, shortPath, throttle } from "../util";
-import { CodeEditor } from "../components/LazyEditors";
+import { basename, clsx, languageFor, MEDIA_KINDS, previewKind, shortPath, throttle } from "../util";
+import { CodeEditor, FilePreview } from "../components/LazyEditors";
 import type { Reveal } from "../components/Editors";
 import { LockToggle, useEditLock } from "../components/EditLock";
 import { useFullscreen } from "../components/ui";
@@ -22,9 +22,45 @@ interface OpenFile {
   diskChanged: boolean;
   external?: boolean; // outside the project (a library the language server pointed at): read-only
   reveal?: Reveal;
+  view?: "preview" | "source"; // a file that renders (Markdown, HTML, a CSV…): shown as itself, or as its text
 }
 
 const toReveal = (t?: FileTarget): Reveal | undefined => (t?.line ? { line: t.line, column: t.column, nonce: Date.now() } : undefined);
+
+// shown as itself unless the text was asked for last time, for that kind of file (someone writing Markdown keeps its
+// source), or the file is opened at a line
+const VIEWS_KEY = "atrium.fileViews";
+const views = (): Record<string, OpenFile["view"]> => {
+  try {
+    return JSON.parse(localStorage.getItem(VIEWS_KEY) || "{}");
+  } catch {
+    return {};
+  }
+};
+function viewFor(path: string, target?: FileTarget): OpenFile["view"] {
+  const kind = previewKind(path);
+  if (!kind || MEDIA_KINDS.has(kind)) return undefined;
+  return target?.line ? "source" : views()[kind] === "source" ? "source" : "preview";
+}
+
+/** Where an HTML page is served for its preview (fs.Sites), so what it loads by a relative URL comes from beside it.
+ *  undefined while that is asked; null when it can't be (outside the project, or a server from before previews). */
+function useSiteUrl(pid: string, f: OpenFile | null): string | null | undefined {
+  const want = !!f && !f.external && f.view === "preview" && previewKind(f.path) === "html";
+  const [site, setSite] = useState<{ key: string; url: string | null } | null>(null);
+  const key = want ? `${f.root}::${f.path}` : "";
+  useEffect(() => {
+    if (!key || !f) return;
+    let alive = true;
+    api.fileSite(pid, f.path, f.root).then(
+      (r) => alive && setSite({ key, url: r.url }),
+      () => alive && setSite({ key, url: null }),
+    );
+    return () => void (alive = false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pid, key]);
+  return !want ? null : site?.key === key ? site.url : undefined;
+}
 
 /** Language server state + problem counts for the open file. */
 function EditorStatusLine({ path, language }: { path: string; language: string }) {
@@ -131,12 +167,12 @@ export function FilesPanel() {
       const existing = open.find((f) => f.key === key);
       if (existing) {
         setActive(key);
-        if (reveal) setOpen((cur) => cur.map((f) => (f.key === key ? { ...f, reveal } : f)));
+        if (reveal) setOpen((cur) => cur.map((f) => (f.key === key ? { ...f, reveal, view: f.view && "source" } : f)));
         return;
       }
       try {
         const d = await api.file(pid, rel, rootPath);
-        const f: OpenFile = { key, root: rootPath, path: d.path, abs: d.abs, content: d.content ?? "", saved: d.content ?? "", sha: d.sha, binary: d.binary, diskChanged: false, reveal };
+        const f: OpenFile = { key, root: rootPath, path: d.path, abs: d.abs, content: d.content ?? "", saved: d.content ?? "", sha: d.sha, binary: d.binary, diskChanged: false, reveal, view: d.binary ? undefined : viewFor(d.path, target) };
         setOpen((cur) => [...cur, f]);
         setActive(key);
       } catch (e: any) {
@@ -152,7 +188,7 @@ export function FilesPanel() {
     setOpen((cur) =>
       cur.some((f) => f.key === key)
         ? cur.map((f) => (f.key === key ? { ...f, reveal: reveal ?? f.reveal } : f))
-        : [...cur, { key, root: "", path: abs, abs, content, saved: content, sha: null, binary: false, diskChanged: false, external: true, reveal }],
+        : [...cur, { key, root: "", path: abs, abs, content, saved: content, sha: null, binary: false, diskChanged: false, external: true, reveal, view: viewFor(abs, target) }],
     );
     setActive(key);
   };
@@ -178,6 +214,17 @@ export function FilesPanel() {
   }, [fileRequest?.nonce]);
 
   const cur = open.find((f) => f.key === active) ?? null;
+  const kind = cur ? previewKind(cur.path) : null;
+  const media = !!kind && MEDIA_KINDS.has(kind);
+  const previewing = media || cur?.view === "preview";
+  const site = useSiteUrl(pid, cur);
+  // to see it in a tab of its own (as saved): a page at its served URL, a PDF or a picture as itself
+  const newTab = !cur || cur.external || !previewing ? null : kind === "html" ? site : kind === "svg" || media ? api.rawFileUrl(pid, cur.path, cur.root, cur.sha) : null;
+  const setView = (f: OpenFile, view: OpenFile["view"]) => {
+    setOpen((all) => all.map((x) => (x.key === f.key ? { ...x, view } : x)));
+    const kind = previewKind(f.path);
+    if (kind) localStorage.setItem(VIEWS_KEY, JSON.stringify({ ...views(), [kind]: view }));
+  };
 
   const save = useCallback(
     async (f: OpenFile, force = false) => {
@@ -342,7 +389,22 @@ export function FilesPanel() {
                     <Save size={14} />
                   </button>
                 )}
-                {cur && !cur.external && !cur.binary && <LockToggle />}
+                {cur?.view && (
+                  <button
+                    className="icon-btn sm"
+                    aria-label={previewing ? "Show the source" : "Show the preview"}
+                    data-tip={previewing ? "Source" : "Preview"}
+                    onClick={() => setView(cur, previewing ? "source" : "preview")}
+                  >
+                    {previewing ? <Code size={14} /> : <Eye size={14} />}
+                  </button>
+                )}
+                {cur && !cur.external && !cur.binary && !previewing && <LockToggle />}
+                {newTab && (
+                  <a className="icon-btn sm" href={newTab} target="_blank" rel="noopener noreferrer" aria-label="Open in a new tab" data-tip="Open in a new tab (as saved)">
+                    <ExternalLink size={14} />
+                  </a>
+                )}
                 <button className={clsx("icon-btn sm", full && "active")} aria-label={full ? "Exit full screen" : "Full screen"} data-tip={full ? "Exit full screen (Esc)" : "Full screen"} onClick={toggleFull}>
                   {full ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
                 </button>
@@ -369,22 +431,28 @@ export function FilesPanel() {
             </div>
           )}
           <div className="editor-host">
+            {cur && previewing && (
+              <FilePreview kind={kind!} pid={pid} root={cur.root} path={cur.path} content={cur.content} version={cur.sha} site={site} />
+            )}
             {cur ? (
-              cur.binary ? (
+              media ? null : cur.binary ? (
                 <div className="empty-state">Binary file — not shown.</div>
               ) : (
-                <CodeEditor
-                  filePath={cur.abs}
-                  value={cur.content}
-                  language={languageFor(cur.path)}
-                  readOnly={cur.external || locked}
-                  reveal={cur.reveal}
-                  onChange={(v) => setOpen((all) => all.map((x) => (x.key === cur.key ? { ...x, content: v } : x)))}
-                  onSave={() => {
-                    const latest = open.find((x) => x.key === cur.key);
-                    if (latest && !latest.external) void save(latest);
-                  }}
-                />
+                // kept while the preview shows: its undo history, cursor and scroll stay
+                <div className="editor-slot" hidden={previewing}>
+                  <CodeEditor
+                    filePath={cur.abs}
+                    value={cur.content}
+                    language={languageFor(cur.path)}
+                    readOnly={cur.external || locked}
+                    reveal={cur.reveal}
+                    onChange={(v) => setOpen((all) => all.map((x) => (x.key === cur.key ? { ...x, content: v } : x)))}
+                    onSave={() => {
+                      const latest = open.find((x) => x.key === cur.key);
+                      if (latest && !latest.external) void save(latest);
+                    }}
+                  />
+                </div>
               )
             ) : (
               <div className="empty-state">
@@ -396,7 +464,7 @@ export function FilesPanel() {
               </div>
             )}
           </div>
-          {cur && !cur.binary && <EditorStatusLine path={cur.abs} language={languageFor(cur.path)} />}
+          {cur && !cur.binary && !previewing && <EditorStatusLine path={cur.abs} language={languageFor(cur.path)} />}
         </div>
       </div>
     </div>

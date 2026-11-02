@@ -52,8 +52,23 @@ const EXT_LANG: Record<string, string> = {
   cs: "csharp", rb: "ruby", php: "php", swift: "swift", scala: "scala", sh: "shell", bash: "shell", zsh: "shell",
   json: "json", jsonc: "json", yaml: "yaml", yml: "yaml", toml: "ini", ini: "ini", md: "markdown", markdown: "markdown",
   html: "html", htm: "html", css: "css", scss: "scss", less: "less", sql: "sql", xml: "xml", svg: "xml",
-  dockerfile: "dockerfile", lua: "lua", r: "r", dart: "dart", vue: "html", proto: "protobuf", graphql: "graphql",
+  dockerfile: "dockerfile", lua: "lua", r: "r", dart: "dart", vue: "html", proto: "protobuf", graphql: "graphql", ipynb: "json",
 };
+
+/** How the Files panel shows a file as itself (FilePreview), not as text. */
+export type PreviewKind = "markdown" | "html" | "svg" | "csv" | "notebook" | "image" | "pdf" | "video" | "audio";
+const EXT_PREVIEW: Record<string, PreviewKind> = {
+  md: "markdown", markdown: "markdown", html: "html", htm: "html", svg: "svg", csv: "csv", tsv: "csv", ipynb: "notebook",
+  png: "image", jpg: "image", jpeg: "image", gif: "image", webp: "image", avif: "image", bmp: "image", ico: "image",
+  pdf: "pdf", mp4: "video", webm: "video", mov: "video", m4v: "video", mp3: "audio", wav: "audio", ogg: "audio", m4a: "audio", flac: "audio",
+};
+/** the kinds that have no text to edit: they are only ever shown as themselves */
+export const MEDIA_KINDS: ReadonlySet<PreviewKind> = new Set(["image", "pdf", "video", "audio"]);
+
+export function previewKind(path: string): PreviewKind | null {
+  const name = basename(path).toLowerCase();
+  return EXT_PREVIEW[name.includes(".") ? name.split(".").pop()! : ""] ?? null;
+}
 
 export function languageFor(path: string): string {
   const name = basename(path).toLowerCase();

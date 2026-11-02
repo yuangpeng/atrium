@@ -624,6 +624,48 @@ body.col-resizing iframe { pointer-events: none; } /* the board's would take the
 .lsp-dot.unavailable { background: var(--err); }
 .editor-host { flex: 1; min-height: 0; }
 
+/* the preview (FilePreview.tsx): a file shown as itself, over its editor (kept, hidden, in .editor-slot) */
+.editor-slot { height: 100%; }
+.file-preview { height: 100%; overflow: auto; overscroll-behavior: contain; }
+/* a document (Markdown, a notebook): it can end the pane, so it scrolls on under the home indicator, that much longer */
+.file-doc { max-width: 880px; margin: 0 auto; padding: 22px 28px calc(48px + var(--edge-bottom, 0px)); font-size: 14px; line-height: 1.65; overflow-wrap: break-word; }
+.file-doc h1, .file-doc h2 { padding-bottom: 0.3em; border-bottom: 1px solid var(--border); }
+.file-doc h1 { font-size: 1.75em; } .file-doc h2 { font-size: 1.4em; } .file-doc h3 { font-size: 1.15em; }
+.file-doc img { max-width: 100%; }
+.file-doc table { font-size: 13px; }
+.file-doc .contains-task-list { padding-left: 1.3em; }
+.file-doc .task-list-item { list-style: none; }
+.file-doc .task-list-item input { margin: 0 0.45em 0 -1.3em; vertical-align: -1px; }
+.file-doc details { margin: 0 0 0.75em; }
+.file-doc summary { cursor: pointer; }
+@container (max-width: 640px) { .file-doc { padding: 14px 16px calc(36px + var(--edge-bottom, 0px)); } }
+/* a page or a PDF fills the pane; a page without a background of its own is white, as in a browser */
+.file-frame { display: block; width: 100%; height: 100%; border: 0; background: #fff; }
+/* a picture, a video: centred, never wider than the pane; transparency shows as a checkerboard */
+.file-media { min-height: 100%; display: flex; align-items: center; justify-content: center; padding: 16px 16px calc(16px + var(--edge-bottom, 0px)); }
+.file-media :is(img, video) { max-width: 100%; height: auto; }
+.file-media audio { width: min(480px, 100%); }
+.checker { background: repeating-conic-gradient(var(--surface-2) 0 25%, var(--bg) 0 50%) 0 0 / 16px 16px; }
+/* a CSV: the table is its own scroll box, both ways, under its header row and beside its row numbers. A long cell is cut
+   short; tapped (focused: tabindex), it opens */
+.csv-table { display: block; height: 100%; overflow: auto; overscroll-behavior: contain; border-collapse: separate; border-spacing: 0; font: 12px/1.45 var(--font-mono); padding-bottom: var(--edge-bottom, 0px); }
+.csv-table :is(th, td) { padding: 4px 10px; border: solid var(--border); border-width: 0 1px 1px 0; white-space: nowrap; max-width: 28em; overflow: hidden; text-overflow: ellipsis; text-align: left; vertical-align: top; }
+.csv-table th { position: sticky; top: 0; z-index: 1; background: var(--surface-2); font-weight: 600; }
+.csv-table .n { position: sticky; left: 0; background: var(--sidebar); color: var(--faint); text-align: right; }
+.csv-table th.n { z-index: 2; }
+.csv-table td:focus { white-space: pre-wrap; overflow-wrap: anywhere; outline: 2px solid var(--accent); outline-offset: -2px; }
+.csv-table tfoot td { color: var(--muted); font-family: var(--font-ui); border: 0; }
+/* a notebook: its cells down the page, each code cell's outputs under it */
+.nb-cell { margin: 0 0 16px; }
+.nb-cell.md pre, .nb-cell .md pre { margin: 0; }
+.nb-count { font: 11px var(--font-mono); color: var(--faint); margin: 0 0 3px; }
+.nb-outs { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-top: 6px; padding-left: 12px; border-left: 2px solid var(--border); }
+.nb-outs > * { max-width: 100%; }
+.nb-out { margin: 0; font: 12px/1.5 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-2); }
+.nb-out.stderr { background: var(--err-soft); color: var(--err); padding: 6px 10px; border-radius: 6px; }
+.nb-img { max-width: 100%; height: auto; background: #fff; } /* a plot with a transparent background is drawn for white */
+.nb-html { font-size: 13px; }
+
 /* ---------------------------------------------------------------- changes */
 .agent-pick { display: flex; align-items: center; gap: 8px; padding: 8px 10px; cursor: pointer; border-radius: 8px; margin: 2px 4px; font-size: 13px; }
 .agent-pick:hover { background: var(--hover); }

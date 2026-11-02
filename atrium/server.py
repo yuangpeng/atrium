@@ -746,6 +746,30 @@ async def read_file(pid: str, path: str, root: str | None = None):
     return await asyncio.to_thread(fs.read_file, P(pid), root, path)
 
 
+@app.get("/api/p/{pid}/file/raw")
+async def raw_file(pid: str, path: str, root: str | None = None):
+    """The file as itself, for the preview: an image, a PDF, a video (with ranges, which Safari needs to play one)."""
+    p, mime = await asyncio.to_thread(fs.raw_file, P(pid), root, path)
+    return FileResponse(p, media_type=mime, headers=fs.raw_headers(mime))
+
+
+@app.get("/api/p/{pid}/file/site")
+async def file_site(pid: str, path: str, root: str | None = None):
+    return await asyncio.to_thread(fs.site_url, P(pid), root, path)
+
+
+@app.get("/api/site/{key}/{path:path}")
+async def site_file(key: str, path: str):
+    """What a previewed HTML page loads from beside it (fs.Sites): let in by the key in its URL, not by a login."""
+    site = fs.sites.get(key)
+    if site is None:
+        raise HTTPException(404, "this preview's key has lapsed: open the page again")
+    p, mime = await asyncio.to_thread(fs.site_file, P(site[0]), site[1], path)
+    # any origin: the page's is opaque (module scripts, fonts and fetch() ask); no referrer: the key stays here
+    headers = {**fs.raw_headers(mime, scripts=True), "Access-Control-Allow-Origin": "*", "Referrer-Policy": "no-referrer"}
+    return FileResponse(p, media_type=mime, headers=headers)
+
+
 @app.put("/api/p/{pid}/file")
 async def write_file(pid: str, body: dict[str, Any] = Body(...)):
     return await asyncio.to_thread(

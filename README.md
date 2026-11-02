@@ -46,6 +46,10 @@ A project-centric workbench for coding agents — Claude Code, Codex and Antigra
      (Python: basedpyright, installed with Atrium; clangd / gopls / rust-analyzer when on `PATH`):
      semantic highlighting in VS Code's Light+ / Dark+ colours, hover types, completion,
      diagnostics, ⌘-click / F12 go to definition (library files open read-only), ⇧F12 references.
+     Files that render open as themselves, with their source a tap away: Markdown (with its
+     images, links to other files, and the HTML GitHub allows), HTML pages (sandboxed, loading
+     their CSS, scripts and images from beside them), notebooks, CSV / TSV tables, SVG, images,
+     PDFs, audio and video.
    * **Changes** — per-agent diffs. The baseline is a **git snapshot** Atrium takes at the start and
      end of every turn (a tree object written through a temporary index — no refs, your index and
      stash are untouched). Files changed by shell commands are detected by diffing those snapshots.
@@ -284,7 +288,7 @@ atrium/
   gitagent.py            graph.set_view tool for the Git Agent
   review.py              the Code Review Agent: when to review, review rounds and findings, the review.* tools
   lsp.py                 language servers for the editor, shared by all tabs over /ws/lsp
-  gitops.py, fs.py       git plumbing, sandboxed file access
+  gitops.py, fs.py       git plumbing, sandboxed file access (and the keyed folders HTML previews load from)
   changes.py             per-session change sets (diff review)
   mcp/web.py             Serper + Jina tools (in-process and stdio MCP)
   watch.py               file + transcript watchers → websocket events

@@ -685,6 +685,10 @@ export const api = {
   files: (pid: string, path: string, root?: string, hidden = false) =>
     req<{ root: string; path: string; entries: DirEntry[] }>("GET", `/api/p/${pid}/files${q({ path, root, hidden })}`),
   file: (pid: string, path: string, root?: string) => req<FileData>("GET", `/api/p/${pid}/file${q({ path, root })}`),
+  /** the file as itself (an image, a PDF); `v` changes the URL when the file does */
+  rawFileUrl: (pid: string, path: string, root?: string, v?: string | null) => `/api/p/${pid}/file/raw${q({ path, root, v })}`,
+  /** where an HTML file is served for its preview, so that what it loads by a relative URL resolves beside it */
+  fileSite: (pid: string, path: string, root?: string) => req<{ url: string }>("GET", `/api/p/${pid}/file/site${q({ path, root })}`),
   writeFile: (pid: string, body: { root?: string; path: string; content: string; base_sha?: string | null; force?: boolean }) =>
     req<{ path: string; sha: string; mtime: number }>("PUT", `/api/p/${pid}/file`, body),
   createFile: (pid: string, body: { root?: string; path: string; kind: "file" | "dir" }) => req("POST", `/api/p/${pid}/file/create`, body),
