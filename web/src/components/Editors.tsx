@@ -1,6 +1,6 @@
 import { monaco } from "../monaco-setup";
 import type { ReactNode } from "react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Editor, { DiffEditor as MonacoDiff, DiffEditorProps, OnMount, DiffOnMount } from "@monaco-editor/react";
 import type * as Monaco from "monaco-editor";
 import { ArrowDown, ArrowUp } from "lucide-react";
@@ -83,6 +83,12 @@ export function CodeEditor({
   const compact = useCompact();
   const saveRef = useRef(onSave);
   saveRef.current = onSave;
+  // a change goes to the file shown now. Read-only (a phone's lock), @monaco-editor/react puts the next file's text in
+  // with setValue, which reports a change before it subscribes this render's onChange: the last file's handler then
+  // took that text for its own, and its tab came up unsaved, holding the other file
+  const changeRef = useRef(onChange);
+  changeRef.current = onChange;
+  const handleChange = useCallback((v?: string) => changeRef.current?.(v ?? ""), []);
   const edRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
   const tracking = useRef<Monaco.IDisposable | null>(null);
   const onMount: OnMount = (editor, m) => {
@@ -102,7 +108,7 @@ export function CodeEditor({
       value={value}
       language={language}
       theme={theme}
-      onChange={(v) => onChange?.(v ?? "")}
+      onChange={handleChange}
       onMount={onMount}
       // domReadOnly: the input textarea itself is read-only, so a tap brings no keyboard up on a phone
       options={{ ...baseOptions, ...(compact ? compactOptions : {}), ...(filePath ? fileOptions : {}), readOnly, domReadOnly: readOnly }}
