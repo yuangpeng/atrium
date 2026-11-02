@@ -306,6 +306,14 @@ export interface TrackerRun {
   harness?: string;
 }
 
+/** An HTML file in the project or one of its worktrees (``root``), which the Board panel can show. */
+export interface BoardPage {
+  root: string;
+  path: string; // relative to root
+  mtime: number;
+  size: number;
+}
+
 export interface TrackerStatus {
   enabled: boolean;
   interval: number;
@@ -675,6 +683,7 @@ export const api = {
   board: (pid: string) => req<{ agents: Record<string, BoardAgent> }>("GET", `/api/p/${pid}/board`),
   boardHtmlUrl: (pid: string) => `/api/p/${pid}/board.html`,
   deleteCard: (pid: string, sid: string, key: string) => req("DELETE", `/api/p/${pid}/board/agents/${sid}/cards/${key}`),
+  boardPages: (pid: string) => req<{ pages: BoardPage[]; truncated: boolean }>("GET", `/api/p/${pid}/board/pages`),
   addTodo: (pid: string, text: string) => req("POST", `/api/p/${pid}/board/todos`, { text }),
   updateTodo: (pid: string, tid: string, change: { done?: boolean; accept?: boolean; text?: string }) =>
     req("PATCH", `/api/p/${pid}/board/todos/${encodeURIComponent(tid)}`, change),

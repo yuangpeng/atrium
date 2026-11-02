@@ -40,6 +40,9 @@ A project-centric workbench for coding agents — Claude Code, Codex and Antigra
      previous run (byte offsets), compresses the new activity, and updates status / progress /
      "doing" / summary for each agent, a project headline + overview, and the timeline. No model
      call when nothing changed. It also names unnamed sessions as **"<Topic> Agent"**.
+   * The Board panel's title opens a menu of the project's own HTML files (reports, coverage, a
+     worktree's new ones): pick one to see it there instead, sandboxed, reloaded when it is written
+     again; the board stays the default.
 3. **You stay in control of the craft.**
    * **Files** — tree + Monaco editor for every root (project + worktrees); agent edits to open
      files show up live, conflicting saves are detected. Language servers run behind the editor

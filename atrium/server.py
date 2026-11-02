@@ -21,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from . import __version__, changes, configfiles, fs, gitops, lsp, voice
 from .auth import AUTH_PATH, AuthMiddleware, auth
 from .auth import router as auth_router
+from .board import pages as board_pages
 from .config import UPLOADS_DIR, config
 from .events import Subscriber, hub
 from .gitagent import set_view
@@ -699,6 +700,12 @@ async def delete_card(pid: str, sid: str, key: str):
 async def delete_board_agent(pid: str, sid: str):
     P(pid).board.remove_agent(sid)
     return {"ok": True}
+
+
+@app.get("/api/p/{pid}/board/pages")
+async def list_board_pages(pid: str):
+    """The project's HTML files, which the Board panel shows in place of the board when one is picked."""
+    return await asyncio.to_thread(board_pages.list_pages, P(pid))
 
 
 @app.post("/api/p/{pid}/board/todos")
