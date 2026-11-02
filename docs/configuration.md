@@ -190,11 +190,18 @@ what you say into the message you meant to type, with two model calls to one Ope
    the parameter is asked again without it). Which route a model takes is found out on its first recording and
    remembered until Atrium restarts.
 2. **Refine.** The transcript goes to `<base_url>/v1/responses` together with what the agent sees: its conversation
-   since the last compaction, thinking left out and tool calls and results shortened; the files of its directory
-   (`git ls-files`); and the draft in the composer. The model rewrites it the way you meant it: paths,
-   identifiers and commands spelled as the project and the conversation have them, misheard words fixed, filler
-   dropped, English made fluent, your language kept. On the new-agent page there is no conversation yet: the
-   project's files and the draft are the context.
+   since the last compaction, starting with the compaction's summary — at most its latest 60,000 characters or
+   so (about 15k tokens): where there is more, the oldest part is left out, the summary first —, thinking left
+   out, tool calls and results shortened, its replies since your last message kept longer; its cards on the board, as text, and the other agents the board shows
+   (not the archived ones), by name and what each is doing; the files of its directory (`git ls-files`); and the
+   draft in the composer. The model writes what you meant rather than what you said word for word: filler and
+   false starts dropped, a correction ("no wait, …") in place of what it corrects, "this one" and "the second
+   one" named (a file by its path, code by its name, a listed item by its number and gist) where the context makes
+   it clear. Where it fits two things, the model is asked to leave it as said, but often picks one: read the
+   reference before sending, and switch back to *As heard* if it is the wrong one. Paths, identifiers and
+   commands spelled as the project and the conversation have them, misheard words fixed, English made fluent, the
+   language you spoke kept. Nothing you didn't say comes in from the context: "ok, go ahead" stays that short. On
+   the new-agent page there is no conversation yet: the project's files, the board and the draft are the context.
 
 The text goes into the draft at the caret, to be read and edited before you send it. Until then the strip over
 the composer's bar swaps it for what was heard (*As heard* / *Refined*); when refining fails, the transcript goes

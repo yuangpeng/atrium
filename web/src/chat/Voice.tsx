@@ -402,7 +402,7 @@ export function useVoiceInput({ pid, sid, cwd, text, setText, input }: {
       strip = (
         <div className="voice-strip">
           <Check size={14} className="voice-ok" />
-          <span className="voice-label" data-tip="Rewritten with the conversation as context: paths, names and English fixed">
+          <span className="voice-label" data-tip="Written as you meant it, with the conversation and the board as context: filler and corrections resolved, references named">
             {phase.shown === "heard" ? "As heard" : phase.refined ? "Refined" : "Refining left nothing"}
           </span>
           <span className="voice-fill" />
