@@ -11,6 +11,16 @@ export function timeAgo(ts?: number | null): string {
   return new Date(ts * 1000).toLocaleDateString();
 }
 
+/** When a message was sent: the time of day; the date before it on another day (and the year, in another year). */
+export function fmtClock(ts: number): string {
+  const d = new Date(ts * 1000);
+  const now = new Date();
+  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+  if (d.toDateString() === now.toDateString()) return time;
+  const year = d.getFullYear() === now.getFullYear() ? undefined : "numeric";
+  return `${d.toLocaleDateString([], { year, month: "short", day: "numeric" })} ${time}`;
+}
+
 export function fmtDuration(ms?: number | null): string {
   if (!ms) return "";
   const s = ms / 1000;

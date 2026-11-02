@@ -106,7 +106,7 @@ def split_attachment_note(text: str) -> tuple[str, list[dict[str, Any]]]:
         path = line.strip().lstrip("- ").strip()
         if path:
             name = re.sub(r"^[0-9a-f]{12}__", "", os.path.basename(path))  # upload ids are "<sha12>__<name>"
-            atts.append({"name": name, "path": path, "mime": mimetypes.guess_type(name)[0] or "application/octet-stream"})
+            atts.append({"name": name, "path": path, "mime": mimetypes.guess_type(name)[0] or "application/octet-stream", "url": upload_url(path)})
     return text[: m.start()], atts
 
 

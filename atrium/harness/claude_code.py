@@ -49,7 +49,10 @@ from claude_agent_sdk import (
 
 from .. import gitops
 from ..config import UPLOADS_DIR
-from .base import Attachment, Compaction, Emit, FileEdit, ForkPoint, Harness, Item, LiveSession, LiveSpec, SessionSummary, SlashCommand, SubagentSummary, ToolSpec
+from .base import (
+    Attachment, Compaction, Emit, FileEdit, ForkPoint, Harness, Item, LiveSession, LiveSpec, Rewind, SessionSummary, SlashCommand, SubagentSummary,
+    ToolSpec,
+)
 from .util import TailScan, attachment_note, hhmm, iso_to_epoch, parse_json_loose, split_attachment_note, tail_scan
 
 log = logging.getLogger("atrium.claude")
@@ -345,6 +348,7 @@ class ClaudeLiveSession(LiveSession):
             effort=spec.effort or None,  # type: ignore[arg-type]
             settings=_effort_settings(spec.effort),
             resume=self.session_id if spec.resume else None,
+            resume_session_at=spec.resume_at if spec.resume else None,  # an edit: the conversation before the edited message
             session_id=None if spec.resume else self.session_id,
             mcp_servers=mcp_servers,
             allowed_tools=allowed,
@@ -612,10 +616,15 @@ def live_message_items(msg: Any, tasks: dict[str, str | None] | None = None) -> 
     return items
 
 
-def history_items(messages: list[Any], outputs: dict[str, list[tuple[str, str]]] | None = None) -> list[Item]:
-    """Normalize ``get_session_messages`` output; ``outputs`` is what slash commands printed (``_command_outputs``)."""
+def history_items(messages: list[Any], outputs: dict[str, list[tuple[str, str]]] | None = None,
+                  times: dict[str, float | None] | None = None) -> list[Item]:
+    """Normalize ``get_session_messages`` output; ``outputs`` is what slash commands printed (``_command_outputs``),
+    ``times`` when each transcript entry was written (``_entry_times``)."""
     items: list[Item] = []
-    for m in messages:
+    done = 0  # items given their time
+    for n, m in enumerate(messages):
+        if n:
+            done = _stamp(items, done, times, messages[n - 1].uuid)
         raw = m.message or {}
         content = raw.get("content")
         if m.type == "user":
@@ -662,7 +671,23 @@ def history_items(messages: list[Any], outputs: dict[str, list[tuple[str, str]]]
                     items.append({"kind": "tool", "id": b.get("id"), "name": b.get("name"), "input": b.get("input") or {}})
                 elif t and t.endswith("_tool_result"):
                     items.append({"kind": "tool_result", "id": b.get("tool_use_id"), "content": _clip(_block_text(b.get("content"))), "is_error": False})
+    if messages:
+        _stamp(items, done, times, messages[-1].uuid)
     return items
+
+
+def _stamp(items: list[Item], done: int, times: dict[str, float | None] | None, uid: str) -> int:
+    """Give the items from ``done`` on, made from transcript entry ``uid``, its time (what a command printed:
+    its own entry's). Returns how many items have theirs now."""
+    for it in items[done:]:
+        if ts := (times or {}).get(it["id"]) or (times or {}).get(uid):
+            it["ts"] = ts
+    return len(items)
+
+
+def _entry_times(entries: list[dict[str, Any]]) -> dict[str, float | None]:
+    """When each transcript entry was written, by uuid."""
+    return {e["uuid"]: _ts_epoch(e.get("timestamp")) for e in entries if isinstance(e.get("uuid"), str)}
 
 
 def _compact_item(cid: str, trigger: str | None) -> Item:
@@ -725,6 +750,7 @@ class ClaudeCodeHarness(Harness):
         {"id": "haiku", "label": "Haiku"},
     ]
     efforts = EFFORTS
+    can_edit = True
 
     def __init__(self) -> None:
         self._subagent_cache: dict[str, tuple[tuple[int, int, int], dict[str, Any]]] = {}  # path -> (signature, scan)
@@ -887,7 +913,10 @@ class ClaudeCodeHarness(Harness):
             if not base or not base.is_dir() or not re.fullmatch(r"[\w-]+", agent_id):
                 return []
             path = next(base.rglob(f"agent-{agent_id}.jsonl"), None)
-            return history_items(_subagent_messages(path)) if path else []
+            if not path:
+                return []
+            times: dict[str, float | None] = {}
+            return history_items(_subagent_messages(path, times), times=times)
 
         return await asyncio.to_thread(load)
 
@@ -950,6 +979,31 @@ class ClaudeCodeHarness(Harness):
             return new_id
 
         return await asyncio.to_thread(fork)
+
+    # ---- edits: the session resumes up to the message before the edited one (Claude Code's own rewind), and
+    # what follows hangs off that one: the transcript keeps the conversation it replaced, as a branch
+    async def edit_point(self, session_id: str, cwd: str, item: str | None, anchor: str | None, user_index: int) -> ForkPoint:
+        path = self.transcript_path(session_id, cwd)
+        if not path:
+            raise FileNotFoundError(f"transcript of session {session_id}")
+        return await asyncio.to_thread(_edit_point, path, item, anchor, user_index)
+
+    async def rewind_session(self, session_id: str, cwd: str, point: ForkPoint, backup: Path) -> Rewind:
+        if point.cut:
+            return Rewind(resume_at=point.cut)
+
+        def clear() -> None:  # nothing to resume up to (the first message): the conversation starts over
+            path = self.transcript_path(session_id, cwd)
+            if not path:
+                return
+            backup.mkdir(parents=True, exist_ok=True)
+            sidecar = path.with_suffix("")  # <sid>/: subagent transcripts, tool results
+            shutil.move(path, backup / path.name)
+            if sidecar.is_dir():
+                shutil.move(sidecar, backup / sidecar.name)
+
+        await asyncio.to_thread(clear)
+        return Rewind(fresh=True)
 
     async def move_session(self, session_id: str, cwd: str, target_cwd: str, note: str = "") -> None:
         # ``note`` reaches the model through the system prompt, which Claude Code re-applies on resume
@@ -1110,10 +1164,11 @@ def _ts_epoch(ts: Any) -> float | None:
         return None
 
 
-def _subagent_messages(path: Path) -> list[SessionMessage]:
-    """Every message of a subagent transcript, in file order. (Parallel tool calls branch: each result
-    hangs off its own call, so walking ``parentUuid`` back from the last entry, as the SDK's
-    ``get_subagent_messages`` does, drops results. Subagent transcripts have no compaction or rewinds.)"""
+def _subagent_messages(path: Path, times: dict[str, float | None] | None = None) -> list[SessionMessage]:
+    """Every message of a subagent transcript, in file order (``times``: filled with when each was written).
+    (Parallel tool calls branch: each result hangs off its own call, so walking ``parentUuid`` back from the
+    last entry, as the SDK's ``get_subagent_messages`` does, drops results. Subagent transcripts have no
+    compaction or rewinds.)"""
     out: list[SessionMessage] = []
     with path.open(encoding="utf-8", errors="replace") as f:
         for line in f:
@@ -1125,6 +1180,8 @@ def _subagent_messages(path: Path) -> list[SessionMessage]:
                 continue
             if d.get("type") in ("user", "assistant") and not d.get("isMeta") and isinstance(d.get("message"), dict):
                 out.append(SessionMessage(type=d["type"], uuid=d.get("uuid") or "", session_id=d.get("sessionId") or "", message=d["message"]))
+                if times is not None and d.get("uuid"):
+                    times[d["uuid"]] = _ts_epoch(d.get("timestamp"))
     return out
 
 
@@ -1260,8 +1317,9 @@ def _conversation_items(session_id: str, entries: list[dict[str, Any]]) -> list[
     # the SDK's get_session_messages, on these entries: it walks back from the last message (a compaction
     # boundary has no parent) and puts back the tool calls and results of parallel turns
     msgs = asyncio.run(get_session_messages_from_store(cast(SessionStore, _Entries(entries)), session_id))
-    opening = [_compact_item(boundary["uuid"], (boundary.get("compactMetadata") or {}).get("trigger"))] if boundary else []
-    return opening + history_items(msgs, _command_outputs(entries))
+    times = _entry_times(entries)
+    opening = [{**_compact_item(boundary["uuid"], (boundary.get("compactMetadata") or {}).get("trigger")), "ts": times.get(boundary["uuid"])}] if boundary else []
+    return opening + history_items(msgs, _command_outputs(entries), times)
 
 
 def _resumed(entries: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
@@ -1365,20 +1423,63 @@ def _find_entry(entries: list[dict[str, Any]], anchor: str) -> int | None:
     return found
 
 
+def _branch(path: Path) -> tuple[list[dict[str, Any]], list[int]]:
+    """A transcript's entries as Claude Code resumes them, in file order, and where the prompts of the
+    conversation it resumes are among them: the ones on the way back from its newest message. (An edit
+    leaves the conversation it replaced in the file: a branch that ends earlier.)"""
+    entries, _ = _resumed([e for e in _transcript_entries(path) if not e.get("isSidechain")])
+    by_uuid = {e["uuid"]: e for e in entries}
+    cur = next((e for e in reversed(entries) if e.get("type") in ("user", "assistant") and not e.get("isMeta")), None)
+    on: set[str] = set()
+    while cur and cur["uuid"] not in on:
+        on.add(cur["uuid"])
+        cur = by_uuid.get(cur.get("parentUuid") or "")
+    return entries, [i for i, e in enumerate(entries) if e["uuid"] in on and _is_prompt(e)]
+
+
 def _fork_point(path: Path, anchor: str | None, user_index: int | None) -> ForkPoint:
-    entries = [e for e in _transcript_entries(path) if not e.get("isSidechain")]
-    prompts = [i for i, e in enumerate(entries) if _is_prompt(e)]
+    entries, prompts = _branch(path)
     at = _find_entry(entries, anchor) if anchor else None
     if at is None and user_index and user_index < len(prompts):  # items shown live may not carry transcript ids
         at = prompts[user_index] - 1
     if at is None or at < 0:
         raise ValueError("Couldn't find that point of the conversation in the transcript")
     nxt = next((i for i in prompts if i > at), None)
-    cut = entries[nxt - 1] if nxt is not None else entries[-1]
+    by_uuid = {e["uuid"]: e for e in entries}
+    # what the next prompt follows (the entry before it in the file may be on a branch an edit left)
+    cut = (by_uuid.get(entries[nxt].get("parentUuid") or "") or entries[nxt - 1]) if nxt is not None else entries[-1]
     return ForkPoint(
         cut=cut["uuid"],
         cut_ts=iso_to_epoch(cut.get("timestamp")),
         next_ts=iso_to_epoch(entries[nxt].get("timestamp")) if nxt is not None else None,
+    )
+
+
+def _edit_point(path: Path, item: str | None, anchor: str | None, user_index: int) -> ForkPoint:
+    entries, prompts = _branch(path)
+    key = (item or "").split(":", 1)[0]  # "<uuid>" or "<uuid>:<block>"; sent live, the message has an id of Atrium's
+    target = next((i for i in prompts if entries[i]["uuid"] == key), None)
+    if target is None and anchor:
+        at = _find_entry(entries, anchor)
+        target = next((i for i in prompts if i > at), None) if at is not None else None
+    elif target is None and user_index < len(prompts):  # nothing before it to find it by (0: the conversation's first)
+        target = prompts[user_index]
+    if target is None:
+        raise ValueError("Couldn't find that message in the transcript")
+    by_uuid = {e["uuid"]: e for e in entries}
+    prompt = entries[target]
+    cut = by_uuid.get(prompt.get("parentUuid") or "")
+    walk, seen = cut, set()
+    while walk and walk.get("type") not in ("user", "assistant") and walk["uuid"] not in seen:  # only what the CLI wrote first
+        seen.add(walk["uuid"])
+        walk = by_uuid.get(walk.get("parentUuid") or "")
+    if not walk or walk["uuid"] in seen:
+        cut = None
+    return ForkPoint(
+        cut=cut["uuid"] if cut else None,
+        cut_ts=iso_to_epoch(cut.get("timestamp")) if cut else None,
+        next_ts=iso_to_epoch(prompt.get("timestamp")),
+        drop=prompt["uuid"],
     )
 
 

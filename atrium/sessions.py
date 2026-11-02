@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import shutil
@@ -21,7 +22,7 @@ from .config import UPLOADS_DIR, config
 from .events import hub
 from .gitagent import GIT_AGENT_ALLOWED_TOOLS, GIT_SERVER, git_toolset
 from .harness import all_harnesses, get_harness
-from .harness.base import Attachment, Compaction, ForkPoint, Item, LiveSession, LiveSpec, SessionSummary, SubagentSummary
+from .harness.base import Attachment, Compaction, ForkPoint, Item, LiveSession, LiveSpec, Rewind, SessionSummary, SubagentSummary
 from .harness.util import upload_url
 from .mcp.web import WEB_SERVER, web_toolset
 from .notify import notifier
@@ -118,7 +119,7 @@ class SessionManager:
 
     # ---- spec --------------------------------------------------------------
     def _spec(self, project: Project, sid: str | None, *, resume: bool, harness_id: str, cwd: str, name: str, role: str,
-              model: str | None, effort: str | None, mode: str | None) -> LiveSpec:
+              model: str | None, effort: str | None, mode: str | None, resume_at: str | None = None) -> LiveSpec:
         web = config.get("web") or {}
         hdef = config.harness_defaults(harness_id)
         disallowed: list[str] = []
@@ -168,6 +169,7 @@ class SessionManager:
             extra_mcp_servers=dict(config.get("mcp_servers") or {}),
             disallowed_tools=disallowed,
             allowed_tools=allowed,
+            resume_at=resume_at,
         )
         spec._sid_box = sid_box  # type: ignore[attr-defined]  # board tools learn the id once the harness assigns it
         return spec
@@ -180,6 +182,10 @@ class SessionManager:
                 self._track_task(h, item)
                 return
             if kind not in TRANSIENT:
+                if "ts" not in item:  # when it came (a tool call sent again keeps its first time)
+                    pos = h.index.get(item.get("id") or "")
+                    prev = h.items[pos] if pos is not None and pos < len(h.items) else None
+                    item["ts"] = prev["ts"] if prev and prev.get("kind") == kind and prev.get("ts") else time.time()
                 h.store(item)
             topic = f"session:{h.sid}"
             ptopic = f"project:{h.project.id}"
@@ -488,12 +494,14 @@ class SessionManager:
         return self._locks.setdefault(sid, asyncio.Lock())
 
     async def _start(self, project: Project, sid: str | None, *, resume: bool, harness_id: str, cwd: str, name: str, role: str,
-                     model: str | None, effort: str | None, mode: str | None, preload: list[Item] | None = None) -> LiveHandle:
+                     model: str | None, effort: str | None, mode: str | None, preload: list[Item] | None = None,
+                     resume_at: str | None = None) -> LiveHandle:
         harness = get_harness(harness_id)
         ok, reason = harness.available()
         if not ok:
             raise RuntimeError(reason or f"{harness.label} is not available")
-        spec = self._spec(project, sid, resume=resume, harness_id=harness_id, cwd=cwd, name=name, role=role, model=model, effort=effort, mode=mode)
+        spec = self._spec(project, sid, resume=resume, harness_id=harness_id, cwd=cwd, name=name, role=role, model=model, effort=effort, mode=mode,
+                          resume_at=resume_at)
         h = LiveHandle(sid=sid or f"pending-{uuid.uuid4().hex[:8]}", project=project, harness_id=harness_id, role=role, cwd=cwd, name=name,
                        model=spec.model, effort=spec.effort, mode=spec.permission_mode)
         for it in preload or []:
@@ -744,13 +752,55 @@ class SessionManager:
             if not os.path.isdir(cwd):
                 raise WorkspaceGone(cwd)
             fork = meta.get("forked_from")
-            name = meta.get("name") or (summary.title if summary else None) or (f"{fork.get('name') or 'Agent'} (fork)" if fork else "Agent")
-            role = meta.get("role", "worker")
             harness = get_harness(harness_id)
             known = summary is not None or bool(fork)  # a fork exists before discovery lists it
             preload = _with_usage(await harness.load_history(sid, cwd), meta) if known else (h.items if h else [])
-            return await self._start(project, sid, resume=known, harness_id=harness_id, cwd=cwd, name=name, role=role,
-                                     model=model or meta.get("model"), effort=meta.get("effort"), mode=mode or meta.get("mode"), preload=preload)
+            return await self._start(project, sid, resume=known, harness_id=harness_id, cwd=cwd, name=_session_name(meta, summary),
+                                     role=meta.get("role", "worker"), model=model or meta.get("model"), effort=meta.get("effort"),
+                                     mode=mode or meta.get("mode"), preload=preload)
+
+    async def edit(self, project: Project, sid: str, at: dict[str, Any], text: str, attachments: list[Attachment] | None = None) -> None:
+        """Change one of the user's messages: the conversation goes back to just before it, and ``text`` is sent in its
+        place. The message and everything after it are dropped from what the agent remembers; the files stay as they
+        are. ``at`` = {item: the message's chat item id, anchor: the last item the harness produced before it (None:
+        none), user_index: its position among the user's messages}. A turn in progress is stopped first."""
+        cwd, harness_id = await self.session_info(project, sid)
+        harness = get_harness(harness_id)
+        if not harness.can_edit:
+            raise ValueError(f"{harness.label} agents can't change a message already sent")
+        if not os.path.isdir(cwd):
+            raise WorkspaceGone(cwd)
+        async with self._lock(sid):  # not while it is being started
+            h = self.handle(sid)
+            if h and h.session and h.state in BUSY:
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(h.session.interrupt(), timeout=5)
+                for _ in range(50):  # the turn ends (and its transcript is written) before the session is stopped
+                    if h.state not in BUSY:
+                        break
+                    await asyncio.sleep(0.2)
+            point = await harness.edit_point(sid, cwd, at.get("item") or None, at.get("anchor") or None, int(at.get("user_index") or 0))
+            kept = _before(await harness.load_history(sid, cwd), at)
+            meta = project.session_meta(sid)
+            summary = await self.find_summary(project, sid)
+            await self.close(sid)  # it resumes from the point it goes back to
+            backup = project.state_dir / "trash" / "sessions" / f"{time.strftime('%Y%m%d-%H%M%S')}-{harness_id}-{sid}-edit"
+            rewind: Rewind = await harness.rewind_session(sid, cwd, point, backup)
+            try:
+                h = await self._start(project, sid, resume=not rewind.fresh, resume_at=rewind.resume_at, harness_id=harness_id, cwd=cwd,
+                                      name=_session_name(meta, summary), role=meta.get("role", "worker"), model=meta.get("model"),
+                                      effort=meta.get("effort"), mode=meta.get("mode"), preload=_with_usage(kept, meta))
+            except Exception as e:
+                if backup.exists():
+                    raise RuntimeError(f"{e} (the conversation before the edit is kept in {backup})") from e
+                raise
+            finally:
+                self.invalidate(project)
+        log.info("edited a message of %s: back to %s", sid, point.cut or "the start")
+        if h.role == "worker":
+            project.board.log(sid, "Went back to an earlier message and changed it", source="atrium")
+        hub.publish(f"session:{sid}", {"type": "reload"})  # the chat shows the conversation as it is now
+        await self.send(project, sid, text, attachments)
 
     async def send(self, project: Project, sid: str, text: str, attachments: list[Attachment] | None = None) -> None:
         h = await self.ensure_live(project, sid)
@@ -922,6 +972,22 @@ class SessionManager:
         harness = get_harness(meta.get("harness") or (summary.harness if summary else "claude-code"))
         items = _with_usage(await harness.load_history(sid, (summary.cwd if summary else None) or meta.get("cwd") or project.path), meta)
         return {"live": False, "state": None, "items": items, "pending": [], "settings": settings}
+
+
+def _session_name(meta: dict[str, Any], summary: SessionSummary | None) -> str:
+    fork = meta.get("forked_from")
+    return meta.get("name") or (summary.title if summary else None) or (f"{fork.get('name') or 'Agent'} (fork)" if fork else "Agent")
+
+
+def _before(items: list[Item], at: dict[str, Any]) -> list[Item]:
+    """The chat items before an edited message (``SessionManager.edit``'s ``at``): up to the message itself, else
+    to the first of the user's messages after ``anchor`` (a message sent live has an id of Atrium's own)."""
+    ids = [it.get("id") for it in items]
+    if at.get("item") in ids:
+        return items[: ids.index(at["item"])]
+    start = ids.index(at["anchor"]) + 1 if at.get("anchor") in ids else 0
+    end = next((i for i in range(start, len(items)) if items[i].get("kind") == "user" and not items[i].get("command")), len(items))
+    return items[:end]
 
 
 def _with_usage(items: list[Item], meta: dict[str, Any]) -> list[Item]:

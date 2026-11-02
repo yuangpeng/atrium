@@ -29,9 +29,11 @@ from typing import Any, Awaitable, Callable
 # --------------------------------------------------------------------------
 # Normalized chat items
 # --------------------------------------------------------------------------
-# Every item is a dict with a ``kind`` and (except transient kinds) an ``id``:
+# Every item is a dict with a ``kind`` and (except transient kinds) an ``id``, and may carry ``ts``:
+# when it was sent or made (epoch seconds). Live items get it as they arrive; history gives what
+# the transcript records.
 #
-#   user        {id, text, ts?, attachments?: [{name, path, mime, url?}], command?}
+#   user        {id, text, attachments?: [{name, path, mime, url?}], command?}
 #                                               ``command``: a slash command the harness ran rather
 #                                               than a prompt (no turn to fork from)
 #   text        {id, text}                      assistant prose (markdown)
@@ -187,6 +189,15 @@ class ForkPoint:
     cut: str | None = None
     cut_ts: float | None = None  # when the kept part ended
     next_ts: float | None = None  # when the first dropped message was sent (None: nothing dropped)
+    drop: str | None = None  # an edit's: the first message dropped (Claude: its transcript entry; Codex: its turn)
+
+
+@dataclass
+class Rewind:
+    """How a session carries on once ``Harness.rewind_session`` cut its conversation."""
+
+    resume_at: str | None = None  # resume up to here only (``LiveSpec.resume_at``): a harness that cuts as it resumes
+    fresh: bool = False  # nothing is left: it starts over as a new conversation under the same id
 
 
 @dataclass
@@ -204,6 +215,7 @@ class LiveSpec:
     extra_mcp_servers: dict[str, Any] = field(default_factory=dict)
     disallowed_tools: list[str] = field(default_factory=list)
     allowed_tools: list[str] = field(default_factory=list)
+    resume_at: str | None = None  # with ``resume``: the conversation up to there only (``Rewind.resume_at``)
 
 
 class LiveSession(ABC):
@@ -255,6 +267,7 @@ class Harness(ABC):
     models: list[dict[str, Any]] = []  # [{id, label, efforts?: [..], default_effort?}]
     efforts: list[str] = []  # reasoning-effort levels when a model does not list its own
     can_fork: bool = True  # implements fork_point / fork_session
+    can_edit: bool = False  # implements edit_point / rewind_session: a sent message can be changed
 
     def available(self) -> tuple[bool, str | None]:
         """Whether the harness can run here (binary installed, enabled in settings…)."""
@@ -333,6 +346,19 @@ class Harness(ABC):
         apply a changed system prompt on resume (Codex) must put it into the copy's history."""
         raise NotImplementedError(f"{self.label} sessions can't be forked")
 
+    async def edit_point(self, session_id: str, cwd: str, item: str | None, anchor: str | None, user_index: int) -> ForkPoint:
+        """Where editing one of the user's messages cuts the conversation: what came before it is kept, the
+        message and all after it are dropped (``drop``: the first of them). ``item`` is the message's chat
+        item id, ``anchor`` the last item the harness produced before it (None: nothing, it opens the
+        conversation), ``user_index`` its position among the user's messages. ``cut`` None: nothing is kept."""
+        raise NotImplementedError(f"{self.label} messages can't be edited")
+
+    async def rewind_session(self, session_id: str, cwd: str, point: ForkPoint, backup: Path) -> Rewind:
+        """Make the (stopped) session's conversation end at ``point`` (``edit_point``'s), to carry on from there.
+        What it removes for good goes into ``backup``, a directory to create if needed. The files stay as
+        they are."""
+        raise NotImplementedError(f"{self.label} messages can't be edited")
+
     async def move_session(self, session_id: str, cwd: str, target_cwd: str, note: str = "") -> None:
         """Make the (stopped) session resume in ``target_cwd`` instead of ``cwd`` — which may no
         longer exist — so that discovery lists it there. ``note`` tells the model what changed;
@@ -377,4 +403,5 @@ class Harness(ABC):
             "models": self.models,
             "efforts": self.efforts,
             "can_fork": self.can_fork,
+            "can_edit": self.can_edit,
         }

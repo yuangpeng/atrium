@@ -780,15 +780,16 @@ def history_items(entries: list[dict[str, Any]]) -> list[Item]:
     items: list[Item] = []
     for d in entries:
         t, iid = d.get("type"), f"s{d['step_index']}"
+        made = len(items)
         if t == "USER_INPUT":
             text, files = split_attachment_note(user_text(d.get("content") or ""))
             if d.get("source") != "USER_EXPLICIT":
                 items.append({"kind": "system", "id": iid, "subtype": "notice", "text": short(text, 2000)})
-                continue
-            it: Item = {"kind": "user", "id": iid, "text": text, "ts": iso_to_epoch(d.get("created_at"))}
-            if files:
-                it["attachments"] = [{**f, "url": upload_url(f["path"])} for f in files]
-            items.append(it)
+            else:
+                it: Item = {"kind": "user", "id": iid, "text": text}
+                if files:
+                    it["attachments"] = [{**f, "url": upload_url(f["path"])} for f in files]
+                items.append(it)
         elif t == "PLANNER_RESPONSE":
             if (d.get("thinking") or "").strip():
                 items.append({"kind": "thinking", "id": f"{iid}:think", "text": d["thinking"]})
@@ -809,6 +810,9 @@ def history_items(entries: list[dict[str, Any]]) -> list[Item]:
             items.append(retry_item(iid, str(d.get("error") or _result_text(d)[0])))
         elif id(d) not in results and (d.get("status") == "ERROR" or t == "ERROR_MESSAGE"):
             items.append({"kind": "error", "id": iid, "text": d.get("error") or _result_text(d)[0]})
+        if ts := iso_to_epoch(d.get("created_at")):
+            for it in items[made:]:
+                it["ts"] = ts
     return items
 
 

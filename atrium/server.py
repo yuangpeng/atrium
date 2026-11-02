@@ -504,6 +504,20 @@ async def send(pid: str, sid: str, body: dict[str, Any] = Body(...)):
     return {"ok": True}
 
 
+@app.post("/api/p/{pid}/sessions/{sid}/edit")
+async def edit_message(pid: str, sid: str, body: dict[str, Any] = Body(...)):
+    """Change a message already sent and carry on from there: {at: {item, anchor, user_index}, text, attachments}."""
+    text = (body.get("text") or "").strip()
+    attachments = [attachment_from_upload(a) for a in body.get("attachments") or []]
+    if not text and not attachments:
+        raise HTTPException(400, "empty message")
+    try:
+        await sessions.edit(P(pid), sid, body.get("at") or {}, text, attachments)
+    except (ValueError, NotImplementedError) as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}
+
+
 @app.get("/api/p/{pid}/commands")
 async def slash_commands(pid: str, sid: str | None = None, harness: str | None = None, cwd: str | None = None):
     """Slash commands for the composer: a session's, or a new agent's (``harness`` in ``cwd``)."""

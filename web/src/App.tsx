@@ -325,7 +325,7 @@ function ChatColumn() {
       ) : sessionId ? (
         <>
           <SessionHeader />
-          <ChatView key={sessionId} pid={project.id} sid={sessionId} cwd={current?.cwd ?? project.path} forkable />
+          <ChatView key={sessionId} pid={project.id} sid={sessionId} cwd={current?.cwd ?? project.path} forkable editable />
         </>
       ) : (
         <>

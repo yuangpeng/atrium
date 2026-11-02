@@ -439,6 +439,7 @@ export function GitPanel() {
             sid={agentSid}
             cwd={project.path}
             compact
+            editable
             placeholder="e.g. Which branches are merged into main? Show me only what the agents are working on."
             emptyHint={
               <div className="muted" style={{ fontSize: 13, textAlign: "center", padding: 10 }}>

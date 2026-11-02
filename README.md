@@ -127,6 +127,13 @@ A project-centric workbench for coding agents — Claude Code, Codex and Antigra
    native to Claude Code (`fork_session`, the transcript moved under the new directory) and Codex
    (`thread/fork`); the fork's Changes and the Tracker only count what happened after the fork.
    Antigravity sessions can't be forked: its runtime keeps a conversation's state under its id.
+   To fix a message in place instead, **edit it** (✎, next to ⑂): the same agent goes back to just
+   before it and carries on with what you send, the message and everything after it dropped from
+   what it remembers (a turn in progress is stopped first). The files stay as they are. Claude Code
+   resumes up to there (`resume_session_at`; the transcript keeps the replaced conversation as a
+   branch, and editing the first message starts it over under the same id, the old transcript kept
+   in `.atrium/trash/sessions/`); Codex drops the turns (`thread/revert`). Hover any message — a tap,
+   on a phone — for when it was sent; the agent's replies too (Codex records a time per turn only).
 8. **Agents outlive their worktrees.** Remove a worktree — from the Git panel, or the agent does it
    after merging its branch — and its agents stay in the list with the worktree struck through
    (⎇ ~~feat/x~~). Their process stops, and their Changes show the files as they left them, read-only.
@@ -315,6 +322,8 @@ Implement `atrium.harness.base.Harness` and register it in `atrium/harness/__ini
   effort / resolve permission);
 * `fork_point` / `fork_session` (optional; set `can_fork = False` without them) — cut a conversation
   before a user message and copy it into a new session working in another directory;
+* `edit_point` / `rewind_session` (optional; set `can_edit = True` with them) — cut a session's own
+  conversation before a user message, to carry on from there with that message changed;
 * `config_files(project_dir)` — the harness's own config files for the Settings editor;
 * `complete_json` — one-shot structured completion (used by the tracker when it is set to this harness).
 

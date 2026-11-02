@@ -204,7 +204,7 @@ html, body { overscroll-behavior: none; } /* the app doesn't rubber-band as a wh
   .ws-tabs { position: relative; z-index: 41; will-change: transform; }
 }
 @media (hover: none) {
-  .msg-fork { opacity: 0.5; } /* fork from an earlier message */
+  .msg-actions { opacity: 0.5; } /* fork from an earlier message, edit it */
   .tree-row.on .hover-actions { display: flex; } /* the open file's rename / delete */
   /* a project card's pin / archive / remove: hidden until hover, so a finger never reaches them */
   .proj-card-actions > * { opacity: 1; }
@@ -230,7 +230,8 @@ html, body { overscroll-behavior: none; } /* the app doesn't rubber-band as a wh
 [data-compact] .composer-bar { gap: 4px; margin-top: 4px; }
 [data-compact] .composer-bar .chip { font-size: calc(var(--fs) - 0.5px); }
 [data-compact] .send-btn { width: 32px; height: 32px; }
-[data-compact] .composer-hint { font-size: calc(var(--fs) - 1.5px); }
+[data-compact] :is(.composer-hint, .msg-edit-hint) { font-size: calc(var(--fs) - 1.5px); }
+[data-compact] .msg-time { font-size: calc(var(--fs) - 2px); line-height: 1.1; margin-bottom: 0; }
 [data-compact] .hover-tip { font-size: var(--fs); padding: 6px 11px; }
 /* the bars on top, and their icons */
 [data-compact] :is(.topbar, .ws-tabs) { height: 40px; }

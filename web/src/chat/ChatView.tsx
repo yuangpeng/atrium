@@ -1,11 +1,11 @@
-import type { JSX } from "react";
+import type { JSX, MouseEvent, ReactNode } from "react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, ArrowUpRight, Brain, ChevronRight, FoldVertical, GitFork, Info, Sparkle, Square } from "lucide-react";
-import { api, ForkAt, Item, LiveState, MoveWorkspace, SessionRow, SessionSettings } from "../api";
+import { ArrowUp, ArrowUpRight, Brain, ChevronRight, FoldVertical, GitFork, Info, Pencil, Sparkle, Square } from "lucide-react";
+import { api, EditAt, ForkAt, Item, LiveState, MoveWorkspace, SessionRow, SessionSettings } from "../api";
 import { socket } from "../ws";
 import { useApp } from "../store";
 import { EMPTY_REPLY, Workspace, useDrafts } from "../drafts";
-import { clsx, fmtDuration } from "../util";
+import { clsx, fmtClock, fmtDuration } from "../util";
 import { Markdown, Spinner } from "../components/ui";
 import { useOpenCompaction } from "../components/Compactions";
 import { BoardToolRow, PermissionCard, ToolRow, isBoardTool, useOpenSubagent } from "./ToolViews";
@@ -16,7 +16,9 @@ import {
 } from "./Composer";
 import { mergeCommands, useAtriumCommands, useSlashCommands, useSlashMenu } from "./SlashMenu";
 import { useVoiceInput } from "./Voice";
+import { MessageEditor } from "./MessageEditor";
 
+type UserItem = Extract<Item, { kind: "user" }>;
 type ToolItem = Extract<Item, { kind: "tool" }>;
 type ResultItem = Extract<Item, { kind: "tool_result" }>;
 type PermItem = Extract<Item, { kind: "permission" }>;
@@ -136,24 +138,71 @@ function forkPoints(items: Item[]): Map<string, ForkAt> {
   return out;
 }
 
-/** The conversation; with `forks` and `onFork`, user messages get a "fork from here" button. */
-export function Transcript({ blocks, results, running, cwd, forks, onFork }: {
+/** Where editing each of the user's messages (but slash commands) goes back to: as for a fork, after the last
+ *  item the harness produced before it (a compaction too: what came before it is a summary). */
+function editPoints(items: Item[]): Map<string, EditAt> {
+  const out = new Map<string, EditAt>();
+  let anchor: string | null = null;
+  for (const it of items) {
+    if (it.kind === "user" && !it.command) {
+      out.set(it.id, { item: it.id, anchor, user_index: out.size });
+    } else if (
+      ((it.kind === "text" || it.kind === "thinking" || it.kind === "tool") && !("parent" in it && it.parent)) ||
+      (it.kind === "system" && it.subtype === "compact")
+    ) {
+      anchor = it.id;
+    }
+  }
+  return out;
+}
+
+/** When a message was sent, above it: shown on hover, and for a finger when it taps the message. */
+function MsgTime({ ts }: { ts?: number }) {
+  if (!ts) return null;
+  return (
+    <time className="msg-time" dateTime={new Date(ts * 1000).toISOString()}>
+      {fmtClock(ts)}
+    </time>
+  );
+}
+
+/** What a tap on a message is not for: its own controls, and text being selected. */
+const TAPPABLE = "a, button, summary, input, textarea, select, label, img, video, .tool-row, [role='button']";
+
+/** The conversation; with `forks` and `onFork`, user messages get a "fork from here" button; with `edits` and
+ *  `onEdit` one that changes the message, `editor` standing in for the one being changed (`editing`). */
+export function Transcript({ blocks, results, running, cwd, forks, onFork, edits, editing, onEdit, editor }: {
   blocks: Block[];
   results: Record<string, ResultItem>;
   running: boolean;
   cwd: string;
   forks?: Map<string, ForkAt> | null;
   onFork?: (at: ForkAt, text: string) => void;
+  edits?: Map<string, EditAt> | null;
+  editing?: string | null;
+  onEdit?: (id: string) => void;
+  editor?: (item: UserItem, at: EditAt) => ReactNode;
 }) {
+  // a finger has no hover: a tap on a message shows its time, until it taps it again or another one
+  const [tapped, setTapped] = useState<string | null>(null);
+  const tap = useCallback((key: string) => (e: MouseEvent) => {
+    if (!window.matchMedia("(hover: none)").matches || (e.target as Element).closest(TAPPABLE)) return;
+    if (!window.getSelection()?.isCollapsed) return;
+    setTapped((k) => (k === key ? null : key));
+  }, []);
+  const timed = useCallback((key: string) => ({ onClick: tap(key), "data-time": tapped === key ? "shown" : undefined }), [tap, tapped]);
   const rendered = useMemo(
     () =>
       blocks.map((b) => {
         if (b.type === "tools")
           return (
-            <div className="tools" key={b.key}>
-              {b.tools.map((t) => (
-                <ToolRow key={t.id} tool={t} result={results[t.id]} cwd={cwd} running={running} />
-              ))}
+            <div className="timed" key={b.key} {...timed(b.key)}>
+              <div className="tools">
+                {b.tools.map((t) => (
+                  <ToolRow key={t.id} tool={t} result={results[t.id]} cwd={cwd} running={running} />
+                ))}
+              </div>
+              <MsgTime ts={b.tools[0].ts} />
             </div>
           );
         if (b.type === "board") return <BoardToolRow key={b.key} tool={b.tool} />;
@@ -162,24 +211,37 @@ export function Transcript({ blocks, results, running, cwd, forks, onFork }: {
         switch (it.kind) {
           case "user": {
             const at = forks?.get(it.id);
+            const edit = onEdit ? edits?.get(it.id) : undefined;
+            if (edit && editing === it.id && editor) return <div key={b.key} className="msg-edit-row">{editor(it, edit)}</div>;
             return (
-              <div className="msg-user-row" key={b.key}>
-                {at && onFork && (
-                  <button className="icon-btn sm msg-fork" title="Fork from here: a new agent that remembers everything before this message" onClick={() => onFork(at, it.text)}>
-                    <GitFork size={13} />
-                  </button>
+              <div className="msg-user-row timed" key={b.key} {...timed(b.key)}>
+                {(edit || (at && onFork)) && (
+                  <div className="msg-actions">
+                    {at && onFork && (
+                      <button className="icon-btn sm" aria-label="Fork from here" data-tip="Fork from here: a new agent that remembers everything before this message" onClick={() => onFork(at, it.text)}>
+                        <GitFork size={13} />
+                      </button>
+                    )}
+                    {edit && (
+                      <button className="icon-btn sm" aria-label="Edit" data-tip="Edit: the conversation goes back to here and carries on with what you send instead" onClick={() => onEdit?.(it.id)}>
+                        <Pencil size={13} />
+                      </button>
+                    )}
+                  </div>
                 )}
                 <div className={clsx("msg-user", it.command && "command")}>
                   {it.attachments?.length ? <MessageAttachments items={it.attachments} /> : null}
                   {it.command ? <CommandText text={it.text} /> : it.text}
                 </div>
+                <MsgTime ts={it.ts} />
               </div>
             );
           }
           case "text":
             return (
-              <div className="msg-text" key={b.key}>
+              <div className="msg-text timed" key={b.key} {...timed(b.key)}>
                 <Markdown text={it.text} />
+                <MsgTime ts={it.ts} />
               </div>
             );
           case "command_output":
@@ -190,9 +252,10 @@ export function Transcript({ blocks, results, running, cwd, forks, onFork }: {
             );
           case "thinking":
             return (
-              <details className="msg-thinking" key={b.key}>
+              <details className="msg-thinking timed" key={b.key} {...timed(b.key)}>
                 <summary>
                   <Brain size={13} /> Thinking <ChevronRight size={12} />
+                  <MsgTime ts={it.ts} />
                 </summary>
                 <div className="content">{it.text}</div>
               </details>
@@ -201,7 +264,8 @@ export function Transcript({ blocks, results, running, cwd, forks, onFork }: {
             return <SystemLine key={b.key} item={it} />;
           case "result":
             return (
-              <div className="msg-result" key={b.key}>
+              <div className="msg-result timed" key={b.key} {...timed(b.key)}>
+                <MsgTime ts={it.ts} />
                 {it.is_error ? <span className="pill err">{it.subtype}</span> : <span>Done</span>}
                 {it.turns ? <span>{it.turns} turns</span> : null}
                 {it.duration_ms ? <span>{fmtDuration(it.duration_ms)}</span> : null}
@@ -211,15 +275,16 @@ export function Transcript({ blocks, results, running, cwd, forks, onFork }: {
             );
           case "error":
             return (
-              <div className="msg-error" key={b.key}>
+              <div className="msg-error timed" key={b.key} {...timed(b.key)}>
                 {it.text}
+                <MsgTime ts={it.ts} />
               </div>
             );
           default:
             return null;
         }
       }),
-    [blocks, results, running, cwd, forks, onFork],
+    [blocks, results, running, cwd, forks, onFork, edits, editing, onEdit, editor, timed],
   );
   return <>{rendered}</>;
 }
@@ -283,12 +348,13 @@ function SystemLine({ item }: { item: SystemItem }) {
   );
 }
 
-export function ChatView({ pid, sid, cwd, compact, forkable, modeLocked, placeholder, emptyHint }: {
+export function ChatView({ pid, sid, cwd, compact, forkable, editable, modeLocked, placeholder, emptyHint }: {
   pid: string;
   sid: string;
   cwd: string;
   compact?: boolean;
   forkable?: boolean;
+  editable?: boolean; // the user's messages can be changed (not the Review agent's: its rounds drive it)
   modeLocked?: boolean; // the session's permissions can't change (the Review agent is read-only)
   placeholder?: string;
   emptyHint?: JSX.Element;
@@ -336,6 +402,11 @@ export function ChatView({ pid, sid, cwd, compact, forkable, modeLocked, placeho
     stick.current = true;
     const unsub = socket.subscribe(`session:${sid}`, (msg) => {
       if (msg.type === "settings") setSettings(msg.settings);
+      if (msg.type === "reload") {
+        // a message was changed: the conversation is the one up to it, from here on (new items wait for it)
+        ready = false;
+        void load();
+      }
       if (msg.type !== "item") return;
       if (!ready) buffer.push(msg.item);
       else setSt((s) => apply(s, msg.item));
@@ -404,6 +475,30 @@ export function ChatView({ pid, sid, cwd, compact, forkable, modeLocked, placeho
   const canFork = forkable && harness?.can_fork !== false;
   const forks = useMemo(() => (canFork ? forkPoints(st.items) : null), [st.items, canFork]);
   const onFork = useCallback((at: ForkAt, text: string) => setForkRequest({ sid, at, text }), [sid, setForkRequest]);
+  // changing a message: the one being changed, if any
+  const canEdit = !!editable && !!harness?.can_edit;
+  const edits = useMemo(() => (canEdit ? editPoints(st.items) : null), [st.items, canEdit]);
+  const [editing, setEditing] = useState<string | null>(null);
+  useEffect(() => setEditing(null), [sid]);
+  const editor = useCallback(
+    (it: UserItem, at: EditAt) => (
+      <MessageEditor
+        pid={pid}
+        sid={sid}
+        text={it.text}
+        attachments={it.attachments ?? []}
+        at={at}
+        later={(edits?.size ?? 0) - at.user_index - 1}
+        running={running}
+        onClose={() => setEditing(null)}
+        onSent={() => {
+          stick.current = true;
+          setEditing(null);
+        }}
+      />
+    ),
+    [pid, sid, edits, running],
+  );
   const gone = !!row?.workspace_gone;
   const moveTo: MoveWorkspace | null = !gone || !ws ? null : ws.kind === "new" ? { kind: "new", branch: ws.branch.trim(), base: ws.base.trim() || undefined } : ws;
   const placed = !gone || (!!moveTo && (moveTo.kind !== "new" || !!moveTo.branch)); // a removed worktree: somewhere picked to go on
@@ -497,7 +592,10 @@ export function ChatView({ pid, sid, cwd, compact, forkable, modeLocked, placeho
             </div>
           )}
           {!loading && blocks.length === 0 && emptyHint}
-          <Transcript blocks={blocks} results={st.results} running={running} cwd={cwd} forks={forks} onFork={onFork} />
+          <Transcript
+            blocks={blocks} results={st.results} running={running} cwd={cwd} forks={forks} onFork={onFork}
+            edits={edits} editing={editing} onEdit={setEditing} editor={editor}
+          />
           {st.streaming && (
             <div className="msg-text stream-cursor">
               <Markdown text={st.streaming} />

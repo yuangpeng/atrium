@@ -21,6 +21,7 @@ export interface Harness {
   config_model?: string | null;
   config_effort?: string | null;
   can_fork?: boolean; // false: its sessions can't be forked (Antigravity)
+  can_edit?: boolean; // a message already sent can be changed, the conversation going back to it (Claude Code, Codex)
 }
 
 /** A slash command the composer offers: the harness's built-ins, custom commands, skills… or Atrium's own. */
@@ -204,6 +205,14 @@ export interface ForkAt {
   user_index: number;
 }
 
+/** A message to change (api.editMessage): its item id, and as for a fork the last harness item shown before it
+ *  (null: nothing, it opens the conversation) and its position among the user's messages. */
+export interface EditAt {
+  item: string;
+  anchor: string | null;
+  user_index: number;
+}
+
 export type ForkWorkspace = { kind: "same" } | { kind: "worktree"; path: string } | { kind: "new"; branch: string };
 
 /** Where an agent moves to (after its worktree was removed): the project directory, a worktree, a new one. */
@@ -215,8 +224,9 @@ export type WorktreeTidy = { removed: true; path: string; branch: string | null;
 /** What a forked worktree's files are: as at the fork point, the source's current files, or just the commit. */
 export type ForkFiles = "fork-point" | "current" | "committed";
 
-export type Item =
-  | { kind: "user"; id: string; text: string; ts?: number; attachments?: Attachment[]; command?: boolean } // command: a slash command, not a prompt
+/** A chat item; `ts`: when it was sent or made (epoch seconds), when known (Codex records it per turn only). */
+export type Item = (
+  | { kind: "user"; id: string; text: string; attachments?: Attachment[]; command?: boolean } // command: a slash command, not a prompt
   | { kind: "text"; id: string; text: string }
   | { kind: "command_output"; id: string; text: string } // what a slash command printed
   | { kind: "thinking"; id: string; text: string; parent?: string }
@@ -262,7 +272,8 @@ export type Item =
   | { kind: "error"; id: string; text: string }
   | { kind: "delta"; text: string }
   | { kind: "state"; state: LiveState }
-  | { kind: "usage"; id: string; used: number | null; max: number | null }; // context window gauge, latest wins
+  | { kind: "usage"; id: string; used: number | null; max: number | null } // context window gauge, latest wins
+) & { ts?: number };
 
 export interface BoardAgent {
   session_id: string;
@@ -650,6 +661,9 @@ export const api = {
   commands: (pid: string, where: { sid?: string; harness?: string; cwd?: string }) => req<SlashCommand[]>("GET", `/api/p/${pid}/commands${q(where)}`),
   send: (pid: string, sid: string, text: string, attachments: string[] = []) =>
     req("POST", `/api/p/${pid}/sessions/${sid}/send`, { text, attachments }),
+  /** Change a message already sent: the conversation goes back to just before it and carries on with this one. */
+  editMessage: (pid: string, sid: string, at: EditAt, text: string, attachments: string[] = []) =>
+    req("POST", `/api/p/${pid}/sessions/${sid}/edit`, { at, text, attachments }),
   attach: (pid: string, sid: string) => req("POST", `/api/p/${pid}/sessions/${sid}/attach`, {}),
   interrupt: (pid: string, sid: string) => req("POST", `/api/p/${pid}/sessions/${sid}/interrupt`),
   setMode: (pid: string, sid: string, mode: string) => req("POST", `/api/p/${pid}/sessions/${sid}/mode`, { mode }),

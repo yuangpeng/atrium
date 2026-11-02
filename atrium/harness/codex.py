@@ -28,7 +28,10 @@ from pathlib import Path
 from typing import Any
 
 from ..config import config
-from .base import Attachment, Compaction, Emit, FileEdit, ForkPoint, Harness, Item, LiveSession, LiveSpec, SessionSummary, SlashCommand, SubagentSummary, ToolSpec
+from .base import (
+    Attachment, Compaction, Emit, FileEdit, ForkPoint, Harness, Item, LiveSession, LiveSpec, Rewind, SessionSummary, SlashCommand, SubagentSummary,
+    ToolSpec,
+)
 from .codex_rpc import AppServerClient, RpcError, bundled_codex
 from .util import TailScan, attachment_note, clip, hhmm, iso_to_epoch, parse_json_loose, short, split_attachment_note, strict_schema, tail_scan, upload_url
 
@@ -78,6 +81,7 @@ TURN_COMMANDS = {"compact", "review"}  # turns of their own, started by their ow
 SLASH_RE = re.compile(r"/([^\s/]+)(?:\s+(.*))?", re.S)
 SKILL_RE = re.compile(r"(?<![\w$])\$([A-Za-z0-9][\w.:-]*)")  # "$name" mentions a skill
 SKILLS_TTL = 60  # seconds a skills/list answer is reused
+STEER_EDIT = "That message steered a turn already running, and Codex can only go back to where a turn starts: edit the message that started it"
 # the prompt Codex records for a review of uncommitted changes (a turn of its own, beside the review's)
 REVIEW_UNCOMMITTED = "Review the current code changes (staged, unstaged, and untracked files) and provide prioritized findings."
 # What the TUI's /init sends (codex-cli 0.160)
@@ -308,11 +312,13 @@ def review_prompts(turns: list[dict[str, Any]]) -> set[int]:
 
 
 def turn_items(turn: dict[str, Any], review: bool = False) -> list[Item]:
-    """``review``: the turn holds a review's prompt only (``review_prompts``), shown as the /review command."""
+    """``review``: the turn holds a review's prompt only (``review_prompts``), shown as the /review command.
+    Thread items have no time of their own: the prompt gets when the turn started, its last item when it ended."""
+    started, ended = _epoch(turn.get("startedAt")), _epoch(turn.get("completedAt"))
     if review:
         it = user_item(turn["items"][0])
         text = it["text"].strip()
-        return [{**it, "text": "/review" if text == REVIEW_UNCOMMITTED else f"/review {text}", "command": True}]
+        return [{**it, "text": "/review" if text == REVIEW_UNCOMMITTED else f"/review {text}", "command": True, "ts": started}]
     out: list[Item] = []
     for it in turn.get("items") or []:
         if it.get("type") == "userMessage":
@@ -331,6 +337,12 @@ def turn_items(turn: dict[str, Any], review: bool = False) -> list[Item]:
         err = turn.get("error") or {}
         out.append({"kind": "system", "id": f"turn-{turn.get('id')}", "subtype": "interrupted" if st == "interrupted" else "error",
                     "text": "Interrupted" if st == "interrupted" else f"Turn failed: {err.get('message') or 'unknown error'}"})
+    first = next((it for it in out if it["kind"] == "user"), None)
+    if first and started and first is out[0]:  # (a steer, later in the turn, has no time)
+        first["ts"] = started
+    last = next((it for it in reversed(out) if it["kind"] in ("text", "system", "error")), None)
+    if last and ended and last is not first:
+        last["ts"] = ended
     return out
 
 
@@ -746,11 +758,13 @@ class CodexHarness(Harness):
     review_agent_mode = "read-only"
     models = [{"id": "", "label": "Default"}]
     efforts = DEFAULT_EFFORTS
+    can_edit = True
 
     def __init__(self) -> None:
         self._client: AppServerClient | None = None
         self.live_threads: set[str] = set()
         self._paths: dict[str, str] = {}
+        self._rollout_cache: dict[str, tuple[str, list[Path]]] = {}  # thread -> (its newest rollout, all of them)
         self._cwd_cache: dict[str, str | None] = {}
         self._models: tuple[float, list[dict[str, Any]]] | None = None
         self._list_warned = False
@@ -884,7 +898,7 @@ class CodexHarness(Harness):
     async def list_sessions(self, project_dir: str, roots: list[str]) -> list[SessionSummary]:
         if not self.available()[0]:
             return []
-        out: list[SessionSummary] = []
+        threads: list[dict[str, Any]] = []
         cursor = None
         for _ in range(10):
             params: dict[str, Any] = {"cwd": _thread_cwds(roots), "sourceKinds": SOURCE_KINDS, "limit": 100}
@@ -897,12 +911,16 @@ class CodexHarness(Harness):
                     log.warning("codex thread/list failed: %s", e)
                     self._list_warned = True
                 break
-            for t in res.get("data") or []:
-                out.append(self._summary(t))
+            threads += res.get("data") or []
             cursor = res.get("nextCursor")
             if not cursor:
                 break
-        return out
+        # thread/revert (an edit) carries a thread on in a new rollout, and each is listed: one row, the newest's
+        by_id: dict[str, dict[str, Any]] = {}
+        for t in sorted(threads, key=lambda t: t.get("updatedAt") or 0):
+            created = [x for x in (t.get("createdAt"), by_id.get(t["id"], {}).get("createdAt")) if x]
+            by_id[t["id"]] = {**t, "createdAt": min(created) if created else None}
+        return [self._summary(t) for t in by_id.values()]
 
     async def list_subagents(self, sessions: list[SessionSummary], roots: list[str]) -> dict[str, list[SubagentSummary]]:
         # thread/list doesn't return sub-agent threads: follow each thread's own spawn events instead
@@ -1036,11 +1054,22 @@ class CodexHarness(Harness):
         known = self._paths.get(session_id)
         if known and os.path.exists(known):
             return Path(known)
-        for base in (codex_home() / "sessions", codex_home() / "archived_sessions"):
-            for cand in base.glob(f"**/rollout-*-{session_id}.jsonl"):
-                self._paths[session_id] = str(cand)
-                return cand
+        found = _rollouts(session_id)
+        if found:
+            self._paths[session_id] = str(found[-1])
+            return found[-1]
         return None
+
+    def _rollouts(self, session_id: str) -> list[Path]:
+        """``_rollouts``, looked for again only once the thread's newest rollout (as listed) changed."""
+        newest = self._paths.get(session_id)
+        hit = self._rollout_cache.get(session_id)
+        if newest and hit and hit[0] == newest:
+            return hit[1]
+        found = _rollouts(session_id)
+        if found:
+            self._rollout_cache[session_id] = (str(found[-1]), found)
+        return found
 
     def watch_roots(self) -> list[Path]:
         p = codex_home() / "sessions"
@@ -1114,6 +1143,48 @@ class CodexHarness(Harness):
         await self.rename_session(tid, title, target_cwd)
         return tid
 
+    # ---- edits: thread/revert drops turns (from the edited message's on) from the thread's history
+    async def edit_point(self, session_id: str, cwd: str, item: str | None, anchor: str | None, user_index: int) -> ForkPoint:
+        turns = await self._turns(session_id)
+        reviews = review_prompts(turns)
+        starts = [i for i, t in enumerate(turns) if i not in reviews and any(it.get("type") == "userMessage" for it in t.get("items") or [])]
+        at: int | None = None  # the turn the message opens
+        for i, t in enumerate(turns):
+            kinds = [(it.get("type"), it.get("id")) for it in t.get("items") or []]
+            if ("userMessage", item) in kinds:
+                if kinds.index(("userMessage", item)) > 0:
+                    raise ValueError(STEER_EDIT)
+                at = i
+        if at is None and anchor:
+            held = _turn_of(turns, anchor)
+            if held is not None:
+                ids = [it.get("id") for it in turns[held].get("items") or []]
+                later = ids[ids.index(anchor) + 1 :] if anchor in ids else []
+                if any(it.get("type") == "userMessage" and it.get("id") in later for it in turns[held].get("items") or []):
+                    raise ValueError(STEER_EDIT)  # the message came in during the anchor's turn
+                at = held + 1
+        elif at is None and user_index < len(starts):  # nothing before it to find it by (0: the thread's first)
+            at = starts[user_index]
+        if at is None or at >= len(turns):
+            raise ValueError("Couldn't find that message in the thread")
+        prev = turns[at - 1] if at else None
+        return ForkPoint(cut=prev.get("id") if prev else None, cut_ts=_epoch((prev or {}).get("completedAt")),
+                         next_ts=_epoch(turns[at].get("startedAt")), drop=turns[at].get("id"))
+
+    async def rewind_session(self, session_id: str, cwd: str, point: ForkPoint, backup: Path) -> Rewind:
+        # Codex's own rewind (nothing for ``backup``)
+        if not point.drop:
+            raise ValueError("Nothing to go back to in the thread")
+        await self.client.request("thread/resume", {"threadId": session_id, "excludeTurns": True}, timeout=60)
+        try:
+            await self.client.request("thread/revert", {"threadId": session_id, "beforeTurnId": point.drop}, timeout=60)
+        finally:
+            try:
+                await self.client.request("thread/unsubscribe", {"threadId": session_id}, timeout=5)
+            except Exception:
+                pass
+        return Rewind()
+
     async def move_session(self, session_id: str, cwd: str, target_cwd: str, note: str = "") -> None:
         # the thread takes the new cwd when it resumes; loading it here records it now and carries the note
         await self.client.request("thread/resume", {"threadId": session_id, "cwd": target_cwd, "excludeTurns": True}, timeout=60)
@@ -1178,30 +1249,14 @@ class CodexHarness(Harness):
         return out
 
     def file_edits(self, session_id: str, cwd: str) -> list[FileEdit]:
-        path = self.transcript_path(session_id, cwd)
-        if not path:
-            return []
         edits: list[FileEdit] = []
-        try:
-            fh = path.open(encoding="utf-8", errors="replace")
-        except OSError:
-            return []
-        with fh:
-            for line in fh:
-                if '"FileChange"' not in line and '"patch_apply_end"' not in line:
-                    continue
-                try:
-                    d = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                p = d.get("payload") or {}
-                item = p.get("item") if p.get("type") == "item_completed" else p if p.get("type") == "patch_apply_end" else None
-                if not item or (item.get("type") == "FileChange" and item.get("status") != "completed"):
-                    continue
-                if p.get("type") == "patch_apply_end" and not item.get("success", True):
-                    continue
-                for fp, c in (item.get("changes") or {}).items():
-                    edits += _edits_from_change(fp, c, d.get("timestamp"))
+        for path in self._rollouts(session_id):  # those of the turns an edit dropped too: the files kept the changes
+            try:
+                fh = path.open(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            with fh:
+                edits += _rollout_edits(fh)
         return edits
 
     # ---- execution ---------------------------------------------------------
@@ -1257,6 +1312,35 @@ class CodexHarness(Harness):
         total = (usage.get("total") or {}) if isinstance(usage.get("total"), dict) else {}
         return data, {"cost_usd": None, "duration_ms": int((time.time() - started) * 1000), "turns": 1,
                       "tokens": total.get("totalTokens") or total.get("total_tokens")}
+
+
+def _rollout_edits(lines: Any) -> list[FileEdit]:
+    """The file changes a rollout records (``lines``: its lines)."""
+    edits: list[FileEdit] = []
+    for line in lines:
+        if '"FileChange"' not in line and '"patch_apply_end"' not in line:
+            continue
+        try:
+            d = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        p = d.get("payload") or {}
+        item = p.get("item") if p.get("type") == "item_completed" else p if p.get("type") == "patch_apply_end" else None
+        if not item or (item.get("type") == "FileChange" and item.get("status") != "completed"):
+            continue
+        if p.get("type") == "patch_apply_end" and not item.get("success", True):
+            continue
+        for fp, c in (item.get("changes") or {}).items():
+            edits += _edits_from_change(fp, c, d.get("timestamp"))
+    return edits
+
+
+def _rollouts(thread_id: str) -> list[Path]:
+    """A thread's rollouts, oldest first: thread/revert (an edit) carries the thread on in a new one."""
+    found: list[Path] = []
+    for base in (codex_home() / "sessions", codex_home() / "archived_sessions"):
+        found += [p for p in base.glob(f"**/rollout-*-{thread_id}*.jsonl") if p.stem.endswith(thread_id) or f"-{thread_id}_" in p.name]
+    return sorted(found, key=lambda p: p.name)
 
 
 def _thread_cwds(roots: list[str]) -> list[str]:

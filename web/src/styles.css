@@ -298,8 +298,24 @@ a { color: var(--accent-strong); }
 .msg-user { align-self: flex-end; max-width: 85%; background: var(--surface-2); border-radius: 16px 16px 4px 16px; padding: 10px 14px; white-space: pre-wrap; word-wrap: break-word; font-size: 14.5px; }
 .msg-user-row { align-self: flex-end; max-width: 85%; display: flex; align-items: flex-start; gap: 4px; }
 .msg-user-row > .msg-user { align-self: auto; max-width: none; min-width: 0; }
-.msg-fork { opacity: 0; margin-top: 8px; transition: opacity 0.12s; }
-.msg-user-row:hover .msg-fork, .msg-fork:focus-visible { opacity: 1; }
+/* fork from here, edit: shown on hover (responsive.css: always, faded, for a finger) */
+.msg-actions { flex: none; display: flex; gap: 2px; margin-top: 8px; opacity: 0; transition: opacity 0.12s; }
+.msg-user-row:hover .msg-actions, .msg-actions:focus-within { opacity: 1; }
+/* a message being changed: the composer's box, the width of the chat */
+.msg-edit-row { align-self: stretch; }
+.msg-edit { max-width: none; box-shadow: none; }
+.msg-edit .composer-input { max-height: none; }
+.msg-edit-hint { margin-top: 6px; font-size: 12px; line-height: 1.45; color: var(--muted); }
+/* when a message was sent: in the gap above it, on the side it is on (a reply's left, the user's right), so that it
+   reads as that message's and not as the one before's. On hover; for a finger, on a tap (data-time) */
+.timed { position: relative; }
+.msg-time {
+  position: absolute; left: 0; bottom: 100%; margin-bottom: 1px; font: 11px/1.2 var(--font-ui); font-style: normal; color: var(--faint);
+  font-variant-numeric: tabular-nums; white-space: nowrap; pointer-events: none; opacity: 0; transition: opacity 0.12s;
+}
+.msg-user-row > .msg-time { left: auto; right: 0; }
+@media (hover: hover) { .timed:hover > .msg-time, .timed:hover > summary > .msg-time { opacity: 1; } }
+.timed[data-time] > .msg-time, .timed[data-time] > summary > .msg-time { opacity: 1; }
 .msg-text { font-family: var(--font-serif); font-size: 16px; line-height: 1.65; color: var(--text); }
 .chat.compact .msg-text { font-size: 14.5px; }
 .msg-thinking { border-left: 2px solid var(--border-strong); padding: 2px 0 2px 12px; color: var(--muted); font-size: 13px; }
