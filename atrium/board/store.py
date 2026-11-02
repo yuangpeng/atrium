@@ -9,13 +9,15 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from ..events import hub
-from .template import render_board
+from .template import is_suggestion, render_board
 
 if TYPE_CHECKING:
     from ..project import Project
 
 STATUSES = ("working", "waiting", "blocked", "done", "idle")
 TIMELINE_MAX = 200
+TODO_DONE_MAX = 100  # done TODOs kept, the latest; open ones are all kept
+TODO_SUGGESTED_MAX = 50  # open suggestions an agent can't add to: the human has a backlog to go through first
 
 
 def _empty() -> dict[str, Any]:
@@ -25,6 +27,10 @@ def _empty() -> dict[str, Any]:
         "overview": {"headline": "", "html": "", "updated_at": 0},
         "agents": {},
         "timeline": [],
+        # source human: the human's own (added on the board, or by an agent they asked to); agent: suggested by
+        # an agent, until the human accepts it into their list
+        "todos": [],
+        "todo_seq": 0,
     }
 
 
@@ -64,6 +70,10 @@ class BoardStore:
     def headline(self) -> str:
         with self._lock:
             return self.state["overview"].get("headline") or ""
+
+    def todos(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return copy.deepcopy(self.state["todos"])
 
     # ---- write -------------------------------------------------------------
     def _write(self) -> None:
@@ -170,6 +180,60 @@ class BoardStore:
             ov["updated_at"] = time.time()
             if not quiet:
                 self._commit("overview")
+
+    # ---- TODOs -------------------------------------------------------------
+    def add_todo(self, text: str, *, sid: str | None = None, why: str = "", source: str = "human") -> dict[str, Any]:
+        """A new open TODO; the open one with the same text instead, if there is one. Raises ValueError when there is
+        nothing to add, or an agent's suggestion would go past ``TODO_SUGGESTED_MAX``."""
+        text = " ".join(text.split())[:300]
+        if not text:
+            raise ValueError("text must not be empty")
+        with self._lock:
+            todos = self.state["todos"]
+            same = next((t for t in todos if not t.get("done") and t["text"].casefold() == text.casefold()), None)
+            if same:
+                return copy.deepcopy(same)
+            if source == "agent" and sum(1 for t in todos if is_suggestion(t)) >= TODO_SUGGESTED_MAX:
+                raise ValueError(f"{TODO_SUGGESTED_MAX} suggestions are waiting for the human already: suggest more once they have gone through them")
+            self.state["todo_seq"] = self.state.get("todo_seq", 0) + 1
+            name = (self.state["agents"].get(sid) or {}).get("name") or self.project.agent_name(sid) if sid else None
+            now = time.time()
+            t = {"id": f"t{self.state['todo_seq']}", "text": text, "why": " ".join(why.split())[:400], "source": "agent" if source == "agent" else "human",
+                 "session_id": sid, "agent": name or "", "accepted": False, "done": False, "done_by": "", "created_at": now, "updated_at": now}
+            todos.append(t)
+            self._commit("todo", sid)
+            return copy.deepcopy(t)
+
+    def update_todo(self, tid: str, *, done: bool | None = None, accept: bool | None = None, text: str | None = None,
+                    by: str = "") -> dict[str, Any] | None:
+        """Check a TODO off (``by``: the agent who did it, "" for the human) or open it again, accept a suggestion
+        into the human's list, or reword it. None if there is no such TODO."""
+        with self._lock:
+            t = next((t for t in self.state["todos"] if t["id"] == tid), None)
+            if t is None:
+                return None
+            if text is not None and " ".join(text.split()):
+                t["text"] = " ".join(text.split())[:300]
+            if accept is not None and t["source"] == "agent":
+                t["accepted"] = accept
+            if done is not None and done != t["done"]:
+                t["done"], t["done_by"], t["done_at"] = done, by if done else "", time.time()
+                done_ = [x for x in self.state["todos"] if x["done"]]
+                if len(done_) > TODO_DONE_MAX:  # the oldest done go first
+                    drop = {x["id"] for x in sorted(done_, key=lambda x: x.get("done_at") or 0)[: len(done_) - TODO_DONE_MAX]}
+                    self.state["todos"] = [x for x in self.state["todos"] if x["id"] not in drop]
+            t["updated_at"] = time.time()
+            self._commit("todo")
+            return copy.deepcopy(t)
+
+    def remove_todo(self, tid: str) -> bool:
+        with self._lock:
+            before = len(self.state["todos"])
+            self.state["todos"] = [t for t in self.state["todos"] if t["id"] != tid]
+            if len(self.state["todos"]) == before:
+                return False
+            self._commit("todo")
+            return True
 
     def rename_agent(self, sid: str, name: str) -> None:
         with self._lock:

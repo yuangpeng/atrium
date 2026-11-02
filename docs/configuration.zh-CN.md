@@ -450,7 +450,7 @@ Atrium 的环境变量里。Antigravity 的条款规定 Google 账号登录只�
 
 ## MCP 服务器
 
-每个 agent 都自带 Atrium 的工具：看板（`board.status`、`board.publish`、`board.note`、`board.read`）和网页
+每个 agent 都自带 Atrium 的工具：看板（`board.status`、`board.publish`、`board.note`、`board.read`、`board.todo_add`、`board.todo_done`）和网页
 （`web.search`、`web.fetch`）。除了 [web 工具的 key](#web-工具与-mcp-服务器)，不需要任何配置。
 
 **Claude Code 和 Antigravity** 从 Atrium 配置的 `mcp_servers` 读取你的服务器，格式和 Claude Code 的相同：

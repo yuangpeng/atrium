@@ -336,6 +336,8 @@ export function BoardToolRow({ tool }: { tool: ToolItem }) {
   if (short === "status") text = `Status → ${inp.status} · ${inp.progress ?? 0}% · ${inp.doing ?? ""}`;
   else if (short === "publish") text = `Published card “${inp.title}”`;
   else if (short === "note") text = `Timeline: ${inp.text}`;
+  else if (short === "todo_add") text = `${inp.requested ? "TODO" : "Suggested a TODO"}: ${inp.text}`;
+  else if (short === "todo_done") text = `Checked off TODO ${inp.id}${inp.note ? ` — ${inp.note}` : ""}`;
   else if (short === "read") text = "Checked the board";
   return (
     <div className="board-tool">
@@ -343,7 +345,7 @@ export function BoardToolRow({ tool }: { tool: ToolItem }) {
         <LayoutDashboard size={14} />
       </span>
       <span className="grow ellipsis">{text}</span>
-      {short === "publish" && (
+      {(short === "publish" || short === "todo_add") && (
         <button className="btn btn-sm btn-ghost" onClick={() => setPanel("board")}>
           View on board
         </button>

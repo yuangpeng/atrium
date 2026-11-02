@@ -90,13 +90,51 @@ h2 .count{font:500 12px var(--sans);color:var(--muted);background:var(--bg2);bor
 .timeline li::before{content:"";position:absolute;left:-6px;top:10px;width:10px;height:10px;border-radius:50%;background:var(--panel);border:2px solid var(--line2)}
 .timeline li.k-tracker::before{border-color:var(--info)}
 .timeline li.k-note::before{border-color:var(--accent)}
+.timeline li.k-todo::before{border-color:var(--ok)}
 .timeline .who{font-weight:600;color:var(--text);cursor:pointer}
 .timeline .when{color:var(--faint);font-size:11.5px;margin-left:6px}
 .empty{color:var(--muted);background:var(--panel);border:1px dashed var(--line2);border-radius:14px;padding:26px;text-align:center}
-.cols{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:28px}
+.cols{display:grid;grid-template-columns:minmax(0,1fr) 300px;grid-template-areas:"results todo" "results timeline";grid-template-rows:auto 1fr;gap:0 28px;align-items:start}
 /* minmax(0,…), not 1fr: a 1fr column is never narrower than its widest card's code block, table or image, and that
    made the whole board wider than a phone; this way those scroll inside their card (.card-body) */
-@media (max-width:900px){.cols{grid-template-columns:minmax(0,1fr)}}
+.c-results{grid-area:results}.c-todo{grid-area:todo}.c-timeline{grid-area:timeline}
+/* one column: the TODO first, not under every result */
+@media (max-width:900px){.cols{grid-template-columns:minmax(0,1fr);grid-template-areas:"todo" "results" "timeline";grid-template-rows:none}}
+/* ---- TODO: the human's own, then what agents suggest. Only the board in Atrium (html.embedded) edits it: it asks the
+   host, which holds the login; opened on its own the list is read-only ---- */
+.todo-add{display:flex;gap:6px;margin:0 0 10px}
+.todo-add input{flex:1;min-width:0;font:inherit;font-size:13px;color:var(--text);background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:6px 10px;outline:none}
+.todo-add input:focus{border-color:var(--accent)}
+.todo-add input::placeholder{color:var(--faint)}
+.todo-add button{flex:none;width:32px;border-radius:10px;border:1px solid var(--line);background:var(--bg2);color:var(--text2);font:400 18px/1 var(--sans);cursor:pointer}
+.todo-add button:hover{border-color:var(--line2);color:var(--text)}
+.todos{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.todo{display:flex;align-items:flex-start;gap:4px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:4px 4px 4px 2px}
+.todo-main{flex:1;min-width:0;padding:3px 0}
+.todo-text{font-size:13px;line-height:1.45}
+.todo-why{font-size:12px;color:var(--muted);margin-top:2px}
+.todo-meta{font-size:11.5px;color:var(--faint);margin-top:2px}
+.todo-meta .who{color:var(--muted);font-weight:600;cursor:pointer}
+.todo button{flex:none;border:0;background:none;padding:0;cursor:pointer;width:26px;height:26px;border-radius:7px;display:grid;place-items:center;color:var(--faint);font:400 16px/1 var(--sans)}
+.todo-box::before{content:"";width:15px;height:15px;border:1.5px solid var(--line2);border-radius:5px;display:grid;place-items:center;font:700 11px/1 var(--sans);color:var(--panel)}
+.todo-box:hover::before{border-color:var(--accent)}
+.todo.done .todo-box::before{content:"✓";background:var(--ok);border-color:var(--ok)}
+.todo.done .todo-text{text-decoration:line-through;color:var(--muted)}
+.todo-acts{display:flex;flex:none}
+.todo-acts button:hover{background:var(--bg2);color:var(--text)}
+.todo-acts .accept{color:var(--ok);font-weight:700;font-size:14px}
+.todos.sug .todo{border-style:dashed;background:transparent;padding-left:10px} /* tentative until accepted */
+.todo-group{display:flex;align-items:center;gap:8px;margin:14px 0 8px;font:600 11px/1 var(--sans);letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.todo-group .count,.todo-done summary .count{font:500 11px var(--sans);letter-spacing:0;text-transform:none;color:var(--muted);background:var(--bg2);border:1px solid var(--line);border-radius:99px;padding:1px 7px}
+details.todo-done{border:0;border-radius:0;padding:0;margin:14px 0 0}
+.todo-done summary{display:flex;align-items:center;gap:8px;font:600 11px/1 var(--sans);letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+.todo-empty{color:var(--muted);font-size:12.5px;margin:2px 0}
+.todo.pending{opacity:.5;pointer-events:none}
+html:not(.embedded) :is(.todo-add,.todo-acts){display:none}
+html:not(.embedded) .todo-box{pointer-events:none}
+/* a mouse brings the delete button with it; a finger has it showing */
+@media (hover:hover){.todos:not(.sug) .todo-acts{opacity:0}.todo:hover .todo-acts,.todo:focus-within .todo-acts{opacity:1}}
+@media (pointer:coarse){.todo button{width:30px;height:30px}.todo-add button{width:36px}.todo-add input{min-height:34px}}
 /* ---- design system for agent-authored cards ---- */
 table{border-collapse:collapse;width:100%;font-size:13px;margin:.6em 0}
 th,td{border-bottom:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
@@ -146,7 +184,8 @@ h2{font-size:15px;margin:22px 0 10px}
 table{font-size:11.5px}code,pre{font-size:11px}
 .kpi .value{font-size:19px}
 .timeline li{font-size:12px}
-.cols{gap:18px}
+.cols{column-gap:18px}
+.todo-text,.todo-add input{font-size:12px}.todo-why{font-size:11.5px}.todo-meta{font-size:11px}
 }
 """
 
@@ -158,10 +197,44 @@ JS = r"""
   function rel(ts){ var s=(Date.now()/1000-ts); if(s<45) return 'just now'; if(s<3600) return Math.round(s/60)+'m ago';
     if(s<86400) return Math.round(s/3600)+'h ago'; return Math.round(s/86400)+'d ago'; }
   function tick(){ document.querySelectorAll('[data-ts]').forEach(function(el){ var t=+el.getAttribute('data-ts'); if(t) el.textContent=rel(t); }); }
+  var embedded = window.parent !== window;
+  if(embedded) document.documentElement.classList.add('embedded');
+  // What the server last sent: each region's HTML (a region that comes again the same is left as it is, its open
+  // <details> too, and nothing is laid out again), and what is round them. Read before tick() rewrites the times, and
+  // kept as it came: the page itself may differ from it (the browser's own attributes on a field being typed in).
+  var last, skeleton;
+  function remember(wrap){
+    last = {};
+    wrap.querySelectorAll('[data-region]').forEach(function(r){ last[r.getAttribute('data-region')] = r.innerHTML; });
+    skeleton = emptied(wrap);
+  }
+  function emptied(wrap){
+    var c = wrap.cloneNode(true);
+    c.querySelectorAll('[data-region]').forEach(function(r){ r.innerHTML = ''; });
+    return c.innerHTML;
+  }
+  remember(document.querySelector('.wrap'));
   tick(); setInterval(tick, 30000);
+  // the TODO list is changed by the host (Atrium), which holds the login; the board it pushes back shows the result
+  function todo(msg){ msg.type = 'atrium:todo'; window.parent.postMessage(msg, '*'); }
+  function addTodo(){
+    var i = document.getElementById('todo-input'), t = i && i.value.trim();
+    if(t){ todo({action:'add', text:t}); i.value = ''; }
+  }
+  // no <form>: a sandbox without allow-forms drops a form's submit before its submit event
+  document.addEventListener('keydown', function(e){
+    if(e.target.id === 'todo-input' && e.key === 'Enter' && !e.isComposing && e.keyCode !== 229){ e.preventDefault(); addTodo(); }
+  });
   document.addEventListener('click', function(e){
+    var act = e.target.closest('[data-act]');
+    if(act && embedded){
+      var a = act.getAttribute('data-act'), li = act.closest('[data-todo]');
+      if(a === 'add') addTodo();
+      else if(li){ li.classList.add('pending'); todo({action:a, id:li.getAttribute('data-todo')}); }
+      return;
+    }
     var el = e.target.closest('[data-session]'); if(!el || e.target.closest('a,summary,button')) return;
-    if(window.parent !== window) window.parent.postMessage({type:'atrium:open-session', sessionId: el.getAttribute('data-session')}, '*');
+    if(embedded) window.parent.postMessage({type:'atrium:open-session', sessionId: el.getAttribute('data-session')}, '*');
   });
   // Embedded in Atrium: the host pushes fresh HTML and we swap the content in place (keeps scroll).
   window.addEventListener('message', function(e){
@@ -178,7 +251,25 @@ JS = r"""
       }
       if(css && css.textContent !== own.textContent) own.textContent = css.textContent;
       var next = doc.querySelector('.wrap'), cur = document.querySelector('.wrap');
-      if(next && cur){ cur.innerHTML = next.innerHTML; tick(); }
+      if(!next || !cur) return;
+      if(emptied(next) === skeleton){
+        // region by region: what is between them, the TODO's input, stays, with what is being typed in it and the
+        // phone's keyboard up
+        var open = {};
+        cur.querySelectorAll('details[id]').forEach(function(d){ open[d.id] = d.open; });
+        next.querySelectorAll('[data-region]').forEach(function(r){
+          var name = r.getAttribute('data-region'), mine = cur.querySelector('[data-region="' + name + '"]');
+          if(mine && (r.innerHTML !== last[name] || mine.querySelector('.pending'))) mine.innerHTML = r.innerHTML;
+        });
+        cur.querySelectorAll('details[id]').forEach(function(d){ if(d.id in open) d.open = open[d.id]; });
+      } else {  // laid out differently (a new Atrium): all of it, but for the field being typed in
+        var field = document.getElementById('todo-input'), typing = document.activeElement === field;
+        cur.innerHTML = next.innerHTML;
+        var fresh = document.getElementById('todo-input');
+        if(field && fresh){ fresh.replaceWith(field); if(typing) field.focus(); }
+      }
+      remember(next);
+      tick();
     }
     if(d.type === 'atrium:theme' && d.theme){ document.documentElement.setAttribute('data-theme', d.theme); }
   });
@@ -239,6 +330,46 @@ def _tile(a: dict[str, Any]) -> str:
 </div>"""
 
 
+def is_suggestion(t: dict[str, Any]) -> bool:
+    """An agent's suggestion the human hasn't accepted (nor has anyone done it)."""
+    return t.get("source") == "agent" and not t.get("accepted") and not t.get("done")
+
+
+def _who(t: dict[str, Any]) -> str:
+    return f'<span class="who" data-session="{_e(t.get("session_id"))}">{_e(t.get("agent") or "Agent")}</span>' if t.get("session_id") else _e(t.get("agent"))
+
+
+def _todo(t: dict[str, Any]) -> str:
+    sug, done = is_suggestion(t), bool(t.get("done"))
+    if done:
+        meta = f"done by {_e(t['done_by'])} · " if t.get("done_by") else "done "
+        meta += _ts(t.get("done_at"))
+    else:
+        meta = ("" if sug else "from " if t.get("source") == "agent" else "via ") + _who(t) + " · " if t.get("agent") else ""
+        meta += _ts(t.get("created_at"))
+    box = "" if sug else (f'<button class="todo-box" data-act="{"reopen" if done else "done"}" aria-label="{"Not done" if done else "Done"}" '
+                          f'title="{"Not done" if done else "Done"}"></button>')
+    acts = ('<button class="accept" data-act="accept" aria-label="Add to my TODOs" title="Add to my TODOs">✓</button>'
+            '<button data-act="remove" aria-label="Dismiss" title="Dismiss">×</button>') if sug else \
+        '<button data-act="remove" aria-label="Delete" title="Delete">×</button>'
+    return f"""<li class="todo{' done' if done else ''}" data-todo="{_e(t.get('id'))}">{box}<div class="todo-main">
+<div class="todo-text">{_e(t.get('text'))}</div>{f'<div class="todo-why">{_e(t.get("why"))}</div>' if t.get('why') and not done else ''}
+<div class="todo-meta">{meta}</div></div><span class="todo-acts">{acts}</span></li>"""
+
+
+def _todos(todos: list[dict[str, Any]]) -> tuple[int, str]:
+    """How many of the human's are open, and the list: theirs, agents' suggestions, done (folded)."""
+    mine = sorted((t for t in todos if not t.get("done") and not is_suggestion(t)), key=lambda t: -(t.get("created_at") or 0))
+    sug = sorted((t for t in todos if is_suggestion(t)), key=lambda t: -(t.get("created_at") or 0))
+    done = sorted((t for t in todos if t.get("done")), key=lambda t: -(t.get("done_at") or 0))
+    out = f'<ul class="todos">{"".join(map(_todo, mine))}</ul>' if mine else '<p class="todo-empty">Nothing open.</p>'
+    if sug:
+        out += f'<div class="todo-group">Suggested by agents <span class="count">{len(sug)}</span></div><ul class="todos sug">{"".join(map(_todo, sug))}</ul>'
+    if done:
+        out += f'<details class="todo-done" id="todo-done"><summary>Done <span class="count">{len(done)}</span></summary><ul class="todos">{"".join(map(_todo, done))}</ul></details>'
+    return len(mine), out
+
+
 def render_board(state: dict[str, Any], project_name: str, project_path: str) -> str:
     agents = [a for a in state.get("agents", {}).values() if not (a.get("stats") or {}).get("archived")]
     agents.sort(key=_agent_order)
@@ -267,13 +398,15 @@ def render_board(state: dict[str, Any], project_name: str, project_path: str) ->
         for t in tl
     ) or '<li class="muted">Nothing yet.</li>'
 
+    n_todo, todo_html = _todos(state.get("todos") or [])
+
     updated = state.get("updated_at") or time.time()
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{_e(project_name)} · Atrium Board</title>
 <style id="board-css">{CSS}</style></head>
 <body><div class="wrap">
-<header class="top">
+<header class="top" data-region="top">
   <div>
     <div class="eyebrow">Atrium Board</div>
     <h1>{_e(project_name)}</h1>
@@ -281,12 +414,17 @@ def render_board(state: dict[str, Any], project_name: str, project_path: str) ->
   </div>
   <div class="meta"><b>{len(agents)}</b> agents · <b>{active}</b> active<br>updated {_ts(updated)}<br><span title="{_e(project_path)}">{_e(project_path)}</span></div>
 </header>
-<section class="overview">{ov.get('html') or ''}</section>
-<h2>Agents <span class="count">{len(agents)}</span></h2>
-<section class="agents">{tiles}</section>
+<section class="overview" data-region="overview">{ov.get('html') or ''}</section>
+<div data-region="agents"><h2>Agents <span class="count">{len(agents)}</span></h2>
+<section class="agents">{tiles}</section></div>
 <div class="cols">
-  <div><h2>Results <span class="count">{len(cards)}</span></h2><section class="results">{card_html}</section></div>
-  <div><h2>Timeline</h2><ul class="timeline">{tl_html}</ul></div>
+  <div class="c-results" data-region="results"><h2>Results <span class="count">{len(cards)}</span></h2><section class="results">{card_html}</section></div>
+  <div class="c-todo">
+    <h2 data-region="todo-head">TODO <span class="count">{n_todo}</span></h2>
+    <div class="todo-add"><input id="todo-input" type="text" placeholder="Add a TODO…" maxlength="300" enterkeyhint="done" autocomplete="off" aria-label="New TODO"><button data-act="add" aria-label="Add" title="Add">+</button></div>
+    <div data-region="todos">{todo_html}</div>
+  </div>
+  <div class="c-timeline" data-region="timeline"><h2>Timeline</h2><ul class="timeline">{tl_html}</ul></div>
 </div>
 </div>
 <script id="board-js">{JS}</script>

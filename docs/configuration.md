@@ -480,7 +480,7 @@ right away, in an open page after a save in ⚙ Settings or a reload. Its conver
 ## MCP servers
 
 Every agent gets Atrium's own tools — the board (`board.status`, `board.publish`, `board.note`,
-`board.read`) and the web (`web.search`, `web.fetch`) — with nothing to set up but the
+`board.read`, `board.todo_add`, `board.todo_done`) and the web (`web.search`, `web.fetch`) — with nothing to set up but the
 [web keys](#web-tools-and-mcp-servers).
 
 **Claude Code and Antigravity** take your servers from `mcp_servers` in Atrium's settings, in Claude

@@ -11,6 +11,7 @@ export function BoardPanel() {
   const frame = useRef<HTMLIFrameElement>(null);
   const [loaded, setLoaded] = useState(false);
   const [tracker, setTracker] = useState<TrackerStatus | null>(null);
+  const [repush, setRepush] = useState(0);
   const pid = project?.id;
 
   // push fresh board HTML into the iframe (it swaps content in place, keeping scroll)
@@ -23,7 +24,7 @@ export function BoardPanel() {
     return () => {
       alive = false;
     };
-  }, [pid, boardVersion, loaded]);
+  }, [pid, boardVersion, loaded, repush]);
 
   useEffect(() => {
     frame.current?.contentWindow?.postMessage({ type: "atrium:theme", theme: resolvedTheme() }, "*");
@@ -35,13 +36,28 @@ export function BoardPanel() {
   }, [pid, trackerVersion]);
 
   useEffect(() => {
+    // the board's TODO list asks for its changes: it can't call the API itself (its sandbox has no login)
+    const todo = async (m: { action?: string; id?: string; text?: string }) => {
+      if (!pid) return;
+      const id = String(m.id ?? "");
+      try {
+        if (m.action === "add") await api.addTodo(pid, String(m.text ?? ""));
+        else if (m.action === "done" || m.action === "reopen") await api.updateTodo(pid, id, { done: m.action === "done" });
+        else if (m.action === "accept") await api.updateTodo(pid, id, { accept: true });
+        else if (m.action === "remove") await api.deleteTodo(pid, id);
+      } catch (e) {
+        toast(e instanceof Error ? e.message : String(e), "error");
+        setRepush((n) => n + 1); // the board shows the TODO as it is again, not greyed out waiting
+      }
+    };
     const onMsg = (e: MessageEvent) => {
       if (e.source !== frame.current?.contentWindow) return;
       if (e.data?.type === "atrium:open-session" && e.data.sessionId) selectSession(e.data.sessionId);
+      if (e.data?.type === "atrium:todo") void todo(e.data);
     };
     window.addEventListener("message", onMsg);
     return () => window.removeEventListener("message", onMsg);
-  }, [selectSession]);
+  }, [selectSession, pid, toast]);
 
   if (!pid) return null;
   const last = tracker?.runs[0];

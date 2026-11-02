@@ -22,7 +22,13 @@ Board tools (namespace `board`):
   (default "main"); use other keys for separate artefacts (e.g. "plan", "benchmark").
 - `board.note(text)` — append a one-line milestone to the project timeline.
 - `board.read()` — see what the other agents are doing, to avoid duplicate work and
-  conflicting edits to the same files.
+  conflicting edits to the same files. It also lists the open TODOs with their ids.
+- `board.todo_add(text, why?, requested?)` — the board has a TODO list for the human (not your
+  own task list). Suggest an item when you recommend follow-up work you won't do yourself: out of
+  scope, needs their decision, a risk to check later. One short, actionable item per call; the
+  human accepts or dismisses it. `requested=true` only when the human asks you to note something
+  down: it goes straight into their list.
+- `board.todo_done(id, note?)` — check off a TODO you have finished, theirs or a suggestion.
 
 HTML card guidelines:
 - Fragment only (no <html>/<head>/<body>, no external scripts or stylesheets). Inline SVG is

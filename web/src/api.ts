@@ -675,6 +675,10 @@ export const api = {
   board: (pid: string) => req<{ agents: Record<string, BoardAgent> }>("GET", `/api/p/${pid}/board`),
   boardHtmlUrl: (pid: string) => `/api/p/${pid}/board.html`,
   deleteCard: (pid: string, sid: string, key: string) => req("DELETE", `/api/p/${pid}/board/agents/${sid}/cards/${key}`),
+  addTodo: (pid: string, text: string) => req("POST", `/api/p/${pid}/board/todos`, { text }),
+  updateTodo: (pid: string, tid: string, change: { done?: boolean; accept?: boolean; text?: string }) =>
+    req("PATCH", `/api/p/${pid}/board/todos/${encodeURIComponent(tid)}`, change),
+  deleteTodo: (pid: string, tid: string) => req("DELETE", `/api/p/${pid}/board/todos/${encodeURIComponent(tid)}`),
   tracker: (pid: string) => req<TrackerStatus>("GET", `/api/p/${pid}/tracker`),
   runTracker: (pid: string) => req("POST", `/api/p/${pid}/tracker/run`),
 

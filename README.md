@@ -29,9 +29,12 @@ A project-centric workbench for coding agents — Claude Code, Codex and Antigra
 2. **One fixed HTML board per project** — `<project>/.atrium/board.html`. It is self-contained
    (open it straight from disk), embedded live in the UI, and written by two kinds of agents:
    * **Session agents** get a fixed system-prompt section plus the `board` tools
-     (`status` / `publish` / `note` / `read`). Instead of ending
+     (`status` / `publish` / `note` / `read` / `todo_add` / `todo_done`). Instead of ending
      with a long text answer they publish an **HTML result card** and keep a status line
      (`working 60% — writing tests for token refresh`).
+   * **A TODO list** on the board: yours (add, check off and delete them on the board, or ask an
+     agent to note one down), and what agents suggest as follow-up work, which you accept into
+     your list or dismiss. Agents check off what they finish.
    * **The Tracker Agent** (one per project, in the background) is proactive: on an interval,
      shortly after any turn ends, or on demand, it diffs *every* session transcript against its
      previous run (byte offsets), compresses the new activity, and updates status / progress /

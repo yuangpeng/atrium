@@ -701,6 +701,27 @@ async def delete_board_agent(pid: str, sid: str):
     return {"ok": True}
 
 
+@app.post("/api/p/{pid}/board/todos")
+async def add_todo(pid: str, body: dict[str, Any] = Body(...)):
+    try:
+        return P(pid).board.add_todo(str(body.get("text") or ""))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.patch("/api/p/{pid}/board/todos/{tid}")
+async def update_todo(pid: str, tid: str, body: dict[str, Any] = Body(...)):
+    t = P(pid).board.update_todo(tid, done=body.get("done"), accept=body.get("accept"), text=body.get("text"))
+    if t is None:
+        raise HTTPException(404, "no such TODO")
+    return t
+
+
+@app.delete("/api/p/{pid}/board/todos/{tid}")
+async def delete_todo(pid: str, tid: str):
+    return {"ok": P(pid).board.remove_todo(tid)}
+
+
 @app.get("/api/p/{pid}/tracker")
 async def tracker_status(pid: str):
     return P(pid).tracker.status()
