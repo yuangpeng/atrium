@@ -1116,6 +1116,8 @@ details.review-tool > summary::-webkit-details-marker { display: none; }
 .req-kind.agent { background: var(--accent-soft); color: var(--accent-strong); }
 .req-kind.sub { background: var(--info-soft); color: var(--info); }
 .req-kind.aux { background: var(--warn-soft); color: var(--warn); }
+.req-kind.compact { background: var(--ok-soft); color: var(--ok); }
+.req-keep { flex: none; display: inline-flex; color: var(--accent-strong); }
 .req-live { display: inline-flex; align-items: center; gap: 4px; }
 .req-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: req-pulse 1.2s ease-in-out infinite; }
 @keyframes req-pulse { 50% { opacity: 0.25; } }

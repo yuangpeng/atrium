@@ -97,7 +97,8 @@ export interface Meta {
   lsp: Record<string, { server: string }>; // Monaco language id -> language server on this machine
   terminal: boolean; // the Terminal panel is on (terminal.enabled, on a Unix server)
   auth: boolean; // the login page is on (off: `atrium --no-auth`)
-  capture: { enabled: boolean; running: boolean }; // model calls recorded (capture.enabled; its proxy started)
+  // model calls recorded (capture.enabled; its proxy started); megabytes stored, and of them kept apart from capture.max_mb
+  capture: { enabled: boolean; running: boolean; mb: number; kept_mb: number };
 }
 
 // ---- model calls the capture recorded (capture.py) ----
@@ -112,7 +113,9 @@ export interface CaptureUsage {
 export interface CaptureSummary {
   api: "anthropic" | "openai" | "gemini" | "other";
   model?: string | null;
-  kind?: "agent" | "sub" | "aux" | "count"; // the agent's loop, a subagent's, a call with no tools (titles…), token counting
+  // the agent's loop, a subagent's, a call with no tools (titles…), token counting, the harness having the model summarize
+  // the conversation (compaction)
+  kind?: "agent" | "sub" | "aux" | "count" | "compact";
   messages?: number;
   tools?: number;
   system?: number; // characters of system prompt
@@ -144,6 +147,8 @@ export interface CaptureRow {
   error?: string;
   summary?: CaptureSummary;
   narrowed?: string; // the Accept-Encoding the harness sent, when the proxy narrowed it
+  keep?: "compact" | "before-compact"; // left by pruning: a compaction, or the agent's last call before one
+  conv?: string; // the conversation it is a call of: until a compaction, every call repeats its first message
 }
 
 export interface CaptureBody {

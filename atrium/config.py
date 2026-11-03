@@ -104,7 +104,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "terminal": {"enabled": True, "shell": ""},
     # What agents send to their model APIs and what comes back, recorded through a proxy on a loopback port
     # (capture.py) and shown in the workspace's Requests tab. enabled reaches agents started afterwards;
-    # max_mb: what is kept in $ATRIUM_HOME/captures, the oldest going first (0 = no limit).
+    # max_mb: what is kept in $ATRIUM_HOME/captures, the oldest going first (0 = no limit), compactions and the
+    # agent's last call before each aside: they hold the whole conversation a compaction replaced, and stay.
     "capture": {"enabled": True, "max_mb": 1024},
     "ui": {"theme": "system"},
 }

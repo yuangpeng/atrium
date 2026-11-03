@@ -177,7 +177,7 @@ async def _catalog(h: Any) -> dict[str, Any]:
 async def meta():
     harnesses = await asyncio.gather(*(_catalog(h) for h in all_harnesses()))
     return {"version": __version__, "harnesses": harnesses, "settings": config.public_settings(), "lsp": await asyncio.to_thread(lsp.available),
-            "terminal": terminals.available(), "auth": auth.enabled, "capture": {"enabled": capture.enabled, "running": capture.running}}
+            "terminal": terminals.available(), "auth": auth.enabled, "capture": {"enabled": capture.enabled, "running": capture.running, **capture.usage()}}
 
 
 @app.get("/api/settings")

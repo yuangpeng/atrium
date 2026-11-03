@@ -11,12 +11,18 @@ narrowed to gzip and deflate.
 
 A token stands for one agent and one upstream (``Route``), so what comes in on it is that agent's: its
 subagents' calls too, and those of model CLIs its tools start (they inherit its environment).
+
+Every call carries the conversation so far, so most of an old call is in the calls after it, until a
+compaction: from then on the calls carry a summary instead. So the compaction itself (the harness asking the
+model for that summary, the conversation with it) and the agent's last call before it are kept: they don't
+count against ``capture.max_mb``, and pruning leaves them.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import importlib.util
 import json
 import logging
@@ -52,6 +58,14 @@ READABLE = {"gzip", "x-gzip", "deflate", "identity"}  # content codings decoded 
 MAX_MARKS = 4000  # when the response's bytes came, to place each event of a stream in time
 ROW_KEYS = ("harness", "session", "method", "path", "host", "started", "ttfb", "duration", "status", "req_bytes", "resp_bytes",
             "turn", "error", "summary", "narrowed")
+# What a harness adds to the conversation to have the model summarize it (compaction), near the start of the last user
+# text: Claude Code appends it to the last user message (after a "Respond with TEXT ONLY" preamble), Codex and Antigravity
+# send it as a user message of its own. Codex on OpenAI's own provider posts to /responses/compact instead.
+COMPACTION_PROMPTS = (
+    "Your task is to create a detailed summary of the conversation so far",  # Claude Code
+    "You are performing a CONTEXT CHECKPOINT COMPACTION",  # Codex
+    "Write a continuation summary that will allow you",  # Antigravity
+)
 
 
 # --------------------------------------------------------------------------
@@ -219,7 +233,7 @@ def api_of(path: str) -> str:
 
 
 def _texts(v: Any) -> list[str]:
-    """The text in a system prompt: a string, content blocks, or a Gemini content with parts."""
+    """The text in a system prompt or a message: a string, content blocks, or a Gemini content with parts."""
     if isinstance(v, str):
         return [v]
     if isinstance(v, dict):
@@ -243,10 +257,53 @@ def _first_line(texts: list[str]) -> str | None:
     return None
 
 
+def _conversation(api: str, body: dict[str, Any]) -> Any:
+    """The messages of a request: Anthropic's ``messages``, the Responses API's ``input``, Gemini's ``contents``."""
+    return body.get({"anthropic": "messages", "openai": "input", "gemini": "contents"}.get(api, ""))
+
+
+def _last_user_text(api: str, body: dict[str, Any]) -> str:
+    """The last piece of text in the last user message."""
+    conv = _conversation(api, body)
+    if isinstance(conv, str):  # the Responses API's input as one string
+        return conv
+    user = next((m for m in reversed(conv) if isinstance(m, dict) and m.get("role") == "user"), None) if isinstance(conv, list) else None
+    if not user:
+        return ""
+    texts = _texts(user.get("parts") if api == "gemini" else user.get("content"))
+    return texts[-1] if texts else ""
+
+
+def _is_compaction(api: str, path: str, body: dict[str, Any]) -> bool:
+    if path.endswith("/responses/compact"):
+        return True
+    start = " ".join(_last_user_text(api, body)[:1500].split())
+    return any(p in start for p in COMPACTION_PROMPTS)
+
+
+def _without_cache_marks(v: Any) -> Any:
+    if isinstance(v, dict):
+        return {k: _without_cache_marks(x) for k, x in v.items() if k != "cache_control"}
+    if isinstance(v, list):
+        return [_without_cache_marks(x) for x in v]
+    return v
+
+
+def conversation_head(api: str, body: Any) -> str | None:
+    """A fingerprint of the conversation a request belongs to: its first message, which every call of the conversation
+    repeats (the compaction too) until a compaction replaces the history. Cache breakpoints, which move, aside."""
+    conv = _conversation(api, body) if isinstance(body, dict) else None
+    first = conv[0] if isinstance(conv, list) and conv else conv if isinstance(conv, str) else None
+    if first is None:
+        return None
+    return hashlib.sha1(json.dumps(_without_cache_marks(first), sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:16]
+
+
 def request_summary(path: str, body: Any) -> dict[str, Any]:
     """What the list shows of a request: its API, model, how much it carries (messages, tools, system prompt) and
     the kind of call: ``agent`` (the agent's own loop), ``sub`` (a subagent's: Claude Code's have no Agent tool, a
-    Codex sub-agent's is for a thread of its own), ``aux`` (no tools: titles, summaries…) or ``count`` (token counting)."""
+    Codex sub-agent's is for a thread of its own), ``aux`` (no tools: titles, summaries…), ``count`` (token counting)
+    or ``compact`` (the harness having the model summarize the conversation, to go on with the summary instead)."""
     api = api_of(path)
     s: dict[str, Any] = {"api": api}
     if not isinstance(body, dict):
@@ -272,6 +329,8 @@ def request_summary(path: str, body: Any) -> dict[str, Any]:
         s.update(model=urllib.parse.unquote(m.group(1)) if m else None, messages=len(body.get("contents") or []), tools=decls,
                  system=sum(map(len, system)), first=_first_line(system), stream=":streamGenerateContent" in path)
         s["kind"] = "count" if path.endswith(":countTokens") else "agent" if decls else "aux"
+    if api != "other" and s.get("kind") != "count" and _is_compaction(api, path, body):
+        s["kind"] = "compact"
     return s
 
 
@@ -388,8 +447,13 @@ def _body(data: bytes, encoding: str | None) -> dict[str, Any]:
     return out
 
 
-def _row(rid: str, state: str, meta: dict[str, Any]) -> dict[str, Any]:
-    return {"id": rid, "state": state, **{k: meta.get(k) for k in ROW_KEYS if meta.get(k) is not None}}
+def _row(rid: str, state: str, meta: dict[str, Any], keep: str | None = None, conv: str | None = None) -> dict[str, Any]:
+    row = {"id": rid, "state": state, **{k: meta.get(k) for k in ROW_KEYS if meta.get(k) is not None}}
+    if keep:
+        row["keep"] = keep
+    if conv:
+        row["conv"] = conv
+    return row
 
 
 # --------------------------------------------------------------------------
@@ -411,7 +475,10 @@ class _Store:
         extra TEXT,  -- what only the detail does: URL, headers, timing marks
         req BLOB,
         resp BLOB,
-        size INTEGER NOT NULL DEFAULT 0
+        size INTEGER NOT NULL DEFAULT 0,
+        kind TEXT,  -- the summary's: agent, sub, aux, count, compact
+        conv TEXT,  -- the conversation it is a call of: "<another thread>:<its first message's fingerprint>"
+        keep TEXT  -- left by pruning: 'compact' (a compaction), 'before-compact' (the agent's last call before one)
     );
     CREATE INDEX IF NOT EXISTS exchanges_session ON exchanges (project, session, started);
     CREATE INDEX IF NOT EXISTS exchanges_started ON exchanges (started);
@@ -421,6 +488,7 @@ class _Store:
         self.path = path
         self.db: sqlite3.Connection | None = None
         self.total = 0  # bytes stored (compressed bodies + metadata)
+        self.kept = 0  # of those, in kept rows: they don't count against the limit
         self.sizes: dict[str, int] = {}  # rows written but not finished yet: their size so far
 
     def open(self) -> None:
@@ -436,7 +504,8 @@ class _Store:
         db.execute("PRAGMA journal_size_limit = 8388608")  # the WAL shrinks back to 8 MB after a checkpoint
         db.executescript(self.SCHEMA)
         db.execute("UPDATE exchanges SET state = 'interrupted' WHERE state IN ('pending', 'streaming')")  # Atrium stopped mid-way
-        self.total = db.execute("SELECT COALESCE(SUM(size), 0) FROM exchanges").fetchone()[0]
+        self.total, self.kept = db.execute(
+            "SELECT COALESCE(SUM(size), 0), COALESCE(SUM(CASE WHEN keep IS NULL THEN 0 ELSE size END), 0) FROM exchanges").fetchone()
         self.db = db
 
     def close(self) -> None:
@@ -444,62 +513,90 @@ class _Store:
             self.db.close()
             self.db = None
 
-    def begin(self, rid: str, project: str, session: str, started: float, meta: dict[str, Any], extra: dict[str, Any], req: bytes) -> None:
+    def begin(self, rid: str, project: str, session: str, started: float, meta: dict[str, Any], extra: dict[str, Any], req: bytes,
+              conv: str | None, keep: str | None) -> None:
         assert self.db
         blob = zlib.compress(req, 6)
         m, x = json.dumps(meta, ensure_ascii=False), json.dumps(extra, ensure_ascii=False)
         size = len(blob) + len(m) + len(x)
-        self.db.execute("INSERT OR REPLACE INTO exchanges VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, NULL, ?)",
-                        (rid, project, session, started, m, x, blob, size))
+        self.db.execute("INSERT OR REPLACE INTO exchanges (id, project, session, started, state, meta, extra, req, size, kind, conv, keep) "
+                        "VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)",
+                        (rid, project, session, started, m, x, blob, size, (meta.get("summary") or {}).get("kind"), conv, keep))
         self.sizes[rid] = len(blob)
         self.total += size
+        if keep:
+            self.kept += size
 
     def finish(self, rid: str, session: str, state: str, meta: dict[str, Any], extra: dict[str, Any], resp: bytes) -> None:
         assert self.db
         req_size = self.sizes.pop(rid, 0)
-        old = self.db.execute("SELECT size FROM exchanges WHERE id = ?", (rid,)).fetchone()
+        old = self.db.execute("SELECT size, keep FROM exchanges WHERE id = ?", (rid,)).fetchone()
         if not old:  # pruned meanwhile
             return
         blob = zlib.compress(resp, 6)
         m, x = json.dumps(meta, ensure_ascii=False), json.dumps(extra, ensure_ascii=False)
         size = req_size + len(blob) + len(m) + len(x)
-        self.db.execute("UPDATE exchanges SET session = ?, state = ?, meta = ?, extra = ?, resp = ?, size = ? WHERE id = ?",
-                        (session, state, m, x, blob, size, rid))
+        self.db.execute("UPDATE exchanges SET session = ?, state = ?, meta = ?, extra = ?, resp = ?, size = ?, kind = ? WHERE id = ?",
+                        (session, state, m, x, blob, size, (meta.get("summary") or {}).get("kind"), rid))
         self.total += size - old[0]
+        if old[1]:
+            self.kept += size - old[0]
+
+    def keep_before(self, project: str, session: str, conv: str, before: float) -> dict[str, Any] | None:
+        """Keep the agent's last call of conversation ``conv`` before ``before`` (a compaction's start): the fullest
+        history of the conversation the compaction replaces. Returns its row, or None when there is none."""
+        assert self.db
+        r = self.db.execute("SELECT id, state, meta, size, keep FROM exchanges WHERE project = ? AND session = ? AND conv = ? "
+                            "AND kind IN ('agent', 'sub') AND started < ? ORDER BY started DESC LIMIT 1",
+                            (project, session, conv, before)).fetchone()
+        if not r:
+            return None
+        rid, state, meta, size, keep = r
+        if not keep:
+            keep = "before-compact"
+            self.db.execute("UPDATE exchanges SET keep = ? WHERE id = ?", (keep, rid))
+            self.kept += size
+        return _row(rid, state, json.loads(meta), keep, conv)
 
     def rows(self, project: str, session: str) -> list[dict[str, Any]]:
         assert self.db
-        cur = self.db.execute("SELECT id, state, meta FROM exchanges WHERE project = ? AND session = ? ORDER BY started", (project, session))
-        return [_row(rid, state, json.loads(meta)) for rid, state, meta in cur]
+        cur = self.db.execute("SELECT id, state, meta, keep, conv FROM exchanges WHERE project = ? AND session = ? ORDER BY started",
+                              (project, session))
+        return [_row(rid, state, json.loads(meta), keep, conv) for rid, state, meta, keep, conv in cur]
 
-    def get(self, project: str, rid: str) -> tuple[dict[str, Any], dict[str, Any], str, bytes, bytes] | None:
+    def get(self, project: str, rid: str) -> tuple[dict[str, Any], dict[str, Any], bytes, bytes] | None:
+        """One row (with ``state``, ``keep`` and ``conv`` in its meta), its extra, and both bodies."""
         assert self.db
-        r = self.db.execute("SELECT meta, extra, state, req, resp FROM exchanges WHERE id = ? AND project = ?", (rid, project)).fetchone()
+        r = self.db.execute("SELECT meta, extra, state, keep, conv, req, resp FROM exchanges WHERE id = ? AND project = ?", (rid, project)).fetchone()
         if not r:
             return None
-        meta, extra, state, req, resp = r
-        return (json.loads(meta), json.loads(extra or "{}"), state, zlib.decompress(req) if req else b"",
-                zlib.decompress(resp) if resp else b"")
+        meta, extra, state, keep, conv, req, resp = r
+        return ({**json.loads(meta), "state": state, "keep": keep, "conv": conv}, json.loads(extra or "{}"),
+                zlib.decompress(req) if req else b"", zlib.decompress(resp) if resp else b"")
 
     def delete_session(self, project: str, session: str) -> None:
         assert self.db
-        freed = self.db.execute("SELECT COALESCE(SUM(size), 0) FROM exchanges WHERE project = ? AND session = ?", (project, session)).fetchone()[0]
+        freed, kept = self.db.execute("SELECT COALESCE(SUM(size), 0), COALESCE(SUM(CASE WHEN keep IS NULL THEN 0 ELSE size END), 0) "
+                                      "FROM exchanges WHERE project = ? AND session = ?", (project, session)).fetchone()
         self.db.execute("DELETE FROM exchanges WHERE project = ? AND session = ?", (project, session))
         self.total -= freed
+        self.kept -= kept
         self.db.execute("PRAGMA incremental_vacuum")
 
     def prune(self, limit: int) -> int:
-        """Delete the oldest until what is stored is under 90% of ``limit`` bytes. Returns how many went."""
+        """Delete the oldest calls that aren't kept until the rest take under 90% of ``limit`` bytes (kept ones don't
+        count). Returns how many went."""
         assert self.db
-        if self.total <= limit:
+        if self.total - self.kept <= limit:
             return 0
         goal, n = int(limit * 0.9), 0
-        while self.total > goal:
-            batch = self.db.execute("SELECT id, size FROM exchanges WHERE state NOT IN ('pending', 'streaming') ORDER BY started LIMIT 200").fetchall()
+        while self.total - self.kept > goal:
+            batch = self.db.execute("SELECT id, size FROM exchanges WHERE keep IS NULL AND state NOT IN ('pending', 'streaming') "
+                                    "ORDER BY started LIMIT 200").fetchall()
             if not batch:
                 break
             for rid, size in batch:
-                if self.total <= goal:
+                if self.total - self.kept <= goal:
                     break
                 self.db.execute("DELETE FROM exchanges WHERE id = ?", (rid,))
                 self.total -= size
@@ -521,6 +618,8 @@ class _Exchange:
     meta: dict[str, Any]  # the row's fields (ROW_KEYS), and its state
     extra: dict[str, Any]  # the URL and the headers
     request: bytes
+    conv: str | None = None  # the conversation it is a call of (_Store's conv)
+    keep: str | None = None  # left by pruning (_Store's keep)
     chunks: list[bytes] = field(default_factory=list)
     size: int = 0
     marks: list[list[int]] = field(default_factory=list)  # [ms since the request, bytes received by then]
@@ -573,6 +672,10 @@ class Capture:
     @property
     def running(self) -> bool:
         return self.port is not None
+
+    def usage(self) -> dict[str, float]:
+        """Megabytes stored, and of them kept apart from ``capture.max_mb`` (compactions and the calls before them)."""
+        return {"mb": round(self._store.total / 2**20, 1), "kept_mb": round(self._store.kept / 2**20, 1)}
 
     def _db(self, fn: Callable[..., Any], *args: Any) -> asyncio.Future:
         return asyncio.get_running_loop().run_in_executor(self._pool, fn, *args)
@@ -740,27 +843,49 @@ class Capture:
                 await asyncio.shield(self._end(rec, state, error=error))
 
     # ---- recording ---------------------------------------------------------------
-    def _publish(self, rec: _Exchange) -> None:
-        hub.publish(f"project:{rec.route.project}", {"type": "capture", "session_id": rec.meta.get("session"),
-                                                     "row": _row(rec.id, rec.meta.get("state") or "pending", rec.meta)})
+    @staticmethod
+    def _live_row(rec: _Exchange) -> dict[str, Any]:
+        return _row(rec.id, rec.meta.get("state") or "pending", rec.meta, rec.keep, rec.conv)
+
+    @staticmethod
+    def _publish(project: str, row: dict[str, Any]) -> None:
+        hub.publish(f"project:{project}", {"type": "capture", "session_id": row.get("session"), "row": row})
 
     def _begin(self, rec: _Exchange) -> None:
         self._active[rec.id] = rec
 
-        def job() -> None:  # worker thread. A dict the event loop may be reading (a published row) is replaced, never changed
+        def job() -> list[dict[str, Any]]:  # worker thread. A dict the event loop may be reading (a published row) is replaced, never changed
+            body: Any = None
             try:
                 plain, _ = decode_body(rec.request, _header(rec.extra["req_headers"], "content-encoding"))
-                rec.meta["summary"] = request_summary(rec.meta["path"], json.loads(plain) if plain else None)
+                body = json.loads(plain) if plain else None
+                summary = request_summary(rec.meta["path"], body)
             except Exception:
-                rec.meta["summary"] = {"api": api_of(rec.meta["path"])}
+                summary = {"api": api_of(rec.meta["path"])}
+            sid, thread, head = rec.meta["session"], summary.get("thread"), conversation_head(summary["api"], body)
+            rec.conv = f"{thread if thread and thread != sid else ''}:{head}" if head else None
+            rec.keep = "compact" if summary.get("kind") == "compact" else None
+            rec.meta["summary"] = summary
+            kept: list[dict[str, Any]] = []
             if self._store.db:
-                self._store.begin(rec.id, rec.route.project, rec.meta["session"], rec.meta["started"], dict(rec.meta), dict(rec.extra), rec.request)
+                self._store.begin(rec.id, rec.route.project, sid, rec.meta["started"], dict(rec.meta), dict(rec.extra), rec.request,
+                                  rec.conv, rec.keep)
+                before = self._store.keep_before(rec.route.project, sid, rec.conv, rec.meta["started"]) if rec.keep and rec.conv else None
+                if before:
+                    kept.append(before)
+            return kept
 
         def done(f: asyncio.Future) -> None:
             if f.exception():
                 log.warning("capture: recording a request failed: %s", f.exception())
-            elif rec.id in self._active:  # its summary, while the answer is still coming
-                self._publish(rec)
+                return
+            if rec.id in self._active:  # its summary, while the answer is still coming
+                self._publish(rec.route.project, self._live_row(rec))
+            for row in f.result():  # the agent's last call before this compaction, kept from now on
+                live = self._active.get(row["id"])
+                if live:
+                    live.keep = row["keep"]
+                self._publish(rec.route.project, self._live_row(live) if live else row)
 
         self._db(job).add_done_callback(done)
 
@@ -794,18 +919,17 @@ class Capture:
         except Exception:
             log.warning("capture: recording a response failed", exc_info=True)
         self._active.pop(rec.id, None)
-        self._publish(rec)
+        self._publish(rec.route.project, self._live_row(rec))
         limit = int(float(config.get("capture.max_mb", 1024) or 0) * 1024 * 1024)
-        if limit > 0 and self._store.total > limit and now - self._pruned > 10:
+        if limit > 0 and self._store.total - self._store.kept > limit and now - self._pruned > 10:
             self._pruned = now
             n = await self._db(self._store.prune, limit)
-            log.info("capture: pruned the %d oldest exchanges (over capture.max_mb)", n)
+            log.info("capture: pruned the %d oldest exchanges (over capture.max_mb; %d MB kept apart)", n, self._store.kept >> 20)
 
     # ---- reading -------------------------------------------------------------------
     async def rows(self, project: str, session: str) -> list[dict[str, Any]]:
         stored = await self._db(self._store.rows, project, session) if self._store.db else []
-        live = {r.id: _row(r.id, r.meta.get("state") or "pending", r.meta) for r in list(self._active.values())
-                if r.route.project == project and r.meta.get("session") == session}
+        live = {r.id: self._live_row(r) for r in list(self._active.values()) if r.route.project == project and r.meta.get("session") == session}
         rows = [live.pop(r["id"], r) for r in stored] + list(live.values())
         return sorted(rows, key=lambda r: r.get("started") or 0)
 
@@ -813,15 +937,16 @@ class Capture:
         """One exchange in full: its row, URL, headers, the times its bytes came, and both bodies (one still coming
         is what came so far)."""
         rec = self._active.get(rid)
+        meta: dict[str, Any]
         extra: dict[str, Any]
         if rec and rec.route.project == project:
-            meta, extra, state = dict(rec.meta), {**rec.extra, "marks": list(rec.marks)}, rec.meta.get("state") or "pending"
-            req, resp = rec.request, b"".join(rec.chunks)
+            meta = {**rec.meta, "state": rec.meta.get("state") or "pending", "keep": rec.keep, "conv": rec.conv}
+            extra, req, resp = {**rec.extra, "marks": list(rec.marks)}, rec.request, b"".join(rec.chunks)
         elif self._store.db:
             got = await self._db(self._store.get, project, rid)
             if not got:
                 return None
-            meta, extra, state, req, resp = got
+            meta, extra, req, resp = got
         else:
             return None
 
@@ -830,8 +955,9 @@ class Capture:
                     _body(resp, _header(extra.get("resp_headers"), "content-encoding")))
 
         request, response = await asyncio.to_thread(bodies)
-        return {**_row(rid, state, meta), "url": extra.get("url"), "req_headers": extra.get("req_headers") or [],
-                "resp_headers": extra.get("resp_headers") or [], "marks": extra.get("marks") or [], "request": request, "response": response}
+        return {**_row(rid, meta["state"], meta, meta.get("keep"), meta.get("conv")), "url": extra.get("url"),
+                "req_headers": extra.get("req_headers") or [], "resp_headers": extra.get("resp_headers") or [], "marks": extra.get("marks") or [],
+                "request": request, "response": response}
 
     async def forget(self, project: str, session: str) -> None:
         """Delete what was recorded of a session (it was deleted, or the human cleared it)."""

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode, RefObject } from "react";
-import { ArrowDownLeft, ArrowLeft, ArrowUpRight, ChevronRight, Code, Copy, ListTree, Maximize2, Minimize2, RefreshCw, Trash2 } from "lucide-react";
+import { ArrowDownLeft, ArrowLeft, ArrowUpRight, ChevronRight, Code, Copy, ListTree, Maximize2, Minimize2, Pin, RefreshCw, Trash2 } from "lucide-react";
 import { api, CaptureBody, CaptureDetail, CaptureRow, CaptureUsage } from "../api";
 import { useApp } from "../store";
 import { socket } from "../ws";
@@ -22,6 +22,11 @@ const KIND: Record<string, [string, string]> = {
   sub: ["Sub", "A subagent's call"],
   aux: ["Aux", "No tools: a side call, such as a title or a summary"],
   count: ["Count", "Token counting"],
+  compact: ["Compact", "Compaction: the harness has the model summarize the conversation so far, and goes on with the summary"],
+};
+const KEEP: Record<string, string> = {
+  compact: "Kept: a compaction, with the whole conversation it summarized. Pruning leaves it",
+  "before-compact": "Kept: the agent's last call before a compaction, the fullest history of what the compaction replaced. Pruning leaves it",
 };
 const LIVE = new Set(["pending", "streaming"]);
 
@@ -129,7 +134,11 @@ export function RequestsPanel() {
     <div ref={ref} className="panel-body fs-host req-panel">
       <div className="toolbar">
         <span className="title ellipsis req-title">{agent ? displayName(agent) : "Requests"}</span>
-        {data && <span className="faint req-count">{rows.length} calls</span>}
+        {data && (
+          <span className="faint req-count">
+            {rows.length} calls{rows.some((r) => r.keep) ? ` · ${rows.filter((r) => r.keep).length} kept` : ""}
+          </span>
+        )}
         <span className="grow" />
         <button className="icon-btn" aria-label="Refresh" data-tip="Refresh" onClick={load} disabled={!sessionId}>
           <RefreshCw size={14} />
@@ -212,6 +221,14 @@ function Kind({ r }: { r: CaptureRow }) {
   );
 }
 
+function Kept({ r }: { r: CaptureRow }) {
+  return r.keep ? (
+    <span className="req-keep" aria-label="Kept" data-tip={KEEP[r.keep]}>
+      <Pin size={12} />
+    </span>
+  ) : null;
+}
+
 function usageText(u: CaptureUsage | undefined): string[] {
   if (!u) return [];
   const out: string[] = [];
@@ -227,6 +244,7 @@ function RowView({ r, on, pick }: { r: CaptureRow; on: boolean; pick: () => void
       <span className="r1">
         <Kind r={r} />
         <span className="mono ellipsis grow">{s?.model || r.path}</span>
+        <Kept r={r} />
         <Status r={r} />
       </span>
       <span className="r2">
@@ -274,13 +292,15 @@ function Detail({ pid, row, rows, cache, back }: { pid: string; row: CaptureRow;
   const api_ = row.summary?.api ?? "other";
   const req = useMemo(() => (d ? parseRequest(api_, parseJson(d.request.text)) : null), [d, api_]);
   const ans = useMemo(() => (d?.response.text != null ? parseAnswer(api_, d.response.text, header(d.resp_headers, "content-type"), d.marks) : null), [d, api_]);
-  // the same kind of call before it (the same API, the same thread): what this one adds to it
+  // the call before it in the same conversation (a compaction with the agent's calls before it; without a conversation,
+  // the same kind of call of the same thread): what this one adds to it
   const prevRow = useMemo(() => {
     const i = rows.findIndex((r) => r.id === row.id);
     const s = row.summary;
     for (let j = i - 1; j >= 0; j--) {
       const p = rows[j].summary;
-      if (p?.api === s?.api && p?.kind === s?.kind && p?.thread === s?.thread && p?.kind !== "count") return rows[j];
+      if (p?.kind === "count" || p?.api !== s?.api) continue;
+      if (row.conv ? rows[j].conv === row.conv : p?.kind === s?.kind && p?.thread === s?.thread) return rows[j];
     }
     return null;
   }, [rows, row]);
@@ -305,6 +325,7 @@ function Detail({ pid, row, rows, cache, back }: { pid: string; row: CaptureRow;
           <span className="mono ellipsis grow req-path" title={`${row.method} ${row.host}${row.path}`}>
             {row.method} {row.path}
           </span>
+          <Kept r={row} />
           <Status r={row} />
         </div>
         <div className="r2 faint">

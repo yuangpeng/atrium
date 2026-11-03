@@ -258,7 +258,7 @@ Git Agent 和 Code Review Agent 有自己的模式，不受这些设置影响：
 | Key | 默认值 | 说明 |
 |---|---|---|
 | `capture.enabled` | `true` | 让 agent 的模型调用经过 Atrium 的抓包代理并记录下来。对之后启动进程的 agent 生效：新建的，以及在 `sessions.idle_close_minutes` 之后或 Atrium 重启之后被唤醒的。关掉后不再记录，新的 agent 直接调用自己的 API。 |
-| `capture.max_mb` | `1024` | `~/.atrium/captures/captures.db` 里最多保留多少（压缩后）；超出时先删最早的调用。`0` = 不限。 |
+| `capture.max_mb` | `1024` | 记录下来的调用在 `~/.atrium/captures/captures.db` 里最多占多少（压缩后）；超出时先删最早的，删到 90%。压缩调用，以及每次压缩前 agent 的最后一次调用，单独保留：不计入这个上限，也不会被删（见[下文](#请求抓取)）。`0` = 不限。 |
 
 Atrium 在一个自己的回环端口上运行这个代理（只绑 `127.0.0.1`，不管 Atrium 自己在什么地址上服务），并把每个
 agent 的 base URL 指向它。代理把每个请求原样转发到 harness 本来要发往的地址（同样经过 `HTTPS_PROXY`），
@@ -269,6 +269,13 @@ agent 的 base URL 指向它。代理把每个请求原样转发到 harness 本�
 - 转发时只改一处：如果 `Accept-Encoding` 里提供了 br 或 zstd，会改成只提供 gzip 和 deflate，这样响应才能被解开
   查看（Request 视图里能看到 harness 原本提供的值）。
 - 删除 agent 时会一起删除它的调用记录；标签页上的垃圾桶按钮也能删除。
+- **压缩相关的调用会保留。**每次调用都带着到当时为止的整段对话，所以旧调用的内容大多也在后面的调用里；直到一次
+  压缩：从那以后，调用里带的是总结。所以压缩调用（harness 让模型写这份总结的那次调用，里面是整段对话；标签页里
+  标为 *Compact*）和压缩前 agent 的最后一次调用都会保留（📌）：不计入 `capture.max_mb`，清理时也跳过它们，只有
+  删除 agent 或它的调用记录时才会删掉。Atrium 靠各家 harness 加进对话的那段指令来认出压缩：Claude Code 的
+  "Your task is to create a detailed summary of the conversation so far"、Codex 的 "You are performing a CONTEXT
+  CHECKPOINT COMPACTION"、Antigravity 的 "Write a continuation summary"。harness 换了说法的版本，要等 Atrium
+  跟着更新后才认得出来。
 
 哪些调用会经过代理：
 
@@ -574,7 +581,8 @@ Claude Code 的配置可以在 `env` 里另加变量；Antigravity 配置的 `en
 - `curl -s --noproxy '*' -H "Authorization: Bearer $(.venv/bin/atrium --token)" http://127.0.0.1:8787/api/meta` 列出每个 harness：`available`（是否可用），不可用时的
   `unavailable_reason`；`config_model` / `config_effort`，即 *Default* 实际解析成什么；Codex 还有 `cli`
   （`path`、`version`、`bundled`）。`settings._error` 说明 `settings.json` 读取失败的原因。`capture` 说明模型调用
-  是否被记录（`enabled`），以及抓包代理是否已经启动（`running`）。
+  是否被记录（`enabled`）、抓包代理是否已经启动（`running`），以及记录占了多少 MB（`mb`），其中不计入
+  `capture.max_mb` 的保留部分有多少（`kept_mb`）。
 - ⚙ Settings 在 `~/.atrium/backups/` 里为每个文件保留最近 20 个版本（`<file>-<date>-<time>`）。要回退，
   把其中一个复制回原文件即可。
 

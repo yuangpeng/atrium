@@ -273,7 +273,7 @@ they were.
 | Key | Default | |
 |---|---|---|
 | `capture.enabled` | `true` | Send agents' model calls through Atrium's capture proxy, and record them. Reaches agents whose process starts afterwards: new ones, and ones woken up after `sessions.idle_close_minutes` or an Atrium restart. Off, nothing more is recorded, and new agents call their API directly. |
-| `capture.max_mb` | `1024` | How much is kept, compressed, in `~/.atrium/captures/captures.db`; past it, the oldest calls go first. `0` = no limit. |
+| `capture.max_mb` | `1024` | How much the recorded calls may take, compressed, in `~/.atrium/captures/captures.db`; past it, the oldest go first, down to 90%. Compactions, and the agent's last call before each, are kept apart: they don't count against it and aren't deleted ([below](#request-capture)). `0` = no limit. |
 
 Atrium runs the proxy on a loopback port of its own (`127.0.0.1` only, whatever address Atrium serves on) and
 points each agent's base URL at it. The proxy sends every request on, unchanged, to where the harness would
@@ -285,6 +285,14 @@ have sent it (through the same `HTTPS_PROXY`), and the answer back as it arrives
 - One thing changes on the way out. An `Accept-Encoding` offering br or zstd offers gzip and deflate
   instead, so the answer can be read back (the Request view shows what the harness offered).
 - Deleting an agent deletes its calls; the tab's trash button deletes them too.
+- **Compactions are kept.** Every call carries the conversation so far, so most of an old call is in the calls
+  after it, until a compaction: from then on the calls carry a summary instead. So a compaction (the harness
+  asking the model for that summary, the whole conversation with it; *Compact* in the tab) and the agent's last
+  call before it are kept (📌): they don't count against `capture.max_mb`, and pruning leaves them. Only deleting
+  the agent, or its calls, deletes them. Atrium recognizes a compaction by the instruction each harness adds to the
+  conversation: Claude Code's "Your task is to create a detailed summary of the conversation so far", Codex's "You
+  are performing a CONTEXT CHECKPOINT COMPACTION", Antigravity's "Write a continuation summary". A harness version
+  that words it differently isn't recognized until Atrium learns the new words.
 
 What goes through it:
 
@@ -615,7 +623,8 @@ proxy the agents need. Claude Code's settings can add variables of their own und
 - `curl -s --noproxy '*' -H "Authorization: Bearer $(.venv/bin/atrium --token)" http://127.0.0.1:8787/api/meta` lists each harness: `available`, and
   `unavailable_reason` when it isn't; `config_model` / `config_effort`, what *Default* resolves to; for
   Codex, `cli` (`path`, `version`, `bundled`). `settings._error` says why `settings.json` couldn't be read.
-  `capture` says whether model calls are recorded (`enabled`) and whether the capture proxy started (`running`).
+  `capture` says whether model calls are recorded (`enabled`), whether the capture proxy started (`running`), and how
+  many megabytes the recorded calls take (`mb`), of them kept apart from `capture.max_mb` (`kept_mb`).
 - ⚙ Settings keeps the last 20 versions of each file in `~/.atrium/backups/` (`<file>-<date>-<time>`).
   To go back, copy one over the file.
 
