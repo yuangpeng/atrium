@@ -21,6 +21,12 @@ def short(s: Any, n: int) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
+def short_tail(s: str, n: int) -> str:
+    """``short`` that keeps the end: what a command printed last (a test summary, a metric) is what it found."""
+    s = " ".join(s.split())
+    return s if len(s) <= n else "…" + s[-(n - 1) :]
+
+
 def clip(s: str, n: int = MAX_RESULT_CHARS) -> str:
     return s if len(s) <= n else s[:n] + f"\n… [{len(s) - n} more chars]"
 

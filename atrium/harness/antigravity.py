@@ -41,7 +41,7 @@ from typing import Any
 from .. import gitops
 from ..config import ATRIUM_HOME, atomic_write, config
 from .base import Attachment, Emit, FileEdit, Harness, Item, LiveSession, LiveSpec, SessionSummary, ToolSpec
-from .util import attachment_note, clip, hhmm, iso_to_epoch, parse_json_loose, short, split_attachment_note, upload_url
+from .util import attachment_note, clip, hhmm, iso_to_epoch, parse_json_loose, short, short_tail, split_attachment_note, upload_url
 
 log = logging.getLogger("atrium.antigravity")
 
@@ -816,6 +816,15 @@ def history_items(entries: list[dict[str, Any]]) -> list[Item]:
     return items
 
 
+def _command_output(d: dict[str, Any]) -> str:
+    """What a RUN_COMMAND step printed (the runtime keeps the end of a long output)."""
+    text = _STAMP_RE.sub("", d.get("content") or "")
+    _head, sep, out = text.partition("Output:\n")
+    if not sep:  # a failed command: "The command exited with code 1.\nStdout:\n…\nStderr:\n…"
+        out = re.sub(r"(?m)^(?:The command exited with code -?\d+\.|Stdout:|Stderr:)", "", text)
+    return out.strip()
+
+
 def digest_entry(d: dict[str, Any]) -> list[str]:
     ts = hhmm(d.get("created_at"))
     pre = f"[{ts}] " if ts else ""
@@ -824,7 +833,12 @@ def digest_entry(d: dict[str, Any]) -> list[str]:
         text = split_attachment_note(user_text(d.get("content") or ""))[0]
         return [f"{pre}USER: {short(text, 600)}"] if text.strip() else []
     if t == "PLANNER_RESPONSE":
-        out = [f"{pre}AGENT: {short(d['content'], 700)}"] if (d.get("content") or "").strip() else []
+        if (d.get("content") or "").strip():
+            out = [f"{pre}AGENT: {short(d['content'], 700)}"]
+        elif (d.get("thinking") or "").strip():  # Gemini seldom writes between tool calls: what it has found is in its thoughts
+            out = [f"{pre}THINKING: {short(d['thinking'].replace('**', ''), 400)}"]
+        else:
+            out = []
         for c in d.get("tool_calls") or []:
             if not isinstance(c, dict):
                 continue
@@ -840,8 +854,12 @@ def digest_entry(d: dict[str, Any]) -> list[str]:
             elif name not in READ_TOOLS:
                 out.append(f"{pre}TOOL {name}: {short(_plain(a), 160)}")
         return out
-    if t == "RUN_COMMAND" and d.get("exit_code") not in (0, None):
-        return [f"{pre}(command failed: exit {d['exit_code']})"]
+    if t == "RUN_COMMAND":
+        printed = _command_output(d)
+        tail = short_tail(printed, 200) if printed else ""
+        if d.get("exit_code") not in (0, None):
+            return [f"{pre}(command failed: exit {d['exit_code']}){' ' + tail if tail else ''}"]
+        return [f"{pre}→ {tail}"] if tail else []
     if t == "ERROR_MESSAGE":
         return [f"{pre}(error: {short(d.get('error') or '', 200)})"]
     return []
@@ -1456,15 +1474,15 @@ class AntigravityHarness(Harness):
         return await asyncio.to_thread(lambda: history_items(_entries(path)))
 
     def digest_lines(self, lines: list[str]) -> list[str]:
-        out: list[str] = []
+        steps: dict[int, dict[str, Any]] = {}  # in order, as in _entries: a planner step is written after its tools' results
         for line in lines:
             try:
                 d = json.loads(line)
             except ValueError:
                 continue
-            if isinstance(d, dict):
-                out += digest_entry(d)
-        return out
+            if isinstance(d, dict) and isinstance(d.get("step_index"), int):
+                steps[d["step_index"]] = d
+        return [e for i in sorted(steps) for e in digest_entry(steps[i])]
 
     def file_edits(self, session_id: str, cwd: str) -> list[FileEdit]:
         path = transcript_file(session_id)

@@ -37,9 +37,11 @@ A project-centric workbench for coding agents — Claude Code, Codex and Antigra
      your list or dismiss. Agents check off what they finish.
    * **The Tracker Agent** (one per project, in the background) is proactive: on an interval,
      shortly after any turn ends, or on demand, it diffs *every* session transcript against its
-     previous run (byte offsets), compresses the new activity, and updates status / progress /
-     "doing" / summary for each agent, a project headline + overview, and the timeline. No model
-     call when nothing changed. It also names unnamed sessions as **"<Topic> Agent"**.
+     previous run (byte offsets), compresses the new activity (what the agents wrote and reasoned,
+     their tool calls and the end of what each command printed), and updates status / progress /
+     "doing" / summary for each agent — what it has found so far, and a warning when it looks off
+     track — a project headline + overview, and the timeline, also in the middle of a turn that runs
+     for hours. No model call when nothing changed. It also names unnamed sessions as **"<Topic> Agent"**.
    * The Board panel's title opens a menu of the project's own HTML files (reports, coverage, a
      worktree's new ones): pick one to see it there instead, sandboxed, reloaded when it is written
      again; the board stays the default.
@@ -315,7 +317,9 @@ Implement `atrium.harness.base.Harness` and register it in `atrium/harness/__ini
 * `available()`, `catalog()` (models + supported efforts), `permission_modes`, `efforts`;
 * `list_sessions(project_dir, roots)` (async), `transcript_path`, `watch_roots`, `transcript_cwd` — discovery;
 * `load_history` (async) → normalized items (`user`, `text`, `thinking`, `tool`, `tool_result`, `permission`, …);
-* `digest_lines(lines)` — compress raw transcript lines for the tracker;
+* `digest_lines(lines)` — compress raw transcript lines for the tracker, one short line per event:
+  `USER:`, `AGENT:`, `THINKING:` (reasoning the transcript keeps), `TOOL …`, `→ …` (the end of a
+  command's output), edits and errors;
 * `file_edits(session_id, cwd)` — `FileEdit(path, before, after, kind, patch)` records, the
   transcript fallback for diff review;
 * `create_live(spec, emit)` → a `LiveSession` (send with attachments / interrupt / set mode, model,

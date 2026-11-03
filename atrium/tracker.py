@@ -33,9 +33,12 @@ log = logging.getLogger("atrium.tracker")
 
 FIRST_RUN_MAX_AGE = 3 * 86400  # on first sight, only digest sessions active in the last 3 days
 FIRST_RUN_TAIL_BYTES = 256_000
-MAX_EVENTS_PER_SESSION = 70
-MAX_CHARS_PER_SESSION = 7000
+MAX_EVENTS_PER_SESSION = 160
+MAX_CHARS_PER_SESSION = 12_000
+MAX_ACTIVITY_CHARS = 42_000  # shared by the sessions with new activity, within what the board and facts leave of the prompt
 MAX_PROMPT_CHARS = 60_000
+MODEL_TIMEOUT = 300  # a model call that hangs must not stop the tracker; the next run takes its activity too
+OMITTED_MARK = 40  # room for the "… (n earlier events omitted) …" line
 
 
 def _ago(ts: float | None) -> str:
@@ -51,19 +54,32 @@ def _ago(ts: float | None) -> str:
     return f"{m // 1440} d ago"
 
 
-def _trim_events(events: list[str]) -> list[str]:
-    if len(events) > MAX_EVENTS_PER_SESSION:
-        head = events[:10]
-        tail = events[-(MAX_EVENTS_PER_SESSION - 10) :]
-        events = head + [f"… ({len(events) - len(head) - len(tail)} earlier events omitted) …"] + tail
-    out, size = [], 0
-    for e in reversed(events):
-        size += len(e) + 1
-        if size > MAX_CHARS_PER_SESSION:
-            out.append("… (older events omitted) …")
+def _asked(event: str) -> bool:
+    return event.partition("] ")[2].startswith("USER: ") or event.startswith("USER: ")
+
+
+def _trim_events(events: list[str], budget: int = MAX_CHARS_PER_SESSION) -> list[str]:
+    """The latest events that fit in ``budget`` chars, after the human's last two messages among those left out:
+    what an agent was asked is what its progress is measured against. Those take at most half of the budget."""
+    if len(events) <= MAX_EVENTS_PER_SESSION and sum(len(e) + 1 for e in events) <= budget:
+        return events
+    asked, reserved = [], 0
+    for i in reversed([i for i, e in enumerate(events) if _asked(e)][-2:]):
+        if reserved + len(events[i]) + 1 > budget // 2:
             break
-        out.append(e)
-    return list(reversed(out))
+        asked.insert(0, i)
+        reserved += len(events[i]) + 1
+    keep, size = [], reserved + OMITTED_MARK
+    for e in reversed(events[-MAX_EVENTS_PER_SESSION:]):
+        size += len(e) + 1
+        if size > budget:
+            break
+        keep.append(e)
+    keep.reverse()
+    cut = len(events) - len(keep)
+    asked = [events[i] for i in asked if i < cut]  # one among the latest events is there already
+    omitted = cut - len(asked)
+    return asked + ([f"… ({omitted} earlier events omitted) …"] if omitted else []) + keep
 
 
 class Tracker:
@@ -261,7 +277,7 @@ class Tracker:
                 offsets[transcript] = new_off
                 events = harness.digest_lines(lines) if lines else []
                 if events:
-                    digests[s["id"]] = _trim_events(events)
+                    digests[s["id"]] = events
             if s["id"] in digests or (board_agent and board_agent.get("status") in ("working", "waiting", "blocked")):
                 label = f'name="{s["name"]}"' if s["name"] else f'UNNAMED (title: "{(s["title"] or "")[:80]}")'
                 facts.append(
@@ -269,7 +285,7 @@ class Tracker:
                     f' | files changed: {files_changed} | branch: {s["branch"] or "?"}{" (worktree)" if s["worktree"] else ""}'
                 )
 
-        result: dict[str, Any] = {"offsets": offsets, "sessions": len(digests), "events": sum(len(v) for v in digests.values())}
+        result: dict[str, Any] = {"offsets": offsets, "sessions": len(digests), "events": 0}
         if not digests and not force:
             result["skipped"] = "no new activity"
             return result
@@ -284,27 +300,37 @@ class Tracker:
                 continue
             board_lines.append(
                 f'- [{sid}] "{a.get("name")}" status={a.get("status")} progress={a.get("progress")}% '
-                f'doing="{a.get("doing", "")}" summary="{(a.get("summary") or "")[:200]}" (updated {_ago(a.get("updated_at"))}, by {a.get("source") or "?"})'
+                f'doing="{a.get("doing", "")}" summary="{(a.get("summary") or "")[:300]}" (updated {_ago(a.get("updated_at"))}, by {a.get("source") or "?"})'
             )
         names = {s["id"]: (s["name"] or s["title"] or "?") for s in sessions}
-        activity = []
-        for sid, events in digests.items():
-            activity.append(f"### [{sid}] {names.get(sid, '?')}\n" + "\n".join(events))
-        prompt = (
+        head = (
             f"Project: {project.name} ({project.path})\nLocal time now: {time.strftime('%Y-%m-%d %H:%M')}\n\n"
             f"## Current board\nHeadline: {snap['overview'].get('headline') or '(none)'}\n" + ("\n".join(board_lines) or "(empty)") + "\n\n"
             "## Session facts\n" + ("\n".join(facts) or "(none)") + "\n\n"
-            "## Activity since the previous run\n" + ("\n\n".join(activity) or "(no new transcript activity)")
+            "## Activity since the previous run\n"
         )
-        if len(prompt) > MAX_PROMPT_CHARS:
+        titles = {sid: f"### [{sid}] {names.get(sid, '?')}\n" for sid in digests}
+        room = MAX_PROMPT_CHARS - len(head) - sum(len(t) + 2 for t in titles.values())  # each session's share fits, none is cut off
+        budget = min(MAX_CHARS_PER_SESSION, max(0, min(MAX_ACTIVITY_CHARS, room)) // max(1, len(digests)))
+        digests = {sid: _trim_events(events, budget) for sid, events in digests.items()}
+        result["events"] = sum(len(v) for v in digests.values())
+        prompt = head + ("\n\n".join(titles[sid] + "\n".join(events) for sid, events in digests.items()) or "(no new transcript activity)")
+        if len(prompt) > MAX_PROMPT_CHARS:  # the board and facts alone are that long
             prompt = prompt[:MAX_PROMPT_CHARS] + "\n… (truncated)"
         result["prompt_chars"] = len(prompt)
 
         harness = self._harness()
-        data, usage = await harness.complete_json(
-            system=TRACKER_SYSTEM, prompt=prompt, schema=TRACKER_SCHEMA, model=config.get("tracker.model") or None,
-            effort=config.get("tracker.effort") or None, cwd=self.cwd,
-        )
+        deadline = asyncio.timeout(MODEL_TIMEOUT)
+        try:
+            async with deadline:
+                data, usage = await harness.complete_json(
+                    system=TRACKER_SYSTEM, prompt=prompt, schema=TRACKER_SCHEMA, model=config.get("tracker.model") or None,
+                    effort=config.get("tracker.effort") or None, cwd=self.cwd,
+                )
+        except TimeoutError:
+            if not deadline.expired():  # the harness's own (a Codex request's), which says what timed out
+                raise
+            raise RuntimeError(f"no answer from {harness.id} in {MODEL_TIMEOUT} s") from None
         result["harness"] = harness.id
         result.update(usage)
 

@@ -53,7 +53,7 @@ from .base import (
     Attachment, Compaction, Emit, FileEdit, ForkPoint, Harness, Item, LiveSession, LiveSpec, Rewind, SessionSummary, SlashCommand, SubagentSummary,
     ToolSpec,
 )
-from .util import TailScan, attachment_note, hhmm, iso_to_epoch, parse_json_loose, split_attachment_note, tail_scan
+from .util import TailScan, attachment_note, hhmm, iso_to_epoch, parse_json_loose, short_tail, split_attachment_note, tail_scan
 
 log = logging.getLogger("atrium.claude")
 
@@ -1058,7 +1058,16 @@ class ClaudeCodeHarness(Harness):
                     if b.get("type") == "text" and b.get("text", "").strip():
                         out.append(f"{pre}USER: {_short(b['text'], 600)}")
                     elif b.get("type") == "tool_result" and b.get("is_error"):
-                        out.append(f"{pre}TOOL ERROR: {_short(_block_text(b.get('content')), 240)}")
+                        text = _block_text(b.get("content"))
+                        code, sep, printed = text.partition("\n")
+                        if code.startswith("Exit code") and sep:  # a failed command: its end says why (the exception, the test summary)
+                            out.append(f"{pre}TOOL ERROR: {code}: {short_tail(printed, 220)}")
+                        else:
+                            out.append(f"{pre}TOOL ERROR: {_short(text, 240)}")
+                    elif b.get("type") == "tool_result" and isinstance(tur, dict) and "stdout" in tur:  # a command's: its end is what it found
+                        printed = "\n".join(x for x in (tur.get("stderr"), tur.get("stdout")) if isinstance(x, str) and x.strip())
+                        if printed:
+                            out.append(f"{pre}→ {short_tail(printed, 200)}")
             elif t == "assistant":
                 for b in (d.get("message") or {}).get("content") or []:
                     if not isinstance(b, dict):

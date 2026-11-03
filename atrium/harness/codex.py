@@ -33,7 +33,7 @@ from .base import (
     ToolSpec,
 )
 from .codex_rpc import AppServerClient, RpcError, bundled_codex
-from .util import TailScan, attachment_note, clip, hhmm, iso_to_epoch, parse_json_loose, short, split_attachment_note, strict_schema, tail_scan, upload_url
+from .util import TailScan, attachment_note, clip, hhmm, iso_to_epoch, parse_json_loose, short, short_tail, split_attachment_note, strict_schema, tail_scan, upload_url
 
 log = logging.getLogger("atrium.codex")
 
@@ -1473,14 +1473,19 @@ def _digest_item(it: dict[str, Any]) -> list[str]:
     if t == "AgentMessage":
         text = _text_of(it.get("content"))
         return [f"AGENT: {short(text, 700)}"] if text.strip() else []
+    if t == "Reasoning":  # its summary: what the model has worked out, between the messages it writes
+        text = _text_of(it.get("summary_text"))
+        return [f"THINKING: {short(text.replace('**', ''), 400)}"] if text.strip() else []
     if t == "CommandExecution":
         actions = {a.get("type") for a in it.get("parsed_cmd") or [] if isinstance(a, dict)}
         if actions and actions <= SKIP_DIGEST_ACTIONS:
             return []  # reads / searches are too noisy to matter for progress tracking
         cmd = unwrap_command(it.get("command"))
         line = f"TOOL Bash: {short(cmd, 180)}"
-        if it.get("exit_code") not in (0, None):
-            line += f" → exit {it.get('exit_code')}: {short(it.get('aggregated_output') or '', 200)}"
+        if it.get("exit_code") not in (0, None):  # its end is what it found, or why it failed
+            line += f" → exit {it.get('exit_code')}: {short_tail(it.get('aggregated_output') or '', 200)}"
+        elif (it.get("aggregated_output") or "").strip():
+            line += f" → {short_tail(it['aggregated_output'], 200)}"
         return [line]
     if t == "FileChange":
         out = []

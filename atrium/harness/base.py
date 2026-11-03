@@ -311,7 +311,8 @@ class Harness(ABC):
 
     @abstractmethod
     def digest_lines(self, lines: list[str]) -> list[str]:
-        """Compress raw transcript lines into short human-readable events (tracker input)."""
+        """Compress raw transcript lines into short human-readable events (tracker input): ``USER:``, ``AGENT:``,
+        ``THINKING:``, ``TOOL …``, ``→ …`` (the end of a command's output), edits and errors."""
 
     @abstractmethod
     def file_edits(self, session_id: str, cwd: str) -> list[FileEdit]: ...
