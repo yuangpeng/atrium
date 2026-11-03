@@ -18,6 +18,7 @@ from .board.prompts import (
     WORKTREE_APPEND,
 )
 from .board.tools import BOARD_SERVER, board_toolset
+from .capture import CaptureContext, capture
 from .config import UPLOADS_DIR, config
 from .events import hub
 from .gitagent import GIT_AGENT_ALLOWED_TOOLS, GIT_SERVER, git_toolset
@@ -170,9 +171,18 @@ class SessionManager:
             disallowed_tools=disallowed,
             allowed_tools=allowed,
             resume_at=resume_at,
+            capture=CaptureContext(project.id, lambda: sid_box[0], self._turn_of),
         )
         spec._sid_box = sid_box  # type: ignore[attr-defined]  # board tools learn the id once the harness assigns it
         return spec
+
+    def _turn_of(self, sid: str) -> dict[str, Any] | None:
+        """The user message the agent's current turn answers (its last one), for the model calls it makes."""
+        h = self.live.get(sid)
+        for it in reversed(h.items if h else []):
+            if it.get("kind") == "user":
+                return {"id": it.get("id"), "text": _short(it.get("text") or "", 160), "ts": it.get("ts")}
+        return None
 
     def _emitter(self, h: LiveHandle):
         def emit(item: Item) -> None:
@@ -902,6 +912,7 @@ class SessionManager:
                 shutil.copytree(sidecar, dest / sidecar.name, dirs_exist_ok=True)
             backup = str(dest)
         await harness.delete_session(sid, cwd)
+        await capture.forget(project.id, sid)
         project.forget_session(sid)
         project.board.remove_agent(sid, timeline=True)
         self.invalidate(project)

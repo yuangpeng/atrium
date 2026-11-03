@@ -412,6 +412,9 @@ class CodexLiveSession(LiveSession):
             params["model"] = self.model
         if self.mode in MODE_POLICY:
             params["approvalPolicy"], params["sandbox"], params["approvalsReviewer"] = MODE_POLICY[self.mode]
+        capture = await self._capture_config()
+        if capture:
+            params["config"] = capture
         try:
             if spec.resume:
                 res = await self.client.request("thread/resume", {"threadId": self.session_id, "excludeTurns": True, **params})
@@ -525,6 +528,25 @@ class CodexLiveSession(LiveSession):
         if state != self.state:
             self.state = state
             self.emit({"kind": "state", "state": state})
+
+    async def _capture_config(self) -> dict[str, Any]:
+        """Config overrides sending this thread's model calls through Atrium's capture proxy (capture.py): its model
+        provider's base_url, for this thread alone. A thread keeps the config it was loaded with, so this reaches one
+        that is started, or resumed after it was unloaded. Nothing for a built-in provider (OpenAI's, whose address
+        depends on the login) or one on WebSockets."""
+        if not self.spec.capture:
+            return {}
+        try:
+            cfg = (await self.client.request("config/read", {"cwd": self.spec.cwd}, timeout=30)).get("config") or {}
+        except Exception as e:
+            log.warning("not capturing this Codex thread: config/read failed: %s", e)
+            return {}
+        pid = cfg.get("model_provider") or "openai"
+        provider = (cfg.get("model_providers") or {}).get(pid) or {}
+        if not provider.get("base_url") or provider.get("supports_websockets"):
+            return {}
+        url = self.spec.capture.base_url("codex", provider["base_url"], session=self.session_id or None)
+        return {"model_providers": {pid: {"base_url": url}}} if url else {}
 
     async def _turn_command(self, name: str, args: str) -> None:
         """/compact and /review: turns of their own, started by their app-server methods."""

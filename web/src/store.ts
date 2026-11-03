@@ -4,10 +4,10 @@ import { socket } from "./ws";
 import { throttle } from "./util";
 import { syncThemeColor } from "./layout";
 
-export type Panel = "board" | "files" | "changes" | "git" | "terminal";
+export type Panel = "board" | "files" | "changes" | "git" | "terminal" | "requests";
 /** What a single-screen layout shows (layout.ts): the chat column or the workspace; wider ones show both. */
 export type Pane = "chat" | "workspace";
-const PANELS: Panel[] = ["board", "files", "changes", "git", "terminal"];
+const PANELS: Panel[] = ["board", "files", "changes", "git", "terminal", "requests"];
 export type Theme = "light" | "dark" | "system";
 
 /** Where to put the cursor when a file opens; `external` = read-only, outside the project. */

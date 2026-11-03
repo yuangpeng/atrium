@@ -4,7 +4,8 @@ on a phone, iPhone Duo included".
 
 It drives Safari's engine (Playwright's WebKit) at each pose, as a touch device — the home page,
 the chat, the rail's drawer where the screen is too narrow for a docked one, then each workspace
-panel (the review also full screen), and back to the chat through the drawer — and walks the DOM for the mistakes that are easy to make and hard to see: boxes pushed
+panel (the review also full screen, a recorded model call laid out and as its stream), and back to the chat through the
+drawer — and walks the DOM for the mistakes that are easy to make and hard to see: boxes pushed
 past the viewport, text painted outside its own box, boxes squeezed to nothing (a label with
 `flex: 1; min-width: 0` collapses and paints over its neighbour), and buttons too small for a
 fingertip. Every pose also has to get the phone sizes (<html data-compact>, layout.ts).
@@ -262,11 +263,11 @@ async def main() -> int:
                 await audit(page, pose, "rail", inset)
                 await page.locator(".rail-backdrop").tap()
                 await page.wait_for_timeout(400)
-            back = page.locator('button[title="Board, files, changes, git, terminal"]')
+            back = page.locator('button[title="Board, files, changes, git, terminal, requests"]')
             if await back.count():  # one screen: the chat covers the workspace
                 await back.tap()
                 await page.wait_for_timeout(400)
-            for tab in ("Board", "Files", "Changes", "Git", "Terminal"):
+            for tab in ("Board", "Files", "Changes", "Git", "Terminal", "Requests"):
                 await page.locator(f'.ws-tabs button[aria-label="{tab}"]').tap()
                 await page.wait_for_timeout(1300)
                 await audit(page, pose, tab.lower(), inset)
@@ -289,6 +290,23 @@ async def main() -> int:
                     await page.wait_for_timeout(600)
                     await audit(page, pose, "worktrees", inset)
                     await page.locator('.toolbar button[aria-label="Graph"]').tap()
+                if tab == "Requests" and await page.locator(".req-row").count():  # a call: laid out, then its stream
+                    await page.locator(".req-row").first.tap()  # narrow: the call takes the list's place
+                    await page.wait_for_timeout(800)
+                    for sec in ("System prompt", "Tools"):
+                        head = page.locator(".req-sec:not(.open) .req-sec-toggle", has_text=sec)
+                        if await head.count():
+                            await head.first.tap()
+                    await page.wait_for_timeout(300)
+                    await audit(page, pose, "req-call", inset)
+                    await page.locator('.req-tabs button[aria-label="Response"]').tap()
+                    await page.wait_for_timeout(500)
+                    await audit(page, pose, "req-resp", inset)
+                    await page.locator('.req-tabs button[aria-label="Overview"]').tap()
+                    back = page.locator('button[aria-label="Back to the calls"]')
+                    if await back.count():
+                        await back.tap()
+                        await page.wait_for_timeout(300)
             # the way back from a panel: the open agent, picked in the drawer, brings its chat up and the drawer goes
             if await drawer.count():
                 await drawer.first.tap()

@@ -14,6 +14,8 @@ import os
 import shutil
 from typing import Any, Awaitable, Callable
 
+from ..capture import loopback_env
+
 log = logging.getLogger("atrium.codex.rpc")
 
 Listener = Callable[[str, dict[str, Any]], None]
@@ -89,10 +91,10 @@ class AppServerClient:
             if not path:
                 raise FileNotFoundError(self.not_found())
             self.path = path
-            env = None
+            env = {**os.environ, **loopback_env(os.environ)}  # a thread's capture proxy is on loopback: never through HTTP_PROXY
             bundled = bundled_codex()
             if bundled and bundled[1] and path == bundled[0]:  # its helper tools go first on PATH, as in OpenAI's own SDK
-                env = {**os.environ, "PATH": os.pathsep.join(p for p in (bundled[1], os.environ.get("PATH")) if p)}
+                env["PATH"] = os.pathsep.join(p for p in (bundled[1], os.environ.get("PATH")) if p)
             self.proc = await asyncio.create_subprocess_exec(
                 path, "app-server", *self.extra_args,
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,

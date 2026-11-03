@@ -79,6 +79,7 @@ Atrium 只有一个属于自己的配置文件：`~/.atrium/settings.json`。其
   "voice": {"base_url": "", "api_key": "", "asr_model": "", "refine_model": "", "refine_effort": "low"},
   "lsp": {"enabled": true, "commands": {}, "python": {"typeCheckingMode": "standard"}},
   "terminal": {"enabled": true, "shell": ""},
+  "capture": {"enabled": true, "max_mb": 1024},
   "ui": {"theme": "system"}
 }
 ```
@@ -248,6 +249,38 @@ Git Agent 和 Code Review Agent 有自己的模式，不受这些设置影响：
 的会话、tmux、virtualenv）。另外设置 `TERM=xterm-256color`、`TERM_PROGRAM=Atrium`，没有设置 locale 时
 补上 UTF-8 的 `LANG`。
 
+### 请求抓取
+
+工作区的 **Requests** 标签页逐次显示每个 agent 发给模型 API 的请求和收到的响应。每次调用都会结构化展开：
+参数、系统提示词、工具和消息（比上一次调用新增的会标出来），以及模型的回答。另外还能看响应流里的每个事件，
+以及原样的请求体和响应体。
+
+| Key | 默认值 | 说明 |
+|---|---|---|
+| `capture.enabled` | `true` | 让 agent 的模型调用经过 Atrium 的抓包代理并记录下来。对之后启动进程的 agent 生效：新建的，以及在 `sessions.idle_close_minutes` 之后或 Atrium 重启之后被唤醒的。关掉后不再记录，新的 agent 直接调用自己的 API。 |
+| `capture.max_mb` | `1024` | `~/.atrium/captures/captures.db` 里最多保留多少（压缩后）；超出时先删最早的调用。`0` = 不限。 |
+
+Atrium 在一个自己的回环端口上运行这个代理（只绑 `127.0.0.1`，不管 Atrium 自己在什么地址上服务），并把每个
+agent 的 base URL 指向它。代理把每个请求原样转发到 harness 本来要发往的地址（同样经过 `HTTPS_PROXY`），
+响应边收边转：流式的仍然是流式。
+
+- 写盘之前先抹掉凭证：`Authorization`、`x-api-key`、`x-goog-api-key`、cookie，以及 URL 里的 `key=`。请求体和
+  响应体完整保留，里面有整段对话，包括 agent 读过的文件。数据库只有你自己能读。
+- 转发时只改一处：如果 `Accept-Encoding` 里提供了 br 或 zstd，会改成只提供 gzip 和 deflate，这样响应才能被解开
+  查看（Request 视图里能看到 harness 原本提供的值）。
+- 删除 agent 时会一起删除它的调用记录；标签页上的垃圾桶按钮也能删除。
+
+哪些调用会经过代理：
+
+- **Claude Code**：发往 `ANTHROPIC_BASE_URL`（或 Anthropic API）的全部调用，包括 agent 的主循环、它的子 agent，
+  以及会话标题之类的辅助调用。用 Bedrock、Vertex 或 Foundry（`CLAUDE_CODE_USE_*`）时不经过。
+- **Codex**：thread 发给自己模型 provider 的调用，前提是这个 provider 是你自己定义的（`[model_providers]`）。
+  内置的 OpenAI provider（ChatGPT 登录、`openai_base_url`），以及设置了 `supports_websockets` 的 provider，
+  都直接调用。
+- **Antigravity**：发往 Gemini API 端点的调用，不管是自定义模型的中转站还是 Google 自己的。Vertex AI 不经过。
+
+harness 发出的其他流量不会被记录：遥测、更新检查、走 HTTP 的 MCP 服务器、Codex 拉取的插件、网页。
+
 ## Claude Code
 
 Atrium 通过 `claude-agent-sdk` 运行 Claude Code，SDK 内置了 CLI：不需要另外安装。
@@ -296,6 +329,8 @@ $CLAUDE auth status
 - **增加**：追加到 Claude Code 系统提示词末尾的看板协议；Atrium 的工具（`mcp__board__*`、`mcp__web__*`）；
   Atrium `mcp_servers` 里的服务器；`~/.atrium/uploads`（附件）的读取权限。
 - **去掉**：开启 `web.replace_builtin_web_tools` 时去掉 WebFetch；有 Serper key 时再去掉 WebSearch。
+- **API 地址**，在 `capture.enabled` 开启时：`ANTHROPIC_BASE_URL` 指向 Atrium 的抓包代理，再由代理把每次调用
+  转发到你配置里的地址（见[请求抓取](#请求抓取)）。`NO_PROXY` 会加上回环地址，好让 CLI 直接连到代理。
 
 其他一切（环境变量、hooks、插件、skills、Claude Code 自己的 MCP 服务器）都和在命令行里一样。Tracker 用
 Claude Code 调用模型时只读 `~/.claude/settings.json`（那里配置的中转站同样生效），也不带任何工具。
@@ -362,6 +397,8 @@ wire_api = "responses"
 - **增加**：Atrium 的说明（作为 developer instructions），以及它的工具（作为 Codex 的 dynamic tools）：
   `board.*`，以及 `internet.search` / `internet.fetch`（Codex 保留了 `web` 这个名字）。
 - Atrium 的 `mcp_servers` **不会**传给 Codex：Codex 的 MCP 服务器来自 `config.toml` 里的 `[mcp_servers]`。
+- **provider 的地址**，在 `capture.enabled` 开启时：thread 的 `model_providers.<id>.base_url` 指向 Atrium 的
+  抓包代理，再由代理转发到你的地址（见[请求抓取](#请求抓取)）。app-server 运行时，`NO_PROXY` 里会加上回环地址。
 
 修改对之后启动的 agent 生效。
 
@@ -445,6 +482,8 @@ Atrium 的环境变量里。Antigravity 的条款规定 Google 账号登录只�
   它们；Atrium 的工具，命名为 `<namespace>_<tool>`（`board_status`、`web_search` 等）；Atrium `mcp_servers`
   里的服务器（Antigravity 的 `mcp_config.json` 文件不会被读取）。
 - **去掉**：开启 `web.replace_builtin_web_tools` 时去掉 `read_url_content`；有 Serper key 时再去掉 `search_web`。
+- **端点地址**，在 `capture.enabled` 开启时：Gemini 端点的 base URL 指向 Atrium 的抓包代理，再由代理转发到你的
+  地址（见[请求抓取](#请求抓取)）。
 
 修改对之后启动的 agent 生效。Antigravity 是否可用、它的模型列表会立即更新（已打开的页面要在 ⚙ Settings
 保存之后或刷新后才看到）。它的对话保存在 `~/.atrium/antigravity/`：没有 CLI 能列出它们，也不能 fork，或者修改其中已发送的消息。
@@ -528,13 +567,14 @@ Claude Code 的配置可以在 `env` 里另加变量；Antigravity 配置的 `en
 | `CODEX_HOME` | Codex 的目录（默认 `~/.codex`）：`config.toml`、登录信息、对话线程。 |
 | `GEMINI_API_KEY`、`GOOGLE_GEMINI_BASE_URL`、Vertex AI 的变量 | Antigravity 用的，在它配置文件的 `env` 没有设置时生效（见 [Antigravity](#antigravity)）。 |
 | `ANTIGRAVITY_HARNESS_PATH` | 用另一个 Antigravity 运行时二进制，代替 SDK wheel 里的那个。 |
-| `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` | 原样传给每个 agent。 |
+| `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` | 原样传给每个 agent。开启 `capture.enabled` 时，Claude Code 和 Codex 的 `NO_PROXY` 会加上回环地址，抓包代理再按它们本来会用的代理把调用发出去。 |
 
 ## 检查配置
 
 - `curl -s --noproxy '*' -H "Authorization: Bearer $(.venv/bin/atrium --token)" http://127.0.0.1:8787/api/meta` 列出每个 harness：`available`（是否可用），不可用时的
   `unavailable_reason`；`config_model` / `config_effort`，即 *Default* 实际解析成什么；Codex 还有 `cli`
-  （`path`、`version`、`bundled`）。`settings._error` 说明 `settings.json` 读取失败的原因。
+  （`path`、`version`、`bundled`）。`settings._error` 说明 `settings.json` 读取失败的原因。`capture` 说明模型调用
+  是否被记录（`enabled`），以及抓包代理是否已经启动（`running`）。
 - ⚙ Settings 在 `~/.atrium/backups/` 里为每个文件保留最近 20 个版本（`<file>-<date>-<time>`）。要回退，
   把其中一个复制回原文件即可。
 
@@ -546,5 +586,6 @@ Claude Code 的配置可以在 `env` 里另加变量；Antigravity 配置的 `en
 | Codex 里缺少某个 MCP 服务器 | Atrium 的 `mcp_servers` 只给 Claude Code 和 Antigravity；Codex 读 `config.toml` 里的 `[mcp_servers]`。 |
 | Antigravity 不可用，提示 "Needs the API key of …" | 在它配置文件里设置的中转站只用该文件 `env` 里的 key。 |
 | 正在运行的 agent 看不到修改 | harness 配置在 agent 进程启动时才生效：新建的 agent，以及 `sessions.idle_close_minutes` 之后被重新唤醒的 agent。 |
+| Requests 里看不到某个 agent 的调用 | 它的进程是在开启 `capture.enabled` 之前启动的，或者它的 harness 端点不经过代理（见[请求抓取](#请求抓取)）。 |
 | 发送按钮旁边没有麦克风 | `voice.base_url` 或 `voice.asr_model` 为空，或者页面是在设置它们之前打开的：在 ⚙ Settings 里保存，或刷新页面。 |
 | 麦克风提示需要安全的页面 | 浏览器只把麦克风给 HTTPS 页面和 `localhost`。 |

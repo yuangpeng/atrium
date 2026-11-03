@@ -64,6 +64,7 @@ PERMISSION_MODES = [
 EFFORTS = ["minimal", "low", "medium", "high"]  # Gemini thinking levels
 DEFAULT_MODEL = "gemini-3.8-flash"  # the SDK's default (google.antigravity.models.DEFAULT_MODEL)
 IMAGE_MODEL = "gemini-3.1-flash-lite-image"  # the SDK's image model (generate_image)
+GEMINI_API = "https://generativelanguage.googleapis.com"  # the Gemini API's own address (an endpoint with no base URL)
 CONTEXT_WINDOW = 1_048_576  # Gemini 3.x models
 # Tools that only read: never asked about. Names as the pre-tool hook sees them (the SDK maps
 # write_to_file to create_file and replace_file_content to edit_file).
@@ -444,8 +445,9 @@ def credentials_problem() -> str | None:
         return f"Antigravity's settings can't be used ({cli_settings_path()}): {type(e).__name__}: {e}"
 
 
-def model_targets(model: str | None, effort: str | None) -> list[Any]:
-    """The text model (with its thinking level) and the image model, on the endpoint the settings say."""
+def model_targets(model: str | None, effort: str | None, capture: Any = None, session: str | None = None) -> list[Any]:
+    """The text model (with its thinking level) and the image model, on the endpoint the settings say. With
+    ``capture`` (an agent's ``CaptureContext``), a Gemini API endpoint is reached through Atrium's capture proxy."""
     from google.antigravity import types
 
     choice = resolve_model(model)
@@ -453,6 +455,8 @@ def model_targets(model: str | None, effort: str | None) -> list[Any]:
     base, key, problem = gemini_endpoint(choice) if gemini else (None, None, None)
     if problem:
         raise RuntimeError(problem)
+    if gemini and capture:  # the runtime reaches loopback directly (Go skips the proxy for it)
+        base = capture.base_url("antigravity", base or GEMINI_API, session=session) or base
 
     def endpoint(options: Any) -> Any:
         if gemini:
@@ -1070,7 +1074,7 @@ class AntigravityLiveSession(LiveSession):
             hooks=[self.harness.gate_hook(self)],
             tools=self._tools,
             mcp_servers=mcp_configs(spec.extra_mcp_servers),
-            models=model_targets(self.model, self.effort),
+            models=model_targets(self.model, self.effort, spec.capture, self.session_id),
             workspaces=[spec.cwd],
             conversation_id=self.session_id,
             session_continuation_mode=SessionContinuationMode.CREATE_OR_RESUME,

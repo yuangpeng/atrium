@@ -1096,3 +1096,86 @@ details.review-tool > summary::-webkit-details-marker { display: none; }
 .home-archived > summary::-webkit-details-marker { display: none; }
 .home-archived .chev { transition: transform 0.12s; }
 .home-archived[open] .chev { transform: rotate(90deg); }
+
+/* ---------------------------------------------------------------- Requests (panels/RequestsPanel.tsx) */
+.req-title { flex: 0 1 auto; min-width: 0; }
+.req-count { font-size: 12px; white-space: nowrap; flex: none; }
+.req-empty { padding: 28px 16px; font-size: 13px; text-align: center; }
+.req-pad { padding: 12px; }
+.req-split > .side.req-list.alone { width: auto; max-width: none; flex: 1; border-right: 0; } /* narrow: the list alone, then a call alone */
+.req-group { padding: 0 4px 6px; }
+.req-turn { display: flex; align-items: center; gap: 8px; padding: 8px 8px 4px; font-size: 12px; font-weight: 600; color: var(--text-2); position: sticky; top: 0; z-index: 1; background: var(--bg); }
+.req-row { display: flex; flex-direction: column; gap: 2px; width: 100%; min-width: 0; text-align: left; border: 0; background: transparent; color: var(--text); font: inherit; padding: 6px 8px; border-radius: 8px; cursor: pointer; }
+@media (hover: hover) { .req-row:hover { background: var(--hover); } }
+.req-row.on { background: var(--active); }
+.req-row .r1 { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12.5px; }
+.req-row .r2 { display: flex; flex-wrap: wrap; gap: 0 10px; font-size: 11.5px; color: var(--muted); min-width: 0; }
+.req-row .r3 { font-size: 11.5px; color: var(--faint); min-width: 0; }
+.req-row .pill { flex: none; }
+.req-kind { flex: none; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; padding: 1px 6px; border-radius: 5px; background: var(--surface-2); color: var(--muted); }
+.req-kind.agent { background: var(--accent-soft); color: var(--accent-strong); }
+.req-kind.sub { background: var(--info-soft); color: var(--info); }
+.req-kind.aux { background: var(--warn-soft); color: var(--warn); }
+.req-live { display: inline-flex; align-items: center; gap: 4px; }
+.req-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: req-pulse 1.2s ease-in-out infinite; }
+@keyframes req-pulse { 50% { opacity: 0.25; } }
+.req-content { min-width: 0; }
+.req-head { display: flex; flex-direction: column; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--border); flex: none; min-width: 0; }
+.req-head .r1 { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.req-path { font-size: 12.5px; }
+.req-head .r2 { display: flex; flex-wrap: wrap; gap: 0 12px; font-size: 11.5px; min-width: 0; }
+.req-head .r2 > span { overflow-wrap: anywhere; min-width: 0; }
+.req-tabs { align-self: flex-start; }
+.req-body { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 8px; padding: 10px 12px calc(16px + var(--edge-bottom, 0px)); }
+.req-error { font-size: 12px; color: var(--err); background: var(--err-soft); border-radius: 8px; padding: 6px 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.req-url { font-size: 12px; overflow-wrap: anywhere; }
+.req-note { font-size: 12.5px; padding: 2px 0; overflow-wrap: anywhere; }
+.req-sec { flex: none; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); min-width: 0; }
+.req-sec-head { display: flex; align-items: center; gap: 4px; padding-right: 6px; min-width: 0; }
+.req-sec-toggle { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; border: 0; background: transparent; color: var(--text); font: inherit; font-size: 12.5px; padding: 7px 10px; cursor: pointer; text-align: left; }
+.req-sec-toggle .t { font-weight: 600; }
+.req-sec-toggle .pill { height: 18px; font-size: 10.5px; }
+.req-sec-body { display: flex; flex-direction: column; gap: 8px; padding: 0 10px 10px; min-width: 0; }
+.req-kv { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 12px; }
+.req-kv td { padding: 4px 6px; border-top: 1px solid var(--border); vertical-align: top; overflow-wrap: anywhere; }
+.req-kv td:first-child { width: 32%; color: var(--muted); }
+.req-same { display: flex; align-items: center; gap: 6px; border: 1px dashed var(--border-strong); background: transparent; color: var(--muted); font: inherit; font-size: 12px; border-radius: 8px; padding: 6px 10px; cursor: pointer; text-align: left; }
+.req-msg { display: flex; flex-direction: column; gap: 6px; min-width: 0; border-left: 3px solid var(--border); padding: 2px 0 2px 10px; }
+.req-msg.fresh { border-left-color: var(--accent); }
+.req-role { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+.req-role.user { color: var(--info); }
+.req-role:is(.assistant, .model) { color: var(--accent-strong); }
+.req-role.tool { color: var(--ok); }
+.req-role:is(.system, .developer) { color: var(--warn); }
+.req-part { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.req-part:is(.call, .result, .other) { background: var(--surface-2); border-radius: 8px; padding: 6px 8px; }
+.req-part.err { background: var(--err-soft); }
+.req-part-head { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 11.5px; font-weight: 600; color: var(--muted); }
+.req-part.thinking .req-text { font-style: italic; color: var(--muted); }
+.req-text { font-size: 12.5px; line-height: 1.5; }
+.req-text.mono { font-family: var(--font-mono); font-size: 11.5px; }
+.req-tool { min-width: 0; }
+.req-tool-head, .req-event-head { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; border: 0; background: transparent; color: var(--text); font: inherit; font-size: 12px; padding: 3px 2px; cursor: pointer; text-align: left; }
+.req-tool-head .name { flex: none; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.req-tool-body { display: flex; flex-direction: column; gap: 6px; padding: 2px 0 8px 18px; min-width: 0; }
+.req-events { display: flex; flex-direction: column; min-width: 0; }
+.req-event-head { font-size: 11.5px; }
+.req-event-head .at { flex: none; width: 52px; text-align: right; color: var(--faint); }
+.req-event-head .name { flex: none; max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.req-event > .jt { padding: 2px 0 6px 58px; }
+/* JSON as a tree (components/JsonTree.tsx): long strings wrap where they must, nothing scrolls sideways */
+.jt { font: 11.5px/1.5 var(--font-mono); min-width: 0; overflow-wrap: anywhere; }
+.jt-children { margin-left: 5px; padding-left: 12px; border-left: 1px solid var(--border); }
+.jt-toggle { display: flex; align-items: center; gap: 4px; width: 100%; min-width: 0; border: 0; background: transparent; color: var(--text); font: inherit; padding: 1px 0; cursor: pointer; text-align: left; }
+.jt-caret { flex: none; color: var(--faint); transition: transform 0.1s; }
+.jt-caret.open { transform: rotate(90deg); }
+.jt-key { color: var(--info); flex: none; max-width: 60%; overflow-wrap: anywhere; }
+.jt-brief { color: var(--faint); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jt-leaf { padding: 1px 0 1px 16px; white-space: pre-wrap; }
+.jt-str { color: var(--ok); }
+.jt-num { color: var(--accent-strong); }
+.jt-null { color: var(--faint); }
+.jt-more { border: 0; background: transparent; color: var(--info); font: inherit; font-size: 11.5px; padding: 2px 0; cursor: pointer; text-align: left; }
+.jt-more.inline { margin-left: 6px; }
+.long-text { white-space: pre-wrap; overflow-wrap: anywhere; min-width: 0; }
+.long-text > .jt-more { display: block; margin-top: 4px; }

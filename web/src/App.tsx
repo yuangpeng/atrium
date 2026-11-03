@@ -1,7 +1,7 @@
 import type { JSX, ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { Archive, ArchiveRestore, ArrowLeft, ChevronRight, FileDiff, Files, GitBranch, GitFork, LayoutDashboard, MessageSquare, PanelLeftOpen, PanelRightClose, Plug, SquareTerminal, Unplug } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowLeft, ArrowLeftRight, ChevronRight, FileDiff, Files, GitBranch, GitFork, LayoutDashboard, MessageSquare, PanelLeftOpen, PanelRightClose, Plug, SquareTerminal, Unplug } from "lucide-react";
 import { api, loginUrl, SessionRow } from "./api";
 import { Panel, useApp } from "./store";
 import { clsx, displayName, isMac, tidyNote } from "./util";
@@ -23,6 +23,7 @@ import { FilesPanel } from "./panels/FilesPanel";
 import { ChangesPanel } from "./panels/ChangesPanel";
 import { GitPanel } from "./panels/GitPanel";
 import { TerminalPanel } from "./panels/TerminalPanel";
+import { RequestsPanel } from "./panels/RequestsPanel";
 
 const TABS: { id: Panel; label: string; icon: JSX.Element }[] = [
   { id: "board", label: "Board", icon: <LayoutDashboard size={16} /> },
@@ -30,6 +31,7 @@ const TABS: { id: Panel; label: string; icon: JSX.Element }[] = [
   { id: "changes", label: "Changes", icon: <FileDiff size={16} /> },
   { id: "git", label: "Git", icon: <GitBranch size={16} /> },
   { id: "terminal", label: "Terminal", icon: <SquareTerminal size={16} /> },
+  { id: "requests", label: "Requests", icon: <ArrowLeftRight size={16} /> },
 ];
 const RAIL_WIDTH = 52;
 const MIN_CHAT = 340;
@@ -42,7 +44,7 @@ function CloseChat() {
   // on a single screen the chat covers the workspace: this brings the workspace up instead
   if (single)
     return (
-      <button className="icon-btn" title="Board, files, changes, git, terminal" onClick={() => setPane("workspace")}>
+      <button className="icon-btn" title="Board, files, changes, git, terminal, requests" onClick={() => setPane("workspace")}>
         <PanelLeftOpen size={15} />
       </button>
     );
@@ -259,6 +261,9 @@ function Workspace() {
           <TerminalPanel visible={panel === "terminal"} />
         </div>
       )}
+      <div className="panel-body" style={{ display: panel === "requests" ? "flex" : "none" }}>
+        {panel === "requests" && <RequestsPanel />}
+      </div>
     </main>
   );
 }

@@ -48,6 +48,7 @@ from claude_agent_sdk import (
 )
 
 from .. import gitops
+from ..capture import loopback_env
 from ..config import UPLOADS_DIR
 from .base import (
     Attachment, Compaction, Emit, FileEdit, ForkPoint, Harness, Item, LiveSession, LiveSpec, Rewind, SessionSummary, SlashCommand, SubagentSummary,
@@ -84,13 +85,41 @@ def _claude_projects_dir() -> Path:
     return _claude_home() / "projects"
 
 
-def _effort_settings(effort: str | None) -> str | None:
-    """Flag-level settings pinning the effort.
+def _effort_settings(effort: str | None, env: dict[str, str] | None = None) -> str | None:
+    """Flag-level settings pinning the effort, plus ``env`` (the capture's base URL).
 
     ``--effort`` alone loses against ``env.CLAUDE_CODE_EFFORT_LEVEL`` in the user's
     settings.json; flag settings sit above every other settings source.
     """
-    return json.dumps({"env": {EFFORT_ENV: effort}}) if effort else None
+    env = {**(env or {}), **({EFFORT_ENV: effort} if effort else {})}
+    return json.dumps({"env": env}) if env else None
+
+
+def _settings_env(cwd: str) -> dict[str, str]:
+    """The environment Claude Code makes its calls with in ``cwd``: Atrium's, with the ``env`` of its settings files
+    over it, the more specific file winning (as the CLI does; managed settings aside)."""
+    env = dict(os.environ)
+    for path in (_claude_home() / "settings.json", Path(cwd) / ".claude" / "settings.json", Path(cwd) / ".claude" / "settings.local.json"):
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict) and isinstance(data.get("env"), dict):
+            env.update({k: str(v) for k, v in data["env"].items()})
+    return env
+
+
+def _capture_env(spec: LiveSpec, session_id: str) -> dict[str, str]:
+    """Flag-settings env sending the session's API calls through Atrium's capture proxy (capture.py): its address as
+    ANTHROPIC_BASE_URL, and loopback in NO_PROXY so the CLI reaches it directly. Empty when capture is off, or when the
+    calls go to Bedrock, Vertex or Foundry, whose endpoints don't take a base URL this way."""
+    if not spec.capture:
+        return {}
+    env = _settings_env(spec.cwd)
+    if any(env.get(v, "").strip().lower() not in ("", "0", "false") for v in ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY")):
+        return {}
+    url = spec.capture.base_url("claude-code", env.get("ANTHROPIC_BASE_URL") or "https://api.anthropic.com", env=env, session=session_id)
+    return {"ANTHROPIC_BASE_URL": url, **loopback_env(env)} if url else {}
 
 
 def config_defaults() -> tuple[str | None, str]:
@@ -253,6 +282,7 @@ class ClaudeLiveSession(LiveSession):
         self._stderr_tail: list[str] = []
         self._commands: list[dict[str, Any]] | None = None  # the CLI's slash commands (initialize response)
         self._command_names: set[str] = set()  # their names and aliases, plus what init messages list
+        self._env = _capture_env(spec, self.session_id)  # flag-settings env, sent again with every effort change
 
     # ---- public API --------------------------------------------------------
     async def start(self) -> None:
@@ -346,7 +376,7 @@ class ClaudeLiveSession(LiveSession):
             extra_args={"allow-dangerously-skip-permissions": None},  # lets the mode picker switch to bypass mid-session
             model=spec.model or None,
             effort=spec.effort or None,  # type: ignore[arg-type]
-            settings=_effort_settings(spec.effort),
+            settings=_effort_settings(spec.effort, self._env),
             resume=self.session_id if spec.resume else None,
             resume_session_at=spec.resume_at if spec.resume else None,  # an edit: the conversation before the edited message
             session_id=None if spec.resume else self.session_id,
@@ -386,9 +416,9 @@ class ClaudeLiveSession(LiveSession):
                             elif op == "model":
                                 await client.set_model(arg)
                             elif op == "effort":
-                                # shallow-merged into flag settings; {} drops our override
+                                # shallow-merged into flag settings: the whole env goes again, without EFFORT_ENV to drop our override
                                 await client._query._send_control_request(  # type: ignore[union-attr]
-                                    {"subtype": "apply_flag_settings", "settings": {"env": {EFFORT_ENV: arg} if arg else {}}}
+                                    {"subtype": "apply_flag_settings", "settings": {"env": {**self._env, **({EFFORT_ENV: arg} if arg else {})}}}
                                 )
                             elif op == "close":
                                 fut.set_result(None)

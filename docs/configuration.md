@@ -84,6 +84,7 @@ The defaults:
   "voice": {"base_url": "", "api_key": "", "asr_model": "", "refine_model": "", "refine_effort": "low"},
   "lsp": {"enabled": true, "commands": {}, "python": {"typeCheckingMode": "standard"}},
   "terminal": {"enabled": true, "shell": ""},
+  "capture": {"enabled": true, "max_mb": 1024},
   "ui": {"theme": "system"}
 }
 ```
@@ -262,6 +263,42 @@ profile sets it up: from Atrium's own environment it only gets who you are (`HOM
 session, tmux, a virtualenv). It runs with `TERM=xterm-256color`, `TERM_PROGRAM=Atrium`, and a UTF-8 `LANG`
 when no locale is set.
 
+### Request capture
+
+The workspace's **Requests** tab shows what each agent sends to its model API and what comes back, call by
+call. Each call is laid out: its settings, system prompt, tools and messages (with the ones the call before
+didn't have marked), and the answer. Beside that are the answer's stream event by event, and both bodies as
+they were.
+
+| Key | Default | |
+|---|---|---|
+| `capture.enabled` | `true` | Send agents' model calls through Atrium's capture proxy, and record them. Reaches agents whose process starts afterwards: new ones, and ones woken up after `sessions.idle_close_minutes` or an Atrium restart. Off, nothing more is recorded, and new agents call their API directly. |
+| `capture.max_mb` | `1024` | How much is kept, compressed, in `~/.atrium/captures/captures.db`; past it, the oldest calls go first. `0` = no limit. |
+
+Atrium runs the proxy on a loopback port of its own (`127.0.0.1` only, whatever address Atrium serves on) and
+points each agent's base URL at it. The proxy sends every request on, unchanged, to where the harness would
+have sent it (through the same `HTTPS_PROXY`), and the answer back as it arrives: a stream stays a stream.
+
+- Credentials are blanked before anything is written: `Authorization`, `x-api-key`, `x-goog-api-key`,
+  cookies, and a `key=` in the URL. The bodies are kept whole. They hold the conversation, including the
+  files the agent read. The database is readable by you alone.
+- One thing changes on the way out. An `Accept-Encoding` offering br or zstd offers gzip and deflate
+  instead, so the answer can be read back (the Request view shows what the harness offered).
+- Deleting an agent deletes its calls; the tab's trash button deletes them too.
+
+What goes through it:
+
+- **Claude Code**: everything sent to `ANTHROPIC_BASE_URL`, or to Anthropic's API. That covers the agent's
+  loop, its subagents, and side calls such as the session's title. Not with Bedrock, Vertex or Foundry
+  (`CLAUDE_CODE_USE_*`).
+- **Codex**: what a thread sends to its model provider, when that is a provider of your own
+  (`[model_providers]`). The built-in OpenAI provider (ChatGPT sign-in, `openai_base_url`), and providers
+  with `supports_websockets`, call out directly.
+- **Antigravity**: what goes to the Gemini API endpoint, a custom model's relay or Google's. Not on Vertex AI.
+
+Anything else the harnesses send isn't recorded: telemetry, update checks, MCP servers over HTTP, the
+plugins Codex fetches, web pages.
+
 ## Claude Code
 
 Atrium runs Claude Code through `claude-agent-sdk`, which bundles the CLI: nothing to install.
@@ -313,6 +350,9 @@ model picker's *Default* shows what `ANTHROPIC_MODEL`, else `model`, resolves to
   `~/.atrium/uploads` (attachments).
 - **removals**, when `web.replace_builtin_web_tools` is on: WebFetch, and WebSearch when there is a
   Serper key.
+- the **API's address**, while `capture.enabled` is on: `ANTHROPIC_BASE_URL` points at Atrium's capture
+  proxy, which sends each call on to the address your settings give ([Request capture](#request-capture)).
+  `NO_PROXY` gets the loopback addresses added, so that the CLI reaches the proxy directly.
 
 Everything else — the environment, hooks, plugins, skills, Claude Code's own MCP servers — works as in
 the CLI. The Tracker's model calls on Claude Code read only `~/.claude/settings.json` (a relay there
@@ -383,6 +423,9 @@ which is Atrium's: export it before you start Atrium.
   tools: `board.*`, and `internet.search` / `internet.fetch` (Codex reserves `web`).
 - Atrium's `mcp_servers` are **not** passed to Codex: its MCP servers come from `[mcp_servers]` in
   `config.toml`.
+- the **provider's address**, while `capture.enabled` is on: the thread's `model_providers.<id>.base_url`
+  points at Atrium's capture proxy, which sends each call on to yours ([Request capture](#request-capture)).
+  The app-server runs with the loopback addresses added to `NO_PROXY`.
 
 Changes apply to agents started afterwards.
 
@@ -473,6 +516,8 @@ Custom models still go to their own endpoint.
   `web_search`…); the servers in Atrium's `mcp_servers` — Antigravity's `mcp_config.json` files aren't read.
 - **removals**, when `web.replace_builtin_web_tools` is on: `read_url_content`, and `search_web` when
   there is a Serper key.
+- the **endpoint's address**, while `capture.enabled` is on: the Gemini endpoint's base URL points at
+  Atrium's capture proxy, which sends each call on to yours ([Request capture](#request-capture)).
 
 Changes apply to agents started afterwards. Whether Antigravity is available, and its model list, update
 right away, in an open page after a save in ⚙ Settings or a reload. Its conversations live in
@@ -563,13 +608,14 @@ proxy the agents need. Claude Code's settings can add variables of their own und
 | `CODEX_HOME` | Codex's (default `~/.codex`): `config.toml`, the login, threads. |
 | `GEMINI_API_KEY`, `GOOGLE_GEMINI_BASE_URL`, Vertex AI's variables | Antigravity's, where its settings file's `env` doesn't set them ([Antigravity](#antigravity)). |
 | `ANTIGRAVITY_HARNESS_PATH` | Another Antigravity runtime binary instead of the one in the SDK's wheel. |
-| `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` | Passed on to every agent. |
+| `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` | Passed on to every agent. With `capture.enabled`, Claude Code and Codex get the loopback addresses added to `NO_PROXY`, and the capture proxy sends their calls out through the proxy they would have used. |
 
 ## Checking your setup
 
 - `curl -s --noproxy '*' -H "Authorization: Bearer $(.venv/bin/atrium --token)" http://127.0.0.1:8787/api/meta` lists each harness: `available`, and
   `unavailable_reason` when it isn't; `config_model` / `config_effort`, what *Default* resolves to; for
   Codex, `cli` (`path`, `version`, `bundled`). `settings._error` says why `settings.json` couldn't be read.
+  `capture` says whether model calls are recorded (`enabled`) and whether the capture proxy started (`running`).
 - ⚙ Settings keeps the last 20 versions of each file in `~/.atrium/backups/` (`<file>-<date>-<time>`).
   To go back, copy one over the file.
 
@@ -581,5 +627,6 @@ proxy the agents need. Claude Code's settings can add variables of their own und
 | An MCP server is missing in Codex | Atrium's `mcp_servers` are for Claude Code and Antigravity; Codex reads `[mcp_servers]` in `config.toml`. |
 | Antigravity is unavailable: "Needs the API key of …" | A relay set in its settings file only gets the key in that file's `env`. |
 | A running agent doesn't see a change | Harness settings apply when an agent's process starts: new agents, and agents woken up after `sessions.idle_close_minutes`. |
+| An agent's calls aren't in Requests | Its process started before `capture.enabled` was on, or its harness's endpoint isn't one that goes through the proxy ([Request capture](#request-capture)). |
 | No mic next to send | `voice.base_url` or `voice.asr_model` is empty, or the page was open before they were set: save them in ⚙ Settings, or reload the page. |
 | The mic says it needs a secure page | Browsers give the microphone only to HTTPS pages and `localhost`. |

@@ -102,6 +102,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # shell "" = $SHELL as a login shell; a shell's name or path (also started as a login shell), or an
     # argument list run as given, e.g. ["/bin/bash", "--noprofile"].
     "terminal": {"enabled": True, "shell": ""},
+    # What agents send to their model APIs and what comes back, recorded through a proxy on a loopback port
+    # (capture.py) and shown in the workspace's Requests tab. enabled reaches agents started afterwards;
+    # max_mb: what is kept in $ATRIUM_HOME/captures, the oldest going first (0 = no limit).
+    "capture": {"enabled": True, "max_mb": 1024},
     "ui": {"theme": "system"},
 }
 

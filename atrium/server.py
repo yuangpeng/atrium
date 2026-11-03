@@ -22,6 +22,7 @@ from . import __version__, changes, configfiles, fs, gitops, lsp, voice
 from .auth import AUTH_PATH, AuthMiddleware, auth
 from .auth import router as auth_router
 from .board import pages as board_pages
+from .capture import capture
 from .config import UPLOADS_DIR, config
 from .events import Subscriber, hub
 from .gitagent import set_view
@@ -64,6 +65,7 @@ async def lifespan(_app: FastAPI):
     if auth.enabled and auth.ensure().get("generated_password"):
         log.warning("login password: made up, in %s (set your own: atrium --set-password)", AUTH_PATH)
     hub.bind_loop(asyncio.get_running_loop())
+    await capture.start()  # before any agent starts: they get its address
     projects.on_create.append(_on_project_loaded)
     sessions.on_turn_end.append(lambda project, _sid: project.tracker and project.tracker.after_turn())
     sessions.on_turn_end.append(lambda project, sid: project.review and project.review.turn_ended(sid))
@@ -88,6 +90,7 @@ async def lifespan(_app: FastAPI):
             await h.shutdown()
     await lsp.registry.shutdown()
     await terminals.shutdown()
+    await capture.stop()
 
 
 app = FastAPI(title="Atrium", version=__version__, lifespan=lifespan)
@@ -174,7 +177,7 @@ async def _catalog(h: Any) -> dict[str, Any]:
 async def meta():
     harnesses = await asyncio.gather(*(_catalog(h) for h in all_harnesses()))
     return {"version": __version__, "harnesses": harnesses, "settings": config.public_settings(), "lsp": await asyncio.to_thread(lsp.available),
-            "terminal": terminals.available(), "auth": auth.enabled}
+            "terminal": terminals.available(), "auth": auth.enabled, "capture": {"enabled": capture.enabled, "running": capture.running}}
 
 
 @app.get("/api/settings")
@@ -573,6 +576,30 @@ async def close(pid: str, sid: str):
 
 
 # ---- per-session changes (diff review) -------------------------------------
+@app.get("/api/p/{pid}/sessions/{sid}/requests")
+async def session_requests(pid: str, sid: str):
+    """The model calls an agent made, oldest first (capture.py)."""
+    P(pid)
+    return {"enabled": capture.enabled, "running": capture.running, "rows": await capture.rows(pid, sid)}
+
+
+@app.delete("/api/p/{pid}/sessions/{sid}/requests")
+async def clear_session_requests(pid: str, sid: str):
+    P(pid)
+    await capture.forget(pid, sid)
+    hub.publish(f"project:{pid}", {"type": "capture", "session_id": sid, "cleared": True})
+    return {"ok": True}
+
+
+@app.get("/api/p/{pid}/requests/{rid}")
+async def request_detail(pid: str, rid: str):
+    P(pid)
+    d = await capture.detail(pid, rid)
+    if d is None:
+        raise HTTPException(404, "No such request: it may have been pruned (capture.max_mb)")
+    return JSONResponse(d)  # as is: the bodies can be megabytes, too much for FastAPI's encoder to walk
+
+
 @app.get("/api/p/{pid}/sessions/{sid}/changes")
 async def session_changes(pid: str, sid: str):
     p = P(pid)

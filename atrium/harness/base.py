@@ -216,6 +216,7 @@ class LiveSpec:
     disallowed_tools: list[str] = field(default_factory=list)
     allowed_tools: list[str] = field(default_factory=list)
     resume_at: str | None = None  # with ``resume``: the conversation up to there only (``Rewind.resume_at``)
+    capture: Any = None  # a ``capture.CaptureContext``: where the model calls go to be recorded (None: straight out)
 
 
 class LiveSession(ABC):

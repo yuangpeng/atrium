@@ -97,6 +97,69 @@ export interface Meta {
   lsp: Record<string, { server: string }>; // Monaco language id -> language server on this machine
   terminal: boolean; // the Terminal panel is on (terminal.enabled, on a Unix server)
   auth: boolean; // the login page is on (off: `atrium --no-auth`)
+  capture: { enabled: boolean; running: boolean }; // model calls recorded (capture.enabled; its proxy started)
+}
+
+// ---- model calls the capture recorded (capture.py) ----
+export interface CaptureUsage {
+  input?: number; // every prompt token, cached ones included
+  cached?: number;
+  cache_write?: number;
+  output?: number;
+  reasoning?: number;
+}
+
+export interface CaptureSummary {
+  api: "anthropic" | "openai" | "gemini" | "other";
+  model?: string | null;
+  kind?: "agent" | "sub" | "aux" | "count"; // the agent's loop, a subagent's, a call with no tools (titles…), token counting
+  messages?: number;
+  tools?: number;
+  system?: number; // characters of system prompt
+  first?: string | null; // the system prompt's telling line
+  stream?: boolean;
+  thread?: string; // Codex: the sub-agent thread it was for
+  usage?: CaptureUsage;
+  stop?: string;
+  output?: string; // the start of the answer's text
+  calls?: string[]; // the tools it called
+  api_error?: string;
+}
+
+export interface CaptureRow {
+  id: string;
+  state: "pending" | "streaming" | "done" | "error" | "cancelled" | "interrupted";
+  harness: string;
+  session: string;
+  method: string;
+  path: string;
+  host: string;
+  started: number;
+  ttfb?: number; // seconds to the answer's headers
+  duration?: number;
+  status?: number;
+  req_bytes?: number;
+  resp_bytes?: number;
+  turn?: { id: string; text: string; ts: number } | null; // the user message its turn answers
+  error?: string;
+  summary?: CaptureSummary;
+  narrowed?: string; // the Accept-Encoding the harness sent, when the proxy narrowed it
+}
+
+export interface CaptureBody {
+  bytes: number;
+  text?: string;
+  base64?: string; // not text: what couldn't be decoded (encoding) or isn't UTF-8
+  encoding?: string | null;
+}
+
+export interface CaptureDetail extends CaptureRow {
+  url: string;
+  req_headers: [string, string][];
+  resp_headers: [string, string][];
+  marks: [number, number][]; // [ms after the request, bytes of the answer by then]
+  request: CaptureBody;
+  response: CaptureBody;
 }
 
 export interface Project {
@@ -673,6 +736,10 @@ export const api = {
     req("POST", `/api/p/${pid}/sessions/${sid}/permission`, body),
   closeSession: (pid: string, sid: string) => req("POST", `/api/p/${pid}/sessions/${sid}/close`),
 
+  requests: (pid: string, sid: string) =>
+    req<{ enabled: boolean; running: boolean; rows: CaptureRow[] }>("GET", `/api/p/${pid}/sessions/${sid}/requests`),
+  requestDetail: (pid: string, rid: string) => req<CaptureDetail>("GET", `/api/p/${pid}/requests/${rid}`),
+  clearRequests: (pid: string, sid: string) => req<{ ok: boolean }>("DELETE", `/api/p/${pid}/sessions/${sid}/requests`),
   changes: (pid: string, sid: string) =>
     req<{ session_id: string; cwd: string; files: ChangeFile[]; snapshots: number }>("GET", `/api/p/${pid}/sessions/${sid}/changes`),
   changeFile: (pid: string, sid: string, path: string) =>

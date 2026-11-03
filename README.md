@@ -7,13 +7,14 @@ A project-centric workbench for coding agents — Claude Code, Codex and Antigra
 
 ```
 ┌ Workspace ─────────────────────────────────┬ Chat (selected agent) ─────┬ Rail ┐
-│ Board · Files · Changes · Git · Terminal   │  user ▸ task               │  ⌂   │ home
-│                                            │  ◆ tool calls, diffs       │  +   │ new agent
+│ Board · Files · Changes · Git · Terminal · │  user ▸ task               │  ⌂   │ home
+│ Requests                                   │  ◆ tool calls, diffs       │  +   │ new agent
 │  board.html (live, shared)                 │  ◆ board.status / publish  │  ●○  │ agents (hover
 │  Monaco editor + language server           │  ⚠ permission card         │  ●○  │  for details)
 │  diff review · commit graph + Git Agent    │                            │  ≡   │ all agents
 │  terminals: shells on the server           │  📎 mode model · effort ↑  │  ⚙   │ tracker, git,
-└────────────────────────────────────────────┴────────────────────────────┴──────┘ settings
+│  requests: each model call, sent and back  │                            │      │ settings
+└────────────────────────────────────────────┴────────────────────────────┴──────┘
 ```
 
 ## Design principles
@@ -84,6 +85,14 @@ A project-centric workbench for coding agents — Claude Code, Codex and Antigra
      first), when its shell exits, or when Atrium restarts. On a phone a row of keys adds Esc, Tab, Ctrl, ^C,
      the arrows and paste, and a drag scrolls. ⌘K clears. `terminal` in the settings turns it off or picks
      another shell.
+   * **Requests** — what each agent sends to its model and what comes back, call by call. Atrium points
+     the harness's base URL (Claude Code's `ANTHROPIC_BASE_URL`, the Codex provider's `base_url`, the Gemini
+     endpoint of Antigravity) at a proxy of its own on a loopback port, which sends each call on unchanged
+     and records it with credentials blanked. The tab follows the selected agent and groups its calls by the
+     message each turn answers: the agent's loop, subagents, side calls such as titles. Each call is laid out
+     (settings, system prompt, tools, messages, with what the call before didn't have marked, and the
+     answer); its stream is shown event by event, both bodies as they were. It shows how each harness works
+     underneath. `capture` in the settings turns it off and caps what is kept (1 GB).
    * **Git** — commit graph with lanes (pick a commit: its files as a tree, each one diffed side by
      side against the first parent, renames followed); *Smart* / *All* / *Custom* branch sets, and an
      **Agent view**: the **Git Agent** (a chat drawer) investigates with read-only git and drives
@@ -245,6 +254,7 @@ own login, so you log in once more there.
 | `~/.atrium/auth.json` | the login: the password's hash (and the made-up password, until you set yours), the secret that signs login cookies, the API token (`chmod 600`) |
 | `~/.atrium/uploads/` | composer attachments |
 | `~/.atrium/backups/` | the previous versions of config files saved from Settings (last 20 each) |
+| `~/.atrium/captures/captures.db` | the agents' model calls, requests and responses (credentials blanked; `capture.max_mb`, 1 GB by default; `chmod 600`) |
 | `~/.gemini/antigravity-cli/settings.json` | Antigravity's model, custom models (relays) and Gemini API key (`env`) — the Antigravity CLI's own file |
 | `~/.atrium/antigravity/` | Antigravity conversations: the runtime's state (`save/`), its data and JSONL transcripts (`data/brain/<id>/`), Atrium's index (`sessions/`) |
 | `<project>/.atrium/board.html` | the board (generated from `board.json`) |
