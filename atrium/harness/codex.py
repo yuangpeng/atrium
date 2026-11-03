@@ -545,7 +545,8 @@ class CodexLiveSession(LiveSession):
         provider = (cfg.get("model_providers") or {}).get(pid) or {}
         if not provider.get("base_url") or provider.get("supports_websockets"):
             return {}
-        url = self.spec.capture.base_url("codex", provider["base_url"], session=self.session_id or None)
+        headers = [*(provider.get("http_headers") or {}), *(provider.get("env_http_headers") or {})]  # blanked like credentials
+        url = self.spec.capture.base_url("codex", provider["base_url"], session=self.session_id or None, secret=headers)
         return {"model_providers": {pid: {"base_url": url}}} if url else {}
 
     async def _turn_command(self, name: str, args: str) -> None:

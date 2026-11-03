@@ -10,7 +10,11 @@ is changed on the way out: an ``Accept-Encoding`` offering what can't be read ba
 narrowed to gzip and deflate.
 
 A token stands for one agent and one upstream (``Route``), so what comes in on it is that agent's: its
-subagents' calls too, and those of model CLIs its tools start (they inherit its environment).
+subagents' calls too, and those of model CLIs its tools start (they inherit its environment). Such a process may
+outlive Atrium, so the port is the same after a restart when it is free, and the routes are kept in the database.
+An Atrium started from an agent first takes its environment back to the real address (``unwrap_inherited``).
+The proxy trusts what the system and the harness trust (``Tls``): a call the harness could make must not fail
+because it is captured.
 
 Every call carries the conversation so far, so most of an old call is in the calls after it, until a
 compaction: from then on the calls carry a summary instead. So the compaction itself (the harness asking the
@@ -31,6 +35,7 @@ import re
 import secrets
 import socket
 import sqlite3
+import ssl
 import time
 import urllib.parse
 import uuid
@@ -38,8 +43,9 @@ import zlib
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping, MutableMapping
 
+import certifi
 import httpx
 
 from .config import ATRIUM_HOME, config
@@ -58,14 +64,28 @@ READABLE = {"gzip", "x-gzip", "deflate", "identity"}  # content codings decoded 
 MAX_MARKS = 4000  # when the response's bytes came, to place each event of a stream in time
 ROW_KEYS = ("harness", "session", "method", "path", "host", "started", "ttfb", "duration", "status", "req_bytes", "resp_bytes",
             "turn", "error", "summary", "narrowed")
-# What a harness adds to the conversation to have the model summarize it (compaction), near the start of the last user
-# text: Claude Code appends it to the last user message (after a "Respond with TEXT ONLY" preamble), Codex and Antigravity
-# send it as a user message of its own. Codex on OpenAI's own provider posts to /responses/compact instead.
+# How a harness's request to have the model summarize the conversation (compaction) starts its last user text, and
+# what it says further on: Claude Code appends it to the last user message, Codex and Antigravity send it as a user
+# message of its own. Claude Code without the agent's prompt (when there is no prompt cache to share) has its own system
+# prompt instead; Codex on OpenAI's own provider posts to /responses/compact.
 COMPACTION_PROMPTS = (
-    "Your task is to create a detailed summary of the conversation so far",  # Claude Code
-    "You are performing a CONTEXT CHECKPOINT COMPACTION",  # Codex
-    "Write a continuation summary that will allow you",  # Antigravity
+    ("CRITICAL: Respond with TEXT ONLY", "create a detailed summary of the conversation so far"),  # Claude Code
+    ("Your task is to create a detailed summary of the conversation so far", ""),  # Claude Code, without that preamble
+    ("You are performing a CONTEXT CHECKPOINT COMPACTION", ""),  # Codex
+    ("You have been working on the task described above but have not yet completed it", "continuation summary"),  # Antigravity
 )
+SUMMARIZER_SYSTEM = "You are a helpful AI assistant tasked with summarizing conversations"  # Claude Code's
+# request headers blanked by their name too: a relay's own auth header (response headers: SECRET_HEADERS only, their
+# rate limits say "tokens")
+SECRET_NAME = re.compile(r"auth|key|token|secret|passw|signature|credential|cookie", re.I)
+# What a Claude Code process whose base URL is a capture proxy's also gets: that URL, the one it stands for ("" =
+# Anthropic's own API), and the CLI's switch for Anthropic's API behind a proxy (it takes any other base URL for a
+# gateway, and leaves out what only Anthropic's API has). A process started from the agent inherits them.
+CAPTURE_URL_ENV, UPSTREAM_ENV, FIRST_PARTY_ENV = "ATRIUM_CAPTURE_URL", "ATRIUM_CAPTURE_UPSTREAM", "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL"
+# What the harnesses add to the CAs they trust: Claude Code (Node), Codex, OpenSSL's
+CA_ENV = ("NODE_EXTRA_CA_CERTS", "CODEX_CA_CERTIFICATE", "SSL_CERT_FILE", "SSL_CERT_DIR")
+ROUTE_DAYS = 90  # a route outlives the agent it was made for: a process started from it may still use it
+RELEASE_DAYS = 7  # a session Atrium no longer finds: its kept calls are pruned like the others this long after its last
 
 
 # --------------------------------------------------------------------------
@@ -82,13 +102,50 @@ class CaptureContext:
         self.project = project
         self.session = session
         self.turn = turn
-        self.tokens: dict[tuple[str, str, str | None, str | None], str] = {}
+        self.tokens: dict[tuple[Any, ...], str] = {}  # a route's (harness, upstream, proxy, session, tls, secret) → its token
 
-    def base_url(self, harness: str, upstream: str, *, env: Mapping[str, str] | None = None, session: str | None = None) -> str | None:
+    def base_url(self, harness: str, upstream: str, *, env: Mapping[str, str] | None = None, session: str | None = None,
+                 secret: Iterable[str] = ()) -> str | None:
         """The proxy's URL for the calls the harness would send to ``upstream``; None leaves them alone (capture
-        off or not running). ``env``: the environment the harness makes its calls from (None: Atrium's), for
-        the proxy they would have gone through."""
-        return capture.route(self, harness, upstream, env=env, session=session)
+        off or not running, or a TLS setup the proxy can't reproduce). ``env``: the environment the harness makes
+        its calls from (None: Atrium's), for the proxy and the CAs they would have used. ``secret``: headers the
+        harness was configured to send, blanked like credentials."""
+        return capture.route(self, harness, upstream, env=env, session=session, secret=secret)
+
+
+@dataclass(frozen=True)
+class Tls:
+    """What a harness adds to its TLS connections: CA files or directories, and a client certificate."""
+
+    cas: tuple[str, ...] = ()
+    cert: str | None = None
+    key: str | None = None
+    password: str | None = field(default=None, repr=False)  # the key's: not kept in the database
+
+
+def tls_of(env: Mapping[str, str]) -> Tls:
+    return Tls(tuple(env[v] for v in CA_ENV if env.get(v)), env.get("CLAUDE_CODE_CLIENT_CERT") or None,
+               env.get("CLAUDE_CODE_CLIENT_KEY") or None, env.get("CLAUDE_CODE_CLIENT_KEY_PASSPHRASE") or None)
+
+
+def ssl_context(tls: Tls) -> ssl.SSLContext:
+    """The system's trust (the macOS keychain, Windows' store, OpenSSL's paths: truststore) and certifi's, plus what the
+    harness adds: a superset of what the harness trusted itself."""
+    try:
+        import truststore
+
+        ctx: ssl.SSLContext = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    except ImportError:
+        ctx = ssl.create_default_context()
+    ctx.load_verify_locations(certifi.where())
+    for ca in tls.cas:
+        if os.path.isdir(ca):
+            ctx.load_verify_locations(capath=ca)
+        else:
+            ctx.load_verify_locations(cafile=ca)
+    if tls.cert:
+        ctx.load_cert_chain(tls.cert, tls.key, tls.password)
+    return ctx
 
 
 @dataclass
@@ -100,6 +157,15 @@ class Route:
     proxy: str | None  # the proxy it would have reached it through
     context: CaptureContext
     session: str | None = None  # the agent's id when the harness knows it up front
+    tls: Tls = Tls()
+    secret: frozenset[str] = frozenset()  # header names (lower case) blanked like credentials
+
+    def spec(self) -> dict[str, Any]:
+        """What the database keeps of it, for a later run of Atrium: no passphrase, no proxy password."""
+        proxy = self.proxy and urllib.parse.urlsplit(self.proxy)
+        return {"harness": self.harness, "upstream": self.upstream, "session": self.session,
+                "proxy": proxy and urllib.parse.urlunsplit(proxy._replace(netloc=proxy.netloc.rsplit("@", 1)[-1])),
+                "cas": list(self.tls.cas), "cert": self.tls.cert, "key": self.tls.key, "secret": sorted(self.secret)}
 
 
 def _bypassed(host: str, no_proxy: str) -> bool:
@@ -138,15 +204,31 @@ def loopback_env(env: Mapping[str, str]) -> dict[str, str]:
     return {"NO_PROXY": value, "no_proxy": value}
 
 
+def unwrap_inherited(env: MutableMapping[str, str]) -> None:
+    """The environment of a process started from a captured Claude Code agent (an Atrium, say), back to the address its
+    base URL stands for: this process's own agents and calls then don't depend on that Atrium, nor go through two
+    proxies."""
+    url, upstream = env.pop(CAPTURE_URL_ENV, None), env.pop(UPSTREAM_ENV, None)
+    if url and env.get("ANTHROPIC_BASE_URL") == url:
+        env.pop(FIRST_PARTY_ENV, None)
+        if upstream:
+            env["ANTHROPIC_BASE_URL"] = upstream
+        else:
+            env.pop("ANTHROPIC_BASE_URL", None)
+
+
 # --------------------------------------------------------------------------
 # What a request and its answer were
 # --------------------------------------------------------------------------
 
 
-def _redact_headers(headers: list[tuple[str, str]]) -> list[list[str]]:
+def _redact_headers(headers: list[tuple[str, str]], secret: frozenset[str] = frozenset(), by_name: bool = True) -> list[list[str]]:
+    """Headers with credentials blanked: the usual ones, the ones the harness was configured to send (``secret``), and,
+    ``by_name``, any whose name says it is one."""
     out = []
     for k, v in headers:
-        if k.lower() in SECRET_HEADERS:
+        name = k.lower()
+        if name in SECRET_HEADERS or name in secret or (by_name and SECRET_NAME.search(name)):
             scheme = v.strip().split(" ", 1)[0] if " " in v.strip() else ""
             v = f"{scheme} •••" if scheme else "•••"
         out.append([k, v])
@@ -275,10 +357,14 @@ def _last_user_text(api: str, body: dict[str, Any]) -> str:
 
 
 def _is_compaction(api: str, path: str, body: dict[str, Any]) -> bool:
+    """Whether the request is a compaction: its last user text starts as a harness's instruction does (one quoting it in
+    the middle of a message isn't)."""
     if path.endswith("/responses/compact"):
         return True
-    start = " ".join(_last_user_text(api, body)[:1500].split())
-    return any(p in start for p in COMPACTION_PROMPTS)
+    if api == "anthropic" and SUMMARIZER_SYSTEM in " ".join(_texts(body.get("system"))):
+        return True
+    text = " ".join(_last_user_text(api, body)[:3000].split())
+    return any(text.startswith(start) and said in text for start, said in COMPACTION_PROMPTS)
 
 
 def _without_cache_marks(v: Any) -> Any:
@@ -330,7 +416,7 @@ def request_summary(path: str, body: Any) -> dict[str, Any]:
                  system=sum(map(len, system)), first=_first_line(system), stream=":streamGenerateContent" in path)
         s["kind"] = "count" if path.endswith(":countTokens") else "agent" if decls else "aux"
     if api != "other" and s.get("kind") != "count" and _is_compaction(api, path, body):
-        s["kind"] = "compact"
+        s["kind"], s["loop"] = "compact", s.get("kind")  # loop: what its tools make it, the agent's loop or a subagent's
     return s
 
 
@@ -482,6 +568,12 @@ class _Store:
     );
     CREATE INDEX IF NOT EXISTS exchanges_session ON exchanges (project, session, started);
     CREATE INDEX IF NOT EXISTS exchanges_started ON exchanges (started);
+    CREATE TABLE IF NOT EXISTS routes (
+        token TEXT PRIMARY KEY,
+        project TEXT NOT NULL,
+        created REAL NOT NULL,
+        spec TEXT NOT NULL  -- Route.spec()
+    );
     """
 
     def __init__(self, path: Path):
@@ -504,6 +596,7 @@ class _Store:
         db.execute("PRAGMA journal_size_limit = 8388608")  # the WAL shrinks back to 8 MB after a checkpoint
         db.executescript(self.SCHEMA)
         db.execute("UPDATE exchanges SET state = 'interrupted' WHERE state IN ('pending', 'streaming')")  # Atrium stopped mid-way
+        db.execute("DELETE FROM routes WHERE created < ?", (time.time() - ROUTE_DAYS * 86400,))
         self.total, self.kept = db.execute(
             "SELECT COALESCE(SUM(size), 0), COALESCE(SUM(CASE WHEN keep IS NULL THEN 0 ELSE size END), 0) FROM exchanges").fetchone()
         self.db = db
@@ -542,13 +635,20 @@ class _Store:
         if old[1]:
             self.kept += size - old[0]
 
-    def keep_before(self, project: str, session: str, conv: str, before: float) -> dict[str, Any] | None:
+    def keep_before(self, project: str, session: str, conv: str, loop: str | None, before: float) -> dict[str, Any] | None:
         """Keep the agent's last call of conversation ``conv`` before ``before`` (a compaction's start): the fullest
-        history of the conversation the compaction replaces. Returns its row, or None when there is none."""
+        history of the conversation the compaction replaces. When the compaction rewrote the conversation's start
+        (Claude Code's after a prompt too long: images left out, the oldest messages dropped), the last call of the same
+        thread and ``loop`` kind (agent, sub) instead. Returns its row, or None when there is none."""
         assert self.db
-        r = self.db.execute("SELECT id, state, meta, size, keep FROM exchanges WHERE project = ? AND session = ? AND conv = ? "
-                            "AND kind IN ('agent', 'sub') AND started < ? ORDER BY started DESC LIMIT 1",
-                            (project, session, conv, before)).fetchone()
+        query = ("SELECT id, state, meta, size, keep FROM exchanges WHERE project = ? AND session = ? AND started < ? AND {} "
+                 "AND kind IN ({}) ORDER BY started DESC LIMIT 1")
+        r = self.db.execute(query.format("conv = ?", "'agent', 'sub'"), (project, session, before, conv)).fetchone()
+        if not r:
+            thread = conv.split(":", 1)[0] + ":"
+            kinds = (loop,) if loop in ("agent", "sub") else ("agent", "sub")
+            r = self.db.execute(query.format("substr(conv, 1, ?) = ?", ", ".join("?" * len(kinds))),
+                                (project, session, before, len(thread), thread, *kinds)).fetchone()
         if not r:
             return None
         rid, state, meta, size, keep = r
@@ -558,16 +658,47 @@ class _Store:
             self.kept += size
         return _row(rid, state, json.loads(meta), keep, conv)
 
+    def release_project(self, project: str) -> None:
+        """Its kept calls become calls like the others (the project was removed from Atrium)."""
+        assert self.db
+        self.kept -= self.db.execute("SELECT COALESCE(SUM(size), 0) FROM exchanges WHERE project = ? AND keep IS NOT NULL", (project,)).fetchone()[0]
+        self.db.execute("UPDATE exchanges SET keep = NULL WHERE project = ? AND keep IS NOT NULL", (project,))
+
+    def release_gone(self, project: str, known: set[str], before: float) -> int:
+        """The same for the project's sessions not in ``known`` whose last call is older than ``before``. Returns how
+        many sessions."""
+        assert self.db
+        n = 0
+        for session, last in self.db.execute("SELECT session, MAX(started) FROM exchanges WHERE project = ? GROUP BY session "
+                                             "HAVING SUM(keep IS NOT NULL) > 0", (project,)).fetchall():
+            if session not in known and last < before:
+                self.kept -= self.db.execute("SELECT COALESCE(SUM(size), 0) FROM exchanges WHERE project = ? AND session = ? AND keep IS NOT NULL",
+                                             (project, session)).fetchone()[0]
+                self.db.execute("UPDATE exchanges SET keep = NULL WHERE project = ? AND session = ?", (project, session))
+                n += 1
+        return n
+
+    def add_route(self, token: str, project: str, spec: dict[str, Any]) -> None:
+        if self.db:
+            self.db.execute("INSERT OR REPLACE INTO routes VALUES (?, ?, ?, ?)", (token, project, time.time(), json.dumps(spec)))
+
+    def route(self, token: str) -> tuple[str, dict[str, Any]] | None:
+        assert self.db
+        r = self.db.execute("SELECT project, spec FROM routes WHERE token = ?", (token,)).fetchone()
+        return (r[0], json.loads(r[1])) if r else None
+
     def rows(self, project: str, session: str) -> list[dict[str, Any]]:
         assert self.db
         cur = self.db.execute("SELECT id, state, meta, keep, conv FROM exchanges WHERE project = ? AND session = ? ORDER BY started",
                               (project, session))
         return [_row(rid, state, json.loads(meta), keep, conv) for rid, state, meta, keep, conv in cur]
 
-    def get(self, project: str, rid: str) -> tuple[dict[str, Any], dict[str, Any], bytes, bytes] | None:
-        """One row (with ``state``, ``keep`` and ``conv`` in its meta), its extra, and both bodies."""
+    def get(self, project: str, rid: str, request: bool = True) -> tuple[dict[str, Any], dict[str, Any], bytes, bytes] | None:
+        """One row (with ``state``, ``keep`` and ``conv`` in its meta), its extra, and both bodies (without ``request``,
+        an empty request body)."""
         assert self.db
-        r = self.db.execute("SELECT meta, extra, state, keep, conv, req, resp FROM exchanges WHERE id = ? AND project = ?", (rid, project)).fetchone()
+        r = self.db.execute(f"SELECT meta, extra, state, keep, conv, {'req' if request else 'NULL'}, resp FROM exchanges WHERE id = ? AND project = ?",
+                            (rid, project)).fetchone()
         if not r:
             return None
         meta, extra, state, keep, conv, req, resp = r
@@ -658,12 +789,14 @@ class Capture:
         self.port: int | None = None
         self._routes: dict[str, Route] = {}
         self._active: dict[str, _Exchange] = {}
-        self._clients: dict[str | None, httpx.AsyncClient] = {}
+        self._clients: dict[tuple[str | None, Tls], httpx.AsyncClient] = {}
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="atrium-capture")
         self._store = _Store(DB_PATH)
         self._server: Any = None
         self._task: asyncio.Task | None = None
         self._pruned = 0.0
+        self._released: dict[str, float] = {}  # project → when release_gone last looked
+        self.turn_of: Callable[[str], dict[str, Any] | None] = lambda _sid: None  # a session's turn (SessionManager's), for restored routes
 
     @property
     def enabled(self) -> bool:
@@ -687,9 +820,23 @@ class Capture:
         except Exception:
             log.exception("can't open %s: model calls go out without being recorded", DB_PATH)
             return
+        port_file = DB_PATH.parent / "port"
+        try:
+            last = int(port_file.read_text())
+        except (OSError, ValueError):
+            last = 0
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind(("127.0.0.1", 0))
+        # the last run's port, which processes started from its agents still have in their environment. On a restart that
+        # run may still be closing its agents, port held: it gets a while (another program holding it delays one start only)
+        for _ in range(40 if last else 0):
+            try:
+                sock.bind(("127.0.0.1", last))
+                break
+            except OSError:
+                await asyncio.sleep(0.25)
+        else:
+            sock.bind(("127.0.0.1", 0))
         server = _uvicorn_server(self)
         self._task = asyncio.create_task(server.serve(sockets=[sock]), name="capture-proxy")
         for _ in range(200):
@@ -701,6 +848,8 @@ class Capture:
             return
         self._server = server
         self.port = sock.getsockname()[1]
+        with contextlib.suppress(OSError):
+            port_file.write_text(str(self.port))
         log.info("model calls are captured through 127.0.0.1:%d", self.port)
 
     async def stop(self) -> None:
@@ -717,7 +866,7 @@ class Capture:
         self._pool.shutdown(wait=False)
 
     def route(self, context: CaptureContext, harness: str, upstream: str, *, env: Mapping[str, str] | None = None,
-              session: str | None = None) -> str | None:
+              session: str | None = None, secret: Iterable[str] = ()) -> str | None:
         if not self.port or not self.enabled:
             return None
         upstream = upstream.strip().rstrip("/")
@@ -726,29 +875,56 @@ class Capture:
             return None
         if parts.hostname in LOOPBACK and parts.port == self.port:  # ours already
             return None
-        proxy = outbound_proxy(upstream, os.environ if env is None else env)
+        env = os.environ if env is None else env
+        proxy = outbound_proxy(upstream, env)
         if proxy and proxy.lower().startswith("socks") and importlib.util.find_spec("socksio") is None:
             log.warning("not capturing %s's calls to %s: they go through a SOCKS proxy, and httpx can't without socksio", harness, parts.netloc)
             return None
-        key = (harness, upstream, proxy, session)
+        tls = tls_of(env) if parts.scheme == "https" else Tls()
+        try:
+            self._client(proxy, tls)
+        except (OSError, ValueError, ssl.SSLError) as e:  # a call the harness could make must not fail for being captured
+            log.warning("not capturing %s's calls to %s: their TLS setup can't be reproduced (%s)", harness, parts.netloc, e)
+            return None
+        key = (harness, upstream, proxy, session, tls, frozenset(h.lower() for h in secret))
         token = context.tokens.get(key)
         if token is None:
             token = context.tokens[key] = secrets.token_urlsafe(16)
-            self._routes[token] = Route(token, context.project, harness, upstream, proxy, context, session)
+            route = self._routes[token] = Route(token, context.project, harness, upstream, proxy, context, session, tls, key[-1])
+            self._pool.submit(self._store.add_route, token, route.project, route.spec())
         return f"http://127.0.0.1:{self.port}/{token}"
 
-    def _client(self, proxy: str | None) -> httpx.AsyncClient:
-        c = self._clients.get(proxy)
+    def _client(self, proxy: str | None, tls: Tls) -> httpx.AsyncClient:
+        """A client for the proxy and TLS setup (made at the first call: a bad CA or certificate raises here)."""
+        c = self._clients.get((proxy, tls))
         if c is None:
             c = httpx.AsyncClient(
-                proxy=proxy, trust_env=False, follow_redirects=False,
+                proxy=proxy, verify=ssl_context(tls), trust_env=False, follow_redirects=False,
                 timeout=httpx.Timeout(connect=30, read=None, write=120, pool=None),  # the harness keeps its own time
                 limits=httpx.Limits(max_connections=None, max_keepalive_connections=32),
             )
             for k in list(c.headers):  # nothing of httpx's own (User-Agent, Accept…): only what the harness sent
                 del c.headers[k]
-            self._clients[proxy] = c
+            self._clients[(proxy, tls)] = c
         return c
+
+    async def _restore(self, token: str) -> Route | None:
+        """A route of an earlier run of Atrium, which a process started from one of its agents still uses."""
+        got = await self._db(self._store.route, token) if self._store.db and re.fullmatch(r"[\w-]{16,64}", token) else None
+        if not got:
+            return None
+        project, spec = got
+        session = spec.get("session")
+        tls = Tls(tuple(spec.get("cas") or ()), spec.get("cert"), spec.get("key"))
+        route = Route(token, project, spec["harness"], spec["upstream"], spec.get("proxy"), CaptureContext(project, lambda: session, self.turn_of),
+                      session, tls, frozenset(spec.get("secret") or ()))
+        try:
+            self._client(route.proxy, tls)
+        except (OSError, ValueError, ssl.SSLError) as e:
+            log.warning("capture route of an earlier run can't be restored: %s", e)
+            return None
+        self._routes[token] = route
+        return route
 
     # ---- the proxy ---------------------------------------------------------------
     async def __call__(self, scope: dict[str, Any], receive: Callable[..., Any], send: Callable[..., Any]) -> None:
@@ -756,9 +932,10 @@ class Capture:
             return
         raw = (scope.get("raw_path") or scope["path"].encode()).decode("latin-1")
         token, _, rest = raw.lstrip("/").partition("/")
-        route = self._routes.get(token)
+        route = self._routes.get(token) or await self._restore(token)
         if route is None:
-            return await _reply(send, 404, "Unknown capture route: Atrium restarted since this agent's process started. Start it again.")
+            return await _reply(send, 404, "Unknown capture route: it was made for a process of an Atrium that has forgotten it (or another "
+                                           "ATRIUM_HOME's). Start the agent again.")
         body = bytearray()
         while True:
             msg = await receive()
@@ -786,11 +963,11 @@ class Capture:
             "path": urllib.parse.unquote(urllib.parse.urlsplit(route.upstream).path.rstrip("/") + path),  # as the upstream sees it
             "host": urllib.parse.urlsplit(route.upstream).netloc.rsplit("@", 1)[-1], "started": started, "turn": turn,
             "req_bytes": len(body), "narrowed": narrowed, "state": "pending",
-        }, extra={"url": _redact_url(url), "req_headers": _redact_headers(headers)})
+        }, extra={"url": _redact_url(url), "req_headers": _redact_headers(headers, route.secret)})
         record = self.enabled
         if record:
             self._begin(rec)
-        client = self._client(route.proxy)
+        client = self._client(route.proxy, route.tls)
         try:
             resp = await client.send(client.build_request(scope["method"], url, headers=out, content=body), stream=True)
         except Exception as e:  # unreachable, refused, timed out: what the harness would have met, as a 502
@@ -801,7 +978,7 @@ class Capture:
                 await self._end(rec, "error", error=text)
             return
         rec.meta.update(status=resp.status_code, ttfb=round(time.time() - started, 3), state="streaming")
-        rec.extra["resp_headers"] = _redact_headers([(k.decode("latin-1"), v.decode("latin-1")) for k, v in resp.headers.raw])
+        rec.extra["resp_headers"] = _redact_headers([(k.decode("latin-1"), v.decode("latin-1")) for k, v in resp.headers.raw], route.secret, by_name=False)
         state, error = "done", None
         try:
             await send({"type": "http.response.start", "status": resp.status_code,
@@ -864,13 +1041,18 @@ class Capture:
                 summary = {"api": api_of(rec.meta["path"])}
             sid, thread, head = rec.meta["session"], summary.get("thread"), conversation_head(summary["api"], body)
             rec.conv = f"{thread if thread and thread != sid else ''}:{head}" if head else None
+            if thread and thread == sid:  # Codex: the agent's own thread; another one is a sub-agent's
+                summary.pop("thread")
+            elif thread and summary.get("kind") == "agent":
+                summary["kind"] = "sub"
             rec.keep = "compact" if summary.get("kind") == "compact" else None
             rec.meta["summary"] = summary
             kept: list[dict[str, Any]] = []
             if self._store.db:
                 self._store.begin(rec.id, rec.route.project, sid, rec.meta["started"], dict(rec.meta), dict(rec.extra), rec.request,
                                   rec.conv, rec.keep)
-                before = self._store.keep_before(rec.route.project, sid, rec.conv, rec.meta["started"]) if rec.keep and rec.conv else None
+                before = (self._store.keep_before(rec.route.project, sid, rec.conv, summary.get("loop"), rec.meta["started"])
+                          if rec.keep and rec.conv else None)
                 if before:
                     kept.append(before)
             return kept
@@ -899,8 +1081,8 @@ class Capture:
 
         def job() -> None:  # worker thread, after _begin's
             summary = dict(rec.meta.get("summary") or {"api": api_of(rec.meta["path"])})
-            if summary.get("thread") == sid:
-                summary.pop("thread")  # the agent's own thread: only a sub-agent's is worth showing
+            if summary.get("thread") == sid:  # as in _begin, for a session known only by now
+                summary.pop("thread")
             elif summary.get("thread") and summary.get("kind") == "agent":
                 summary["kind"] = "sub"
             resp = b"".join(rec.chunks)
@@ -933,9 +1115,9 @@ class Capture:
         rows = [live.pop(r["id"], r) for r in stored] + list(live.values())
         return sorted(rows, key=lambda r: r.get("started") or 0)
 
-    async def detail(self, project: str, rid: str) -> dict[str, Any] | None:
+    async def detail(self, project: str, rid: str, request: bool = True) -> dict[str, Any] | None:
         """One exchange in full: its row, URL, headers, the times its bytes came, and both bodies (one still coming
-        is what came so far)."""
+        is what came so far). Without ``request``, no request body."""
         rec = self._active.get(rid)
         meta: dict[str, Any]
         extra: dict[str, Any]
@@ -943,21 +1125,39 @@ class Capture:
             meta = {**rec.meta, "state": rec.meta.get("state") or "pending", "keep": rec.keep, "conv": rec.conv}
             extra, req, resp = {**rec.extra, "marks": list(rec.marks)}, rec.request, b"".join(rec.chunks)
         elif self._store.db:
-            got = await self._db(self._store.get, project, rid)
+            got = await self._db(self._store.get, project, rid, request)
             if not got:
                 return None
             meta, extra, req, resp = got
         else:
             return None
 
-        def bodies() -> tuple[dict[str, Any], dict[str, Any]]:
-            return (_body(req, _header(extra.get("req_headers"), "content-encoding")),
-                    _body(resp, _header(extra.get("resp_headers"), "content-encoding")))
+        def bodies() -> dict[str, Any]:
+            out = {"response": _body(resp, _header(extra.get("resp_headers"), "content-encoding"))}
+            if request:
+                out["request"] = _body(req, _header(extra.get("req_headers"), "content-encoding"))
+            return out
 
-        request, response = await asyncio.to_thread(bodies)
         return {**_row(rid, meta["state"], meta, meta.get("keep"), meta.get("conv")), "url": extra.get("url"),
                 "req_headers": extra.get("req_headers") or [], "resp_headers": extra.get("resp_headers") or [], "marks": extra.get("marks") or [],
-                "request": request, "response": response}
+                **await asyncio.to_thread(bodies)}
+
+    async def release_project(self, project: str) -> None:
+        """A project removed from Atrium: its kept calls are pruned like the others from now on."""
+        if self._store.db:
+            await self._db(self._store.release_project, project)
+
+    async def release_gone(self, project: str, known: Iterable[str]) -> None:
+        """Sessions of the project Atrium no longer finds (``known``: the ones it does; their transcript was deleted
+        elsewhere): from RELEASE_DAYS after their last call, their kept calls are pruned like the others. Looks at most
+        once an hour per project, and not when it finds no session at all."""
+        known, now = set(known), time.time()
+        if not self._store.db or not known or now - self._released.get(project, 0) < 3600:
+            return
+        self._released[project] = now
+        n = await self._db(self._store.release_gone, project, known, now - RELEASE_DAYS * 86400)
+        if n:
+            log.info("capture: %d sessions of %s are gone; their kept calls are pruned like the others from now on", n, project)
 
     async def forget(self, project: str, session: str) -> None:
         """Delete what was recorded of a session (it was deleted, or the human cleared it)."""

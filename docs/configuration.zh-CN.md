@@ -264,18 +264,33 @@ Atrium 在一个自己的回环端口上运行这个代理（只绑 `127.0.0.1`�
 agent 的 base URL 指向它。代理把每个请求原样转发到 harness 本来要发往的地址（同样经过 `HTTPS_PROXY`），
 响应边收边转：流式的仍然是流式。
 
-- 写盘之前先抹掉凭证：`Authorization`、`x-api-key`、`x-goog-api-key`、cookie，以及 URL 里的 `key=`。请求体和
-  响应体完整保留，里面有整段对话，包括 agent 读过的文件。数据库只有你自己能读。
+- 它信任的 CA 比 harness 自己的更多：系统的（macOS 钥匙串、Windows 证书库、OpenSSL 的路径）、certifi 的，以及
+  给 harness 配置的（`NODE_EXTRA_CA_CERTS`、`CODEX_CA_CERTIFICATE`、`SSL_CERT_FILE`、`SSL_CERT_DIR`）。它还会出示
+  Claude Code 的客户端证书（`CLAUDE_CODE_CLIENT_CERT`、`CLAUDE_CODE_CLIENT_KEY`）。复现不了的配置（比如读不到的 CA
+  文件）就不抓包：那个 agent 直接调用它的 API。
+- 写盘之前先抹掉凭证：`Authorization`、`x-api-key`、`x-goog-api-key`、cookie、名字表明是凭证的请求头（`key`、
+  `token`、`secret`、`auth` 等）、`ANTHROPIC_CUSTOM_HEADERS` 或 Codex provider 的 `http_headers` /
+  `env_http_headers` 添加的头，以及 URL 里的 `key=`。请求体和响应体完整保留，里面有整段对话，包括 agent 读过的
+  文件。数据库只有你自己能读。
 - 转发时只改一处：如果 `Accept-Encoding` 里提供了 br 或 zstd，会改成只提供 gzip 和 deflate，这样响应才能被解开
   查看（Request 视图里能看到 harness 原本提供的值）。
 - 删除 agent 时会一起删除它的调用记录；标签页上的垃圾桶按钮也能删除。
 - **压缩相关的调用会保留。**每次调用都带着到当时为止的整段对话，所以旧调用的内容大多也在后面的调用里；直到一次
   压缩：从那以后，调用里带的是总结。所以压缩调用（harness 让模型写这份总结的那次调用，里面是整段对话；标签页里
   标为 *Compact*）和压缩前 agent 的最后一次调用都会保留（📌）：不计入 `capture.max_mb`，清理时也跳过它们，只有
-  删除 agent 或它的调用记录时才会删掉。Atrium 靠各家 harness 加进对话的那段指令来认出压缩：Claude Code 的
-  "Your task is to create a detailed summary of the conversation so far"、Codex 的 "You are performing a CONTEXT
-  CHECKPOINT COMPACTION"、Antigravity 的 "Write a continuation summary"。harness 换了说法的版本，要等 Atrium
-  跟着更新后才认得出来。
+  删除 agent 或它的调用记录时才会删掉。如果压缩改写了对话的开头（Claude Code 在提示过长之后的压缩：去掉图片、
+  丢掉最早的消息），就改为保留同一线程里 agent 的最后一次调用。从 Atrium 移除项目后，这个项目的保留调用变回
+  普通调用；Atrium 已经找不到的会话（transcript 在别处被删了），在最后一次调用一周之后也一样。
+  Atrium 看各家 harness 加进对话的那段指令是怎么开头的来认出压缩（引用它、前面还有别的话的消息不算）：Claude Code
+  的 "CRITICAL: Respond with TEXT ONLY… Your task is to create a detailed summary of the conversation so far"（或它
+  专门用来总结的系统提示词）、Codex 的 "You are performing a CONTEXT CHECKPOINT COMPACTION"（或调用
+  `/responses/compact`）、Antigravity 的 "You have been working on the task described above… Write a continuation
+  summary"。harness 换了说法的版本，要等 Atrium 跟着更新后才认得出来。
+- **agent 启动的进程。** Claude Code agent 的环境里，`ANTHROPIC_BASE_URL` 是这个代理，所以它启动的进程（比如跑
+  `claude -p` 的脚本）会继承下来，它们的调用记在这个 agent 名下。它们还会拿到 `ATRIUM_CAPTURE_URL`（代理的地址）和
+  `ATRIUM_CAPTURE_UPSTREAM`（它代替的地址，`""` = Anthropic 的 API）。这样的进程可能比 Atrium 活得久：代理在端口
+  空闲时会再用同一个端口，路由保留 90 天，所以 Atrium 重启后它们的调用照样能用。从 agent 里启动的 Atrium（比如测试
+  实例）会先把自己的环境改回 `ATRIUM_CAPTURE_UPSTREAM`：它自己的 agent 经它自己的代理调用 API，而不是经过两层代理。
 
 哪些调用会经过代理：
 
@@ -337,7 +352,10 @@ $CLAUDE auth status
   Atrium `mcp_servers` 里的服务器；`~/.atrium/uploads`（附件）的读取权限。
 - **去掉**：开启 `web.replace_builtin_web_tools` 时去掉 WebFetch；有 Serper key 时再去掉 WebSearch。
 - **API 地址**，在 `capture.enabled` 开启时：`ANTHROPIC_BASE_URL` 指向 Atrium 的抓包代理，再由代理把每次调用
-  转发到你配置里的地址（见[请求抓取](#请求抓取)）。`NO_PROXY` 会加上回环地址，好让 CLI 直接连到代理。
+  转发到你配置里的地址（见[请求抓取](#请求抓取)）。`NO_PROXY` 会加上回环地址，好让 CLI 直接连到代理；
+  `ATRIUM_CAPTURE_URL` / `ATRIUM_CAPTURE_UPSTREAM` 记下替换了什么。调用发往 Anthropic 自己的 API 时，还会设
+  `_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL=1`：否则 CLI 会把任何别的 base URL 当成网关，不再发送只给 Anthropic
+  API 的内容（`cch=` 之类的 billing 字段、`diagnostics` 字段）。
 
 其他一切（环境变量、hooks、插件、skills、Claude Code 自己的 MCP 服务器）都和在命令行里一样。Tracker 用
 Claude Code 调用模型时只读 `~/.claude/settings.json`（那里配置的中转站同样生效），也不带任何工具。
@@ -575,6 +593,7 @@ Claude Code 的配置可以在 `env` 里另加变量；Antigravity 配置的 `en
 | `GEMINI_API_KEY`、`GOOGLE_GEMINI_BASE_URL`、Vertex AI 的变量 | Antigravity 用的，在它配置文件的 `env` 没有设置时生效（见 [Antigravity](#antigravity)）。 |
 | `ANTIGRAVITY_HARNESS_PATH` | 用另一个 Antigravity 运行时二进制，代替 SDK wheel 里的那个。 |
 | `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` | 原样传给每个 agent。开启 `capture.enabled` 时，Claude Code 和 Codex 的 `NO_PROXY` 会加上回环地址，抓包代理再按它们本来会用的代理把调用发出去。 |
+| `ATRIUM_CAPTURE_URL`、`ATRIUM_CAPTURE_UPSTREAM` | Atrium 给被抓包的 Claude Code agent 设置的：代理的地址，以及它代替的地址。带着它们启动的 Atrium 会让自己的 agent 改用 `ATRIUM_CAPTURE_UPSTREAM`（见[请求抓取](#请求抓取)）。 |
 
 ## 检查配置
 
@@ -594,6 +613,7 @@ Claude Code 的配置可以在 `env` 里另加变量；Antigravity 配置的 `en
 | Codex 里缺少某个 MCP 服务器 | Atrium 的 `mcp_servers` 只给 Claude Code 和 Antigravity；Codex 读 `config.toml` 里的 `[mcp_servers]`。 |
 | Antigravity 不可用，提示 "Needs the API key of …" | 在它配置文件里设置的中转站只用该文件 `env` 里的 key。 |
 | 正在运行的 agent 看不到修改 | harness 配置在 agent 进程启动时才生效：新建的 agent，以及 `sessions.idle_close_minutes` 之后被重新唤醒的 agent。 |
+| agent 的模型调用失败，报 "Atrium's capture proxy" 的 502 | 代理连不上 API，消息里写了原因（不信任的证书、中间的代理）。`"capture": {"enabled": false}` 让之后启动的 agent 直接调用它们的 API。 |
 | Requests 里看不到某个 agent 的调用 | 它的进程是在开启 `capture.enabled` 之前启动的，或者它的 harness 端点不经过代理（见[请求抓取](#请求抓取)）。 |
 | 发送按钮旁边没有麦克风 | `voice.base_url` 或 `voice.asr_model` 为空，或者页面是在设置它们之前打开的：在 ⚙ Settings 里保存，或刷新页面。 |
 | 麦克风提示需要安全的页面 | 浏览器只把麦克风给 HTTPS 页面和 `localhost`。 |

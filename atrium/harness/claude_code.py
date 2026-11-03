@@ -11,6 +11,7 @@ import re
 import shutil
 import threading
 import time
+import urllib.parse
 import uuid
 from pathlib import Path
 from typing import Any, cast
@@ -48,7 +49,7 @@ from claude_agent_sdk import (
 )
 
 from .. import gitops
-from ..capture import loopback_env
+from ..capture import CAPTURE_URL_ENV, FIRST_PARTY_ENV, UPSTREAM_ENV, loopback_env
 from ..config import UPLOADS_DIR
 from .base import (
     Attachment, Compaction, Emit, FileEdit, ForkPoint, Harness, Item, LiveSession, LiveSpec, Rewind, SessionSummary, SlashCommand, SubagentSummary,
@@ -63,6 +64,7 @@ MAX_INLINE_IMAGE_B64 = 3_000_000  # history images above this are shown as a pla
 EFFORTS = ["low", "medium", "high", "xhigh", "max"]
 EFFORT_ENV = "CLAUDE_CODE_EFFORT_LEVEL"
 CLI_DEFAULT_EFFORT = "medium"  # what Claude Code sends when nothing sets an effort (seen with 2.1.310 on Opus 5.5)
+ANTHROPIC_API = "https://api.anthropic.com"  # where the CLI's calls go without ANTHROPIC_BASE_URL
 AGENT_TASKS = (None, "local_agent", "remote_agent")  # task types that are subagents (None: older CLIs)
 TASK_STATUS = {"completed": "done", "failed": "failed", "stopped": "stopped", "killed": "stopped"}
 SUBAGENT_STALE = 300  # a subagent mid-turn whose transcript sat still this long (seconds) is presumed stopped
@@ -111,15 +113,28 @@ def _settings_env(cwd: str) -> dict[str, str]:
 
 def _capture_env(spec: LiveSpec, session_id: str) -> dict[str, str]:
     """Flag-settings env sending the session's API calls through Atrium's capture proxy (capture.py): its address as
-    ANTHROPIC_BASE_URL, and loopback in NO_PROXY so the CLI reaches it directly. Empty when capture is off, or when the
-    calls go to Bedrock, Vertex or Foundry, whose endpoints don't take a base URL this way."""
+    ANTHROPIC_BASE_URL, and loopback in NO_PROXY so the CLI reaches it directly. Also the address it stands for, for the
+    processes the agent starts (capture.unwrap_inherited), and, for Anthropic's own API, the CLI's switch that keeps
+    it taken for that rather than for a gateway. Empty when capture is off, or when the calls go to Bedrock, Vertex or
+    Foundry, whose endpoints don't take a base URL this way."""
     if not spec.capture:
         return {}
     env = _settings_env(spec.cwd)
     if any(env.get(v, "").strip().lower() not in ("", "0", "false") for v in ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY")):
         return {}
-    url = spec.capture.base_url("claude-code", env.get("ANTHROPIC_BASE_URL") or "https://api.anthropic.com", env=env, session=session_id)
-    return {"ANTHROPIC_BASE_URL": url, **loopback_env(env)} if url else {}
+    upstream = env.get("ANTHROPIC_BASE_URL") or ""
+    url = spec.capture.base_url("claude-code", upstream or ANTHROPIC_API, env=env, session=session_id, secret=_custom_headers(env))
+    if not url:
+        return {}
+    out = {"ANTHROPIC_BASE_URL": url, CAPTURE_URL_ENV: url, UPSTREAM_ENV: upstream, **loopback_env(env)}
+    if urllib.parse.urlsplit(upstream or ANTHROPIC_API).hostname == "api.anthropic.com":
+        out[FIRST_PARTY_ENV] = "1"
+    return out
+
+
+def _custom_headers(env: dict[str, str]) -> list[str]:
+    """The names of the headers ANTHROPIC_CUSTOM_HEADERS adds ("Name: value" lines)."""
+    return [line.split(":", 1)[0].strip() for line in env.get("ANTHROPIC_CUSTOM_HEADERS", "").splitlines() if ":" in line]
 
 
 def config_defaults() -> tuple[str | None, str]:

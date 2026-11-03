@@ -30,6 +30,28 @@ const KEEP: Record<string, string> = {
 };
 const LIVE = new Set(["pending", "streaming"]);
 
+/** The calls looked at last, finished ones only (they don't change). A few: each holds a whole conversation. */
+class Recent {
+  private items = new Map<string, CaptureDetail>();
+  constructor(private max = 12) {}
+  get(id: string) {
+    const d = this.items.get(id);
+    if (d) this.items.delete(id), this.items.set(id, d); // the most recent last
+    return d;
+  }
+  has(id: string) {
+    return this.items.has(id);
+  }
+  set(id: string, d: CaptureDetail) {
+    this.items.delete(id);
+    this.items.set(id, d);
+    for (const old of this.items.keys()) if (this.items.size > this.max) this.items.delete(old);
+  }
+  clear() {
+    this.items.clear();
+  }
+}
+
 const header = (list: [string, string][] | undefined, name: string) => list?.find(([k]) => k.toLowerCase() === name)?.[1] ?? "";
 const clock = (ts: number) => new Date(ts * 1000).toLocaleTimeString([], { hour12: false });
 
@@ -88,7 +110,7 @@ export function RequestsPanel() {
   const [data, setData] = useState<{ enabled: boolean; running: boolean; rows: CaptureRow[] } | null>(null);
   const [sel, setSel] = useState<string | null>(null);
   const [width, setWidth] = useState(() => Number(localStorage.getItem(LIST_KEY)) || 0);
-  const cache = useRef(new Map<string, CaptureDetail>()); // finished calls, which don't change
+  const cache = useRef(new Recent());
   useEffect(() => void (width && localStorage.setItem(LIST_KEY, String(width))), [width]);
 
   const load = useCallback(() => {
@@ -98,6 +120,7 @@ export function RequestsPanel() {
   useEffect(() => {
     setData(null);
     setSel(null);
+    cache.current.clear(); // another agent's calls
     load();
   }, [load]);
   useEffect(() => socket.onReconnect(load), [load]);
@@ -262,16 +285,21 @@ function RowView({ r, on, pick }: { r: CaptureRow; on: boolean; pick: () => void
 
 // ---------------------------------------------------------------- one call
 
-function Detail({ pid, row, rows, cache, back }: { pid: string; row: CaptureRow; rows: CaptureRow[]; cache: Map<string, CaptureDetail>; back?: () => void }) {
+function Detail({ pid, row, rows, cache, back }: { pid: string; row: CaptureRow; rows: CaptureRow[]; cache: Recent; back?: () => void }) {
   const toast = useApp((s) => s.toast);
   const [d, setD] = useState<CaptureDetail | null>(() => cache.get(row.id) ?? null);
+  const shown = useRef(d);
   const [err, setErr] = useState("");
   const [tab, setTab] = useState<Tab>(() => (localStorage.getItem(TAB_KEY) as Tab) || "overview");
   const live = LIVE.has(row.state);
+  // the whole call once; then, while its answer comes (and when it has ended), only the answer: the request doesn't change
   const fetchIt = useCallback(() => {
-    api.requestDetail(pid, row.id).then(
+    const have = shown.current;
+    const got: Promise<CaptureDetail> = have ? api.requestAnswer(pid, row.id).then((x) => ({ ...x, request: have.request })) : api.requestDetail(pid, row.id);
+    got.then(
       (x) => {
         if (!LIVE.has(x.state)) cache.set(x.id, x);
+        shown.current = x;
         setD(x);
         setErr("");
       },
@@ -281,7 +309,7 @@ function Detail({ pid, row, rows, cache, back }: { pid: string; row: CaptureRow;
   useEffect(() => {
     if (!cache.has(row.id)) fetchIt();
   }, [fetchIt, row.state, cache, row.id]);
-  useInterval(fetchIt, live ? 1500 : null); // what has come of an answer still streaming
+  useInterval(fetchIt, live && tab !== "request" ? 1500 : null); // what has come of an answer still streaming
   const pickTab = (t: Tab) => (setTab(t), localStorage.setItem(TAB_KEY, t));
   const copy = (text: string, what: string) =>
     void navigator.clipboard.writeText(text).then(
@@ -532,7 +560,7 @@ function Section({ id, title, meta, badge, closed, action, children }: { id: str
   );
 }
 
-function Overview({ pid, req, ans, prevRow, cache, stop }: { pid: string; req: Request | null; ans: Answer | null; prevRow: CaptureRow | null; cache: Map<string, CaptureDetail>; stop?: string }) {
+function Overview({ pid, req, ans, prevRow, cache, stop }: { pid: string; req: Request | null; ans: Answer | null; prevRow: CaptureRow | null; cache: Recent; stop?: string }) {
   const [prev, setPrev] = useState<Request | null>(null);
   const [showSame, setShowSame] = useState(false);
   const prevId = prevRow?.id;

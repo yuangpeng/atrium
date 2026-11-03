@@ -22,7 +22,7 @@ from . import __version__, changes, configfiles, fs, gitops, lsp, voice
 from .auth import AUTH_PATH, AuthMiddleware, auth
 from .auth import router as auth_router
 from .board import pages as board_pages
-from .capture import capture
+from .capture import capture, unwrap_inherited
 from .config import UPLOADS_DIR, config
 from .events import Subscriber, hub
 from .gitagent import set_view
@@ -61,10 +61,12 @@ def _on_project_loaded(project: Project) -> None:
 async def lifespan(_app: FastAPI):
     for v in _NESTING_VARS:
         os.environ.pop(v, None)
+    unwrap_inherited(os.environ)  # started from a captured agent: its agents call the real API, not that Atrium's proxy
     # `atrium` has created auth.json already, unless the server was started some other way (uvicorn)
     if auth.enabled and auth.ensure().get("generated_password"):
         log.warning("login password: made up, in %s (set your own: atrium --set-password)", AUTH_PATH)
     hub.bind_loop(asyncio.get_running_loop())
+    capture.turn_of = sessions.turn_of
     await capture.start()  # before any agent starts: they get its address
     projects.on_create.append(_on_project_loaded)
     sessions.on_turn_end.append(lambda project, _sid: project.tracker and project.tracker.after_turn())
@@ -317,6 +319,7 @@ async def remove_project(pid: str):
     if w:
         w.stop()
     await terminals.close_project(pid)
+    await capture.release_project(pid)
     config.remove_project(pid)
     return {"ok": True}
 
@@ -392,7 +395,12 @@ async def project_info(pid: str, opened: bool = False):
 # ---------------------------------------------------------------------------
 @app.get("/api/p/{pid}/sessions")
 async def list_sessions(pid: str, archived: bool = False):
-    return await sessions.list_sessions(P(pid), archived)
+    p = P(pid)
+    rows = await sessions.list_sessions(p, archived)
+    # sessions gone from their harness's store: their kept calls stop being kept (capture.release_gone)
+    known = {s.id for s in await sessions.summaries(p)} | set(sessions.live)
+    asyncio.get_running_loop().create_task(capture.release_gone(pid, known))
+    return rows
 
 
 @app.post("/api/p/{pid}/sessions")
@@ -592,9 +600,10 @@ async def clear_session_requests(pid: str, sid: str):
 
 
 @app.get("/api/p/{pid}/requests/{rid}")
-async def request_detail(pid: str, rid: str):
+async def request_detail(pid: str, rid: str, part: str = ""):
+    """One recorded call in full; ``part=response``: all but the request body (which doesn't change while the answer comes)."""
     P(pid)
-    d = await capture.detail(pid, rid)
+    d = await capture.detail(pid, rid, request=part != "response")
     if d is None:
         raise HTTPException(404, "No such request: it may have been pruned (capture.max_mb)")
     return JSONResponse(d)  # as is: the bodies can be megabytes, too much for FastAPI's encoder to walk

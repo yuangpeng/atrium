@@ -171,12 +171,12 @@ class SessionManager:
             disallowed_tools=disallowed,
             allowed_tools=allowed,
             resume_at=resume_at,
-            capture=CaptureContext(project.id, lambda: sid_box[0], self._turn_of),
+            capture=CaptureContext(project.id, lambda: sid_box[0], self.turn_of),
         )
         spec._sid_box = sid_box  # type: ignore[attr-defined]  # board tools learn the id once the harness assigns it
         return spec
 
-    def _turn_of(self, sid: str) -> dict[str, Any] | None:
+    def turn_of(self, sid: str) -> dict[str, Any] | None:
         """The user message the agent's current turn answers (its last one), for the model calls it makes."""
         h = self.live.get(sid)
         for it in reversed(h.items if h else []):

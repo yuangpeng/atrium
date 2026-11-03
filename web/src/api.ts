@@ -744,6 +744,8 @@ export const api = {
   requests: (pid: string, sid: string) =>
     req<{ enabled: boolean; running: boolean; rows: CaptureRow[] }>("GET", `/api/p/${pid}/sessions/${sid}/requests`),
   requestDetail: (pid: string, rid: string) => req<CaptureDetail>("GET", `/api/p/${pid}/requests/${rid}`),
+  // the same without the request body, which doesn't change: for an answer still coming
+  requestAnswer: (pid: string, rid: string) => req<Omit<CaptureDetail, "request">>("GET", `/api/p/${pid}/requests/${rid}${q({ part: "response" })}`),
   clearRequests: (pid: string, sid: string) => req<{ ok: boolean }>("DELETE", `/api/p/${pid}/sessions/${sid}/requests`),
   changes: (pid: string, sid: string) =>
     req<{ session_id: string; cwd: string; files: ChangeFile[]; snapshots: number }>("GET", `/api/p/${pid}/sessions/${sid}/changes`),
