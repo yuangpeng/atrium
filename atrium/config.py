@@ -44,7 +44,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "codex": {"enabled": True, "binary": "", "permission_mode": "full-access", "model": "", "effort": ""},
         # Google Antigravity, through its SDK (installed with Atrium). Where model calls go — the model, a relay,
         # the Gemini API key — is the Antigravity CLI's own settings file, ~/.gemini/antigravity-cli/settings.json.
-        "antigravity": {"enabled": True, "permission_mode": "always-proceed", "model": "", "effort": ""},
+        # Effort "high": Gemini returns its thoughts only with a thinking level set, and they are what the chat and
+        # the Tracker see of a long turn (it seldom writes between tool calls); "" sends none and gets none back.
+        "antigravity": {"enabled": True, "permission_mode": "always-proceed", "model": "", "effort": "high"},
     },
     "sessions": {"idle_close_minutes": 30},
     # Desktop notifications when an agent asks for approval or finishes a turn — skipped while its

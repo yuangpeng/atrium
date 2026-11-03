@@ -72,7 +72,7 @@ The defaults:
   "harnesses": {
     "claude-code": {"permission_mode": "bypassPermissions", "model": "", "effort": ""},
     "codex": {"enabled": true, "binary": "", "permission_mode": "full-access", "model": "", "effort": ""},
-    "antigravity": {"enabled": true, "permission_mode": "always-proceed", "model": "", "effort": ""}
+    "antigravity": {"enabled": true, "permission_mode": "always-proceed", "model": "", "effort": "high"}
   },
   "sessions": {"idle_close_minutes": 30},
   "notifications": {"enabled": true, "permission": true, "turn_end": true, "sound": true},
@@ -97,7 +97,7 @@ What the new-agent page starts with. The pickers there and in the chat change it
 | `defaults.harness` | `"claude-code"` | The harness the new-agent page starts on: `claude-code`, `codex` or `antigravity`. |
 | `harnesses.<harness>.permission_mode` | see [below](#permission-modes) | The mode new agents start in. |
 | `harnesses.<harness>.model` | `""` | `""` = the harness's own default, from its files. Claude Code: `opus`, `sonnet`, `haiku` or a model id; Codex: a model from its list; Antigravity: a model id, or a custom model's key or label. |
-| `harnesses.<harness>.effort` | `""` | `""` = the harness's own. Claude Code: `low`, `medium`, `high`, `xhigh`, `max`; Codex: what the model supports (`low` … `xhigh`); Antigravity: Gemini's thinking level, `minimal` … `high`. |
+| `harnesses.<harness>.effort` | `""`; Antigravity `"high"` | `""` = the harness's own. Claude Code: `low`, `medium`, `high`, `xhigh`, `max`; Codex: what the model supports (`low` … `xhigh`); Antigravity: Gemini's thinking level, `minimal` … `high` — with `""` no thinking config is sent, so no thoughts come back for the chat to show or the Tracker to read ([below](#antigravity)). |
 | `harnesses.codex.enabled`, `harnesses.antigravity.enabled` | `true` | `false` turns the harness off. |
 | `harnesses.codex.binary` | `""` | Which Codex CLI runs. `""` (or `"codex"`) = the one bundled with Atrium, else `codex` on `PATH`; a path such as `/opt/homebrew/bin/codex` = that one. Takes effect when Codex's app-server starts again: restart Atrium. |
 
@@ -464,9 +464,10 @@ Custom models still go to their own endpoint.
 - the **permission mode**, through a gate of Atrium's: the CLI's `permissions`, `toolPermission` and
   `agentMode` aren't read.
 - the **model** and **thinking level**: the agent's effort, sent as Gemini's `thinkingLevel` (with
-  `includeThoughts`), from the next turn when it changes. On *Default* no thinking config is sent: the
-  model thinks at its own default level and, without `includeThoughts`, the Gemini API returns no
-  thoughts for the chat to show.
+  `includeThoughts`), from the next turn when it changes. With no effort (`""`, picked nowhere) no thinking
+  config is sent: the model thinks at its own default level and, without `includeThoughts`, the Gemini API
+  returns no thoughts — none for the chat to show, none for the Tracker to read, and Gemini seldom writes
+  anything else between tool calls. Hence the `high` default of `harnesses.antigravity.effort`.
 - **additions**: the instruction files Antigravity's own apps load ([below](#instructions-for-agents)),
   since the SDK's runtime doesn't; Atrium's tools, named `<namespace>_<tool>` (`board_status`,
   `web_search`…); the servers in Atrium's `mcp_servers` — Antigravity's `mcp_config.json` files aren't read.

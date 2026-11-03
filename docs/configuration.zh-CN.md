@@ -67,7 +67,7 @@ Atrium 只有一个属于自己的配置文件：`~/.atrium/settings.json`。其
   "harnesses": {
     "claude-code": {"permission_mode": "bypassPermissions", "model": "", "effort": ""},
     "codex": {"enabled": true, "binary": "", "permission_mode": "full-access", "model": "", "effort": ""},
-    "antigravity": {"enabled": true, "permission_mode": "always-proceed", "model": "", "effort": ""}
+    "antigravity": {"enabled": true, "permission_mode": "always-proceed", "model": "", "effort": "high"}
   },
   "sessions": {"idle_close_minutes": 30},
   "notifications": {"enabled": true, "permission": true, "turn_end": true, "sound": true},
@@ -92,7 +92,7 @@ Atrium 只有一个属于自己的配置文件：`~/.atrium/settings.json`。其
 | `defaults.harness` | `"claude-code"` | 新建 agent 页面默认选中的 harness：`claude-code`、`codex` 或 `antigravity`。 |
 | `harnesses.<harness>.permission_mode` | 见[下文](#权限模式) | 新 agent 的初始权限模式。 |
 | `harnesses.<harness>.model` | `""` | `""` = harness 自己的默认值（来自它的配置文件）。Claude Code：`opus`、`sonnet`、`haiku` 或模型 id；Codex：它模型列表里的模型；Antigravity：模型 id，或自定义模型的 key 或 label。 |
-| `harnesses.<harness>.effort` | `""` | `""` = harness 自己的默认值。Claude Code：`low`、`medium`、`high`、`xhigh`、`max`；Codex：模型支持的档位（`low` … `xhigh`）；Antigravity：Gemini 的思考等级，`minimal` … `high`。 |
+| `harnesses.<harness>.effort` | `""`；Antigravity 为 `"high"` | `""` = harness 自己的默认值。Claude Code：`low`、`medium`、`high`、`xhigh`、`max`；Codex：模型支持的档位（`low` … `xhigh`）；Antigravity：Gemini 的思考等级，`minimal` … `high`。Antigravity 写 `""` 时不发送思考配置，Gemini 也就不返回思考内容：聊天里看不到，Tracker 也读不到（见[下文](#antigravity)）。 |
 | `harnesses.codex.enabled`、`harnesses.antigravity.enabled` | `true` | `false` 关闭这个 harness。 |
 | `harnesses.codex.binary` | `""` | 运行哪个 Codex CLI。`""`（或 `"codex"`）= Atrium 内置的，没有的话用 `PATH` 里的 `codex`；写一个路径（比如 `/opt/homebrew/bin/codex`）就用那一个。Codex 的 app-server 重新启动后才生效：重启 Atrium。 |
 
@@ -438,8 +438,9 @@ Atrium 的环境变量里。Antigravity 的条款规定 Google 账号登录只�
 
 - **权限模式**，由 Atrium 自己的拦截检查实现：CLI 的 `permissions`、`toolPermission` 和 `agentMode` 不会被读取。
 - **模型**和**思考等级**：agent 的 effort 作为 Gemini 的 `thinkingLevel` 发送（同时带 `includeThoughts`），
-  中途修改从下一轮生效。*Default* 时不发送任何思考配置：模型按自己的默认等级思考；没有 `includeThoughts`，
-  Gemini API 也不会返回思考内容，聊天里看不到。
+  中途修改从下一轮生效。effort 为 `""`（哪里都没选）时不发送任何思考配置：模型按自己的默认等级思考；没有
+  `includeThoughts`，Gemini API 也不会返回思考内容：聊天里看不到，Tracker 也读不到，而 Gemini 在工具调用之间
+  很少写别的文字。所以 `harnesses.antigravity.effort` 默认是 `high`。
 - **增加**：Antigravity 自家应用会加载的指令文件（见[下文](#给-agent-的指令文件)），因为 SDK 的运行时不加载
   它们；Atrium 的工具，命名为 `<namespace>_<tool>`（`board_status`、`web_search` 等）；Atrium `mcp_servers`
   里的服务器（Antigravity 的 `mcp_config.json` 文件不会被读取）。
