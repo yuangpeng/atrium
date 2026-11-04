@@ -327,7 +327,7 @@ export function Transcript({ blocks, results, running, cwd, forks, onFork, steps
       }),
     [blocks, results, running, cwd, forks, onFork, steps, onForkStep, edits, editing, onEdit, editor, timed],
   );
-  return <FileLinks cwd={cwd}>{rendered}</FileLinks>;
+  return <FileLinks cwd={cwd} running={running}>{rendered}</FileLinks>;
 }
 
 /** A slash command as sent: the command, then its arguments. */

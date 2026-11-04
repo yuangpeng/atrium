@@ -3,7 +3,7 @@
 // backticks, a Markdown link's or one in the prose itself; only those the server finds a file for are linked
 // (fs.resolve_paths: relative to the agent's directory, or the end of one file's path in its checkout).
 import type { ReactNode } from "react";
-import { createContext, useContext, useEffect, useMemo } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef } from "react";
 import type { Components } from "react-markdown";
 import { create } from "zustand";
 import { api } from "../api";
@@ -14,10 +14,17 @@ import { socket } from "../ws";
 /** The conversation's project and agent directory, which its paths are taken from; none: nothing is linked. */
 const Scope = createContext<{ pid: string; cwd: string } | null>(null);
 
-/** Round an agent's conversation: the files it names in Markdown (components/ui) become links. */
-export function FileLinks({ cwd, children }: { cwd: string; children: ReactNode }) {
+/** Round an agent's conversation: the files it names in Markdown (components/ui) become links. When its turn ends
+ *  (`running` goes), its paths are asked again: it may have named a file before writing it, where the watcher doesn't
+ *  look (build/, dist/…). */
+export function FileLinks({ cwd, running, children }: { cwd: string; running?: boolean; children: ReactNode }) {
   const pid = useApp((s) => s.project?.id);
   const scope = useMemo(() => (pid ? { pid, cwd } : null), [pid, cwd]);
+  const was = useRef(running);
+  useEffect(() => {
+    if (was.current && !running && pid) recheck(`${pid}\n${cwd}\n`);
+    was.current = running;
+  }, [running, pid, cwd]);
   return <Scope.Provider value={scope}>{children}</Scope.Provider>;
 }
 
@@ -72,13 +79,13 @@ function bareRefs(text: string): [number, number][] {
   const out: [number, number][] = [];
   RUN.lastIndex = 0;
   for (let m; (m = RUN.exec(text)); ) {
-    let end = m.index + m[0].length;
-    RUN_AT.lastIndex = end;
+    RUN_AT.lastIndex = m.index + m[0].length;
     const at = RUN_AT.exec(text);
-    if (at) end += at[0].length;
-    else end -= m[0].length - m[0].replace(/[.-]+$/, "").length; // the full stop after it
-    RUN.lastIndex = end;
-    if (fileLike(text.slice(m.index, at ? m.index + m[0].length : end))) out.push([m.index, end]);
+    // on from past all of it, never back: what is cut off below (a full stop, a dash) starts no path, and a search
+    // that went back to it would find it again, for ever
+    RUN.lastIndex = m.index + m[0].length + (at ? at[0].length : 0);
+    const path = at ? m[0] : m[0].replace(/[.-]+$/, ""); // "see foo.ts." links foo.ts
+    if (path && fileLike(path)) out.push([m.index, m.index + path.length + (at ? at[0].length : 0)]);
   }
   return out;
 }
@@ -135,10 +142,15 @@ export const FILE_COMPONENTS: Components = {
 
 // ---------------------------------------------------------------------------- which are files
 type Found = { root: string; path: string } | null;
-/** what the server said, by `pid \n cwd \n path`; a key missing is being asked (or is to be, again) */
+/** what the server said, by `pid \n cwd \n path` (a key missing: not answered yet); an answer stays shown while it
+ *  is asked again, so a link doesn't blink each time its file is saved */
 const useFound = create<{ found: Record<string, Found> }>(() => ({ found: {} }));
+const STALE = 10_000; // ms an answer is trusted for a link that mounts: the watcher can't vouch for build/, dist/…
+const answered = new Map<string, number>(); // key -> when its answer came; none: asked again when next shown
+const shown = new Map<string, number>(); // key -> how many links on the page have it
 const asked = new Set<string>(); // keys on their way to the server
-const fresh = new Set<string>(); // keys whose file may have just come: past the server's cached file list
+const again = new Set<string>(); // ... asked again since: the answer on its way may be from before what changed
+const fresh = new Set<string>(); // keys whose file may have come where the watcher doesn't look: past the server's file list
 let queue: string[] = [];
 let timer = 0;
 
@@ -147,12 +159,20 @@ const split = (key: string) => {
   const b = key.indexOf("\n", a + 1);
   return { pid: key.slice(0, a), cwd: key.slice(a + 1, b), path: key.slice(b + 1) };
 };
+const same = (a: Found | undefined, b: Found) => a === b || (!!a && !!b && a.root === b.root && a.path === b.path);
 
-function ask(key: string) {
-  if (asked.has(key)) return;
+function request(key: string) {
   asked.add(key);
   queue.push(key);
   timer ||= window.setTimeout(flush, 30); // the paths of every message on the page, in a request or a few
+}
+
+/** Something happened that may change its answer: asked again now if a link shows it, else when one next does. */
+function renew(key: string) {
+  fresh.add(key);
+  if (asked.has(key)) again.add(key);
+  else if (shown.has(key)) request(key);
+  else answered.delete(key);
 }
 
 function flush() {
@@ -170,40 +190,50 @@ function flush() {
       const batch = keys.slice(i, i + 200);
       const { pid, cwd } = split(batch[0]);
       const paths = batch.map((k) => split(k).path);
-      const settle = (files: Record<string, Found>) => {
-        batch.forEach((k) => (asked.delete(k), fresh.delete(k)));
-        useFound.setState((s) => ({ found: { ...s.found, ...Object.fromEntries(batch.map((k, j) => [k, files[paths[j]] ?? null])) } }));
+      const past = batch.filter((k) => fresh.delete(k)).length > 0;
+      // no answer (a server from before this, or one going away): what was known stays, the rest unlinked for now
+      const settle = (files: Record<string, Found> | null) => {
+        useFound.setState((s) => {
+          const found = { ...s.found };
+          batch.forEach((k, j) => {
+            const answer = files ? (files[paths[j]] ?? null) : (s.found[k] ?? null);
+            if (!same(s.found[k], answer)) found[k] = answer; // the same one kept: its links needn't render again
+          });
+          return { found };
+        });
+        const now = Date.now();
+        for (const k of batch) {
+          asked.delete(k);
+          answered.set(k, now);
+          if (again.delete(k)) renew(k);
+        }
       };
-      // a server that can't say (one from before this): nothing is linked, until it is back
-      api.resolvePaths(pid, cwd, paths, batch.some((k) => fresh.has(k))).then((r) => settle(r.files), () => settle({}));
+      api.resolvePaths(pid, cwd, paths, past).then((r) => settle(r.files), () => settle(null));
     }
 }
 
-/** Files that changed: a path that wasn't one may be now, and one that was may be gone. Asked again (those mounted). */
-function forget(changed: string[], all = false) {
-  const paths = new Set(changed);
-  const names = new Set(changed.map(basename));
-  const again: string[] = [];
+/** Files changed (the watcher; the server's file lists already know): a path that wasn't a file may be one now, and
+ *  one that was may be gone. */
+function changed(paths: string[]) {
+  const abs = new Set(paths);
+  const names = new Set(paths.map(basename));
   for (const [key, hit] of Object.entries(useFound.getState().found)) {
     if (hit) {
-      if (paths.has(`${hit.root}/${hit.path}`)) again.push(key);
+      if (abs.has(`${hit.root}/${hit.path}`)) renew(key);
       continue;
     }
     const path = split(key).path.replace(/^(\.\/)+/, "");
-    if (all || (names.has(basename(path)) && changed.some((p) => (path.startsWith("/") ? p === path : p.endsWith(`/${path}`))))) {
-      again.push(key);
-      fresh.add(key);
-    }
+    if (names.has(basename(path)) && paths.some((p) => (path.startsWith("/") ? p === path : p.endsWith(`/${path}`)))) renew(key);
   }
-  if (!again.length) return;
-  useFound.setState((s) => {
-    const found = { ...s.found };
-    again.forEach((k) => delete found[k]);
-    return { found };
-  });
 }
-useApp.subscribe((s, prev) => void (s.fsVersion !== prev.fsVersion && forget(s.fsPaths)));
-socket.onReconnect(() => forget([], true)); // what changed meanwhile went unheard; a restarted server may know more
+useApp.subscribe((s, prev) => void (s.fsVersion !== prev.fsVersion && changed(s.fsPaths)));
+// what changed while the socket was down went unheard, and a restarted server may know more: all of it asked again
+socket.onReconnect(() => Object.keys(useFound.getState().found).forEach(renew));
+
+/** The paths shown for a conversation (`pid \n cwd \n`), asked again. */
+function recheck(prefix: string) {
+  for (const key of shown.keys()) if (key.startsWith(prefix)) renew(key);
+}
 
 let pressed = [0, 0]; // where the last press on a file link began: a click that has moved since is a drag, selecting the path
 
@@ -214,8 +244,21 @@ function FileLink({ spec, plain, code, children }: { spec: string; plain: ReactN
   const key = scope ? `${scope.pid}\n${scope.cwd}\n${ref.path}` : "";
   const hit = useFound((s) => (key ? s.found[key] : null));
   useEffect(() => {
-    if (key && hit === undefined) ask(key);
-  }, [key, hit]);
+    if (!key) return;
+    shown.set(key, (shown.get(key) ?? 0) + 1);
+    // not answered yet, or long ago: a new message naming a file again is when one written since, where the watcher
+    // doesn't look, is found (and the older links to it with it)
+    const known = key in useFound.getState().found;
+    if (!asked.has(key) && (!known || Date.now() - (answered.get(key) ?? 0) > STALE)) {
+      if (known) fresh.add(key);
+      request(key);
+    }
+    return () => {
+      const n = (shown.get(key) ?? 1) - 1;
+      if (n > 0) shown.set(key, n);
+      else shown.delete(key);
+    };
+  }, [key]);
   if (!hit) return <>{plain}</>;
   const open = () => useApp.getState().openFile(hit.path, hit.root, ref.line ? { line: ref.line, column: ref.column } : undefined);
   // no tabIndex: Chrome starts no text selection in a focusable element, and paths are copied out of replies

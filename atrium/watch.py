@@ -34,6 +34,7 @@ from watchfiles import Change
 from watchfiles._rust_notify import RustNotify
 from watchfiles.main import _default_force_polling  # what awatch makes of force_polling=None: the env var, or WSL
 
+from . import fs
 from .events import hub
 from .harness import all_harnesses
 from .project import Project
@@ -420,6 +421,7 @@ class ProjectWatcher(_DirWatcher):
         topic = f"project:{self.project.id}"
         files = [p for p in paths if "/.git/" not in p and _project_filter(Change.added, p)]
         if files:
+            fs.files_changed(files)
             hub.publish(topic, {"type": "fs", "paths": files[:200]})
         hub.publish(topic, {"type": "git_changed"})
 
@@ -439,6 +441,7 @@ class ProjectWatcher(_DirWatcher):
                 continue
             files.append(path)
         if files:
+            fs.files_changed(files)  # before the pages hear of it: the file lists the chat's links are found in
             hub.publish(topic, {"type": "fs", "paths": files[:200]})
         if files or git_changed:
             hub.publish(topic, {"type": "git_changed"})

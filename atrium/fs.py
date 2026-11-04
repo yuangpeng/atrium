@@ -177,26 +177,38 @@ def site_file(project: Project, folder: str, rel: str) -> tuple[Path, str]:
 RESOLVE_MAX = 400  # paths per request
 LIST_SECONDS = 10  # a checkout's file list, for paths given by their end; `fresh` asks past it
 LIST_MAX = 200_000
-_lists: dict[str, tuple[float, dict[str, list[str]]]] = {}  # checkout -> (when, file name -> paths ending in it)
+_lists: dict[str, tuple[int, float, dict[str, list[str]]]] = {}  # checkout -> (generation, when, name -> its paths)
+_gens: dict[str, int] = {}  # checkout -> bumped by each change the watcher sees in it (files_changed)
 _lists_lock = threading.Lock()
+
+
+def files_changed(paths: list[str]) -> None:
+    """What the watcher saw change, before it tells the pages: the file lists of the checkouts holding them are out
+    of date, the one being made too, so what a page asks next (a file that just came, named in a reply) finds it."""
+    with _lists_lock:
+        for checkout in _gens:
+            prefix = checkout + os.sep
+            if any(p.startswith(prefix) for p in paths):
+                _gens[checkout] += 1
 
 
 def _files_by_name(checkout: str, fresh: bool) -> dict[str, list[str]]:
     """The checkout's files as git lists them (tracked and new, not ignored), by name; nothing outside a repository."""
     now = time.monotonic()
     with _lists_lock:
-        for k in [k for k, (t, _) in _lists.items() if now - t >= LIST_SECONDS]:  # none is kept past its use
+        for k in [k for k, (_g, t, _n) in _lists.items() if now - t >= LIST_SECONDS]:  # none is kept past its use
             del _lists[k]
+        gen = _gens.setdefault(checkout, 0)
         hit = _lists.get(checkout)
-    if hit and not (fresh and now - hit[0] >= 1):
-        return hit[1]
+    if hit and hit[0] == gen and not (fresh and now - hit[1] >= 1):
+        return hit[2]
     listed = gitops._run_sync(checkout, "ls-files", "-z", "--cached", "--others", "--exclude-standard") or ""
     by_name: dict[str, list[str]] = {}
     for rel in listed.split("\0")[:LIST_MAX]:
         if rel:
             by_name.setdefault(rel.rsplit("/", 1)[-1], []).append(rel)
     with _lists_lock:
-        _lists[checkout] = (time.monotonic(), by_name)
+        _lists[checkout] = (gen, time.monotonic(), by_name)  # the generation from before it was made: a change meanwhile outdates it
     return by_name
 
 
