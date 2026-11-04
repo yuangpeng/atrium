@@ -55,7 +55,10 @@ A project-centric workbench for coding agents — Claude Code, Codex and Antigra
      Files that render open as themselves, with their source a tap away: Markdown (with its
      images, links to other files, and the HTML GitHub allows), HTML pages (sandboxed, loading
      their CSS, scripts and images from beside them), notebooks, CSV / TSV tables, SVG, images,
-     PDFs, audio and video.
+     PDFs, audio and video. The files an agent names in its replies open here with a tap — in
+     backticks, as a Markdown link or in the text itself, `path:line` at that line; relative to the
+     agent's directory (its worktree), or by the end of a path (`api.ts`) when only one file has it.
+     Only paths that are files get a link.
    * **Changes** — per-agent diffs. The baseline is a **git snapshot** Atrium takes at the start and
      end of every turn (a tree object written through a temporary index — no refs, your index and
      stash are untouched). Files changed by shell commands are detected by diffing those snapshots.

@@ -173,6 +173,79 @@ def site_file(project: Project, folder: str, rel: str) -> tuple[Path, str]:
     return p, mime_of(p)
 
 
+# ---- paths an agent writes in its replies: which are the project's files, for the chat to link them ---------------
+RESOLVE_MAX = 400  # paths per request
+LIST_SECONDS = 10  # a checkout's file list, for paths given by their end; `fresh` asks past it
+LIST_MAX = 200_000
+_lists: dict[str, tuple[float, dict[str, list[str]]]] = {}  # checkout -> (when, file name -> paths ending in it)
+_lists_lock = threading.Lock()
+
+
+def _files_by_name(checkout: str, fresh: bool) -> dict[str, list[str]]:
+    """The checkout's files as git lists them (tracked and new, not ignored), by name; nothing outside a repository."""
+    now = time.monotonic()
+    with _lists_lock:
+        for k in [k for k, (t, _) in _lists.items() if now - t >= LIST_SECONDS]:  # none is kept past its use
+            del _lists[k]
+        hit = _lists.get(checkout)
+    if hit and not (fresh and now - hit[0] >= 1):
+        return hit[1]
+    listed = gitops._run_sync(checkout, "ls-files", "-z", "--cached", "--others", "--exclude-standard") or ""
+    by_name: dict[str, list[str]] = {}
+    for rel in listed.split("\0")[:LIST_MAX]:
+        if rel:
+            by_name.setdefault(rel.rsplit("/", 1)[-1], []).append(rel)
+    with _lists_lock:
+        _lists[checkout] = (time.monotonic(), by_name)
+    return by_name
+
+
+def resolve_paths(project: Project, cwd: str | None, paths: list[str], fresh: bool = False) -> dict[str, dict[str, str] | None]:
+    """Which of ``paths``, as an agent working in ``cwd`` wrote them, are files of the project:
+    ``{path: {root, path} | None}``, the root one of ``project.roots()``. A path is taken relative to ``cwd``, or
+    absolute (``~/`` too) inside the project, or without a diff's ``a/`` / ``b/``; else as the end of a path
+    (``api.ts``, ``chat/ChatView.tsx``) when one file of the checkout, and only one, has it. Directories are not
+    files. Only whether they exist is told, nothing of what is in them."""
+    roots = sorted(((os.path.realpath(r), r) for r in project.roots()), key=lambda x: len(x[0]), reverse=True)
+
+    def owner(real: str) -> tuple[str, str] | None:  # the innermost root holding it: a worktree inside the project
+        return next(((rr, r) for rr, r in roots if real == rr or real.startswith(rr + os.sep)), None)
+
+    def found(p: str) -> dict[str, str] | None:
+        real = os.path.realpath(p)
+        o = owner(real)
+        return {"root": o[1], "path": os.path.relpath(real, o[0])} if o and os.path.isfile(real) else None
+
+    base = os.path.realpath(cwd) if cwd else ""
+    home = owner(base) if base else None
+    if not home:  # a directory that is gone (a removed worktree), or not the project's
+        base = os.path.realpath(project.path)
+        home = owner(base)
+    checkout = home[0] if home else base
+    out: dict[str, dict[str, str] | None] = {}
+    for raw in paths[:RESOLVE_MAX]:
+        s = raw.strip()
+        if not s or len(s) > 1024 or "\0" in s:
+            out[raw] = None
+            continue
+        if s.startswith("~/"):
+            s = os.path.expanduser(s)
+        if os.path.isabs(s):
+            out[raw] = found(s)
+            continue
+        hit = found(os.path.join(base, s))
+        if not hit and s.startswith(("a/", "b/")):
+            hit = found(os.path.join(base, s[2:]))
+        if not hit and not s.startswith(("./", "../")):
+            name = s.rstrip("/").rsplit("/", 1)[-1]
+            ends = [rel for rel in _files_by_name(checkout, fresh).get(name, []) if rel == s or rel.endswith("/" + s)]
+            ends = [rel for rel in ends if os.path.isfile(os.path.join(checkout, rel))]  # tracked, but deleted since
+            if len(ends) == 1:
+                hit = found(os.path.join(checkout, ends[0]))
+        out[raw] = hit
+    return out
+
+
 def write_file(project: Project, root: str | None, rel: str, content: str, base_sha: str | None = None, force: bool = False) -> dict[str, Any]:
     root = os.path.realpath(root or project.path)
     p = project.resolve(rel, root=root)

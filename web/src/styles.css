@@ -970,6 +970,13 @@ details.review-tool > summary::-webkit-details-marker { display: none; }
 .md th { background: var(--surface-2); font-weight: 600; }
 .md hr { border: 0; border-top: 1px solid var(--border); margin: 1.2em 0; }
 .md a { text-underline-offset: 2px; }
+/* a file an agent names (FileLinks.tsx): opens in the Files panel. A lighter underline than a page's link */
+.md .file-link { cursor: pointer; text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor 40%, transparent); }
+.md .file-link.code { text-decoration: none; }
+@media (hover: hover) {
+  .md .file-link:hover { text-decoration-color: currentColor; }
+  .md .file-link.code:hover code { border-color: color-mix(in srgb, currentColor 50%, transparent); }
+}
 /* code blocks in chat: the editor's Light+ / Dark+ palette */
 .hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-doctag { color: #0000ff; }
 .hljs-built_in, .hljs-type, .hljs-title.class_, .hljs-title.class_.inherited__ { color: #267f99; }

@@ -8,6 +8,7 @@ import { EMPTY_REPLY, Workspace, useDrafts } from "../drafts";
 import { clsx, fmtClock, fmtDuration } from "../util";
 import { Markdown, Spinner } from "../components/ui";
 import { useOpenCompaction } from "../components/Compactions";
+import { FileLinks } from "../components/FileLinks";
 import { BoardToolRow, PermissionCard, ToolRow, isBoardTool, useOpenSubagent } from "./ToolViews";
 import { ReviewToolBlock, isReviewTool } from "./ReviewCards";
 import {
@@ -326,7 +327,7 @@ export function Transcript({ blocks, results, running, cwd, forks, onFork, steps
       }),
     [blocks, results, running, cwd, forks, onFork, steps, onForkStep, edits, editing, onEdit, editor, timed],
   );
-  return <>{rendered}</>;
+  return <FileLinks cwd={cwd}>{rendered}</FileLinks>;
 }
 
 /** A slash command as sent: the command, then its arguments. */
@@ -643,9 +644,11 @@ export function ChatView({ pid, sid, cwd, compact, forkable, editable, modeLocke
               <Markdown text={st.streaming} />
             </div>
           )}
-          {pendingList.map((p) => (
-            <PermissionCard key={p.id} perm={p} cwd={cwd} onDecide={(d) => decide(p, d)} />
-          ))}
+          <FileLinks cwd={cwd}>
+            {pendingList.map((p) => (
+              <PermissionCard key={p.id} perm={p} cwd={cwd} onDecide={(d) => decide(p, d)} />
+            ))}
+          </FileLinks>
           {running && !st.streaming && pendingList.length === 0 && (
             <div className="working-line">
               <span className="spark">

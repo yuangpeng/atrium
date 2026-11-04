@@ -815,6 +815,14 @@ async def file_site(pid: str, path: str, root: str | None = None):
     return await asyncio.to_thread(fs.site_url, P(pid), root, path)
 
 
+@app.post("/api/p/{pid}/file/resolve")
+async def resolve_paths(pid: str, body: dict[str, Any] = Body(...)):
+    """Which paths in an agent's reply are files of the project, for the chat to link them (fs.resolve_paths)."""
+    paths = [str(p) for p in body.get("paths") or []]
+    cwd = str(body["cwd"]) if body.get("cwd") else None
+    return {"files": await asyncio.to_thread(fs.resolve_paths, P(pid), cwd, paths, bool(body.get("fresh")))}
+
+
 @app.get("/api/site/{key}/{path:path}")
 async def site_file(key: str, path: str):
     """What a previewed HTML page loads from beside it (fs.Sites): let in by the key in its URL, not by a login."""

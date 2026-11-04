@@ -1,6 +1,6 @@
 import { ReactNode, RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { type Components, type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { X } from "lucide-react";
@@ -8,6 +8,7 @@ import { realHover } from "../layout";
 import { useApp } from "../store";
 import { holdTouch, placeTip, tipLayer } from "../tips";
 import { clsx } from "../util";
+import { FILE_COMPONENTS, remarkFileRefs, useFileLinks } from "./FileLinks";
 
 export function Modal({ title, onClose, children, footer, wide, xl, bodyClass }: { title: ReactNode; onClose: () => void; children: ReactNode; footer?: ReactNode; wide?: boolean; xl?: boolean; bodyClass?: string }) {
   useEffect(() => {
@@ -113,14 +114,17 @@ export function Popover({
   );
 }
 
+const REMARK = [remarkGfm];
+const LINKED = [remarkGfm, remarkFileRefs];
+const REHYPE: NonNullable<Options["rehypePlugins"]> = [[rehypeHighlight, { detect: false, ignoreMissing: true }]];
+const COMPONENTS: Components = { a: ({ node: _n, ...props }) => <a {...props} target="_blank" rel="noreferrer" /> };
+
+/** Markdown in Atrium's page; in an agent's conversation (FileLinks), the files it names are links. */
 export function Markdown({ text }: { text: string }) {
+  const linked = useFileLinks();
   return (
     <div className="md">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={[[rehypeHighlight, { detect: false, ignoreMissing: true }]]}
-        components={{ a: ({ node: _n, ...props }) => <a {...props} target="_blank" rel="noreferrer" /> }}
-      >
+      <ReactMarkdown remarkPlugins={linked ? LINKED : REMARK} rehypePlugins={REHYPE} components={linked ? FILE_COMPONENTS : COMPONENTS}>
         {text}
       </ReactMarkdown>
     </div>
