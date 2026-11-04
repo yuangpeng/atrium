@@ -39,7 +39,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from ..capture import loopback_env
+from ..capture import CAPTURE_CAMPAIGN, GROK_CAMPAIGNS_ENV, loopback_env, other_campaigns
 from ..config import RUNTIME_DIR, atomic_write, config
 from .acp import AcpClient, AcpError
 from .base import Attachment, Emit, FileEdit, Harness, Item, LiveSession, LiveSpec, SessionSummary, SlashCommand, ToolSpec
@@ -142,6 +142,34 @@ def not_found(binary: str) -> str:
 def agent_env() -> dict[str, str]:
     """The environment of a ``grok`` process: Atrium's, with loopback never through a proxy, and no update checks."""
     return {**os.environ, **loopback_env(os.environ), "GROK_DISABLE_AUTOUPDATER": "1"}
+
+
+def capture_env(spec: LiveSpec, session_id: str, env: dict[str, str]) -> dict[str, str]:
+    """``GROK_CAMPAIGNS_OVERRIDE`` sending the session's model calls through Atrium's capture proxy (capture.py): a campaign
+    of Atrium's (config patches, which apply over config.toml) setting the ``base_url`` (and ``api_base_url``) of each
+    custom model to the proxy's. Campaigns already given there are kept; without, Grok applies no others (xAI's,
+    config.toml's). Empty when capture is off, or no model has an address of its own: xAI's endpoints, which depend on
+    the sign-in, are reached directly, and so is a model with an mTLS identity."""
+    if not spec.capture:
+        return {}
+    cfg = user_config()
+    models, defaults = cfg.get("model"), cfg.get("models")
+    common = defaults.get("extra_headers") if isinstance(defaults, dict) else None
+    patch: dict[str, dict[str, str]] = {}
+    for key, m in models.items() if isinstance(models, dict) else ():
+        if not isinstance(m, dict) or m.get("mtls_cert_dir"):
+            continue
+        # the headers it was configured to send, blanked like credentials
+        headers = [h for d in (common, m.get("extra_headers"), m.get("env_http_headers")) if isinstance(d, dict) for h in d]
+        for field in ("base_url", "api_base_url"):
+            upstream = os.path.expandvars(m[field]) if isinstance(m.get(field), str) else ""  # Grok expands $VAR and ${VAR}
+            if upstream and "$" not in upstream:
+                url = spec.capture.base_url("grok", upstream, env=env, session=session_id, secret=headers)
+                if url:
+                    patch.setdefault(key, {})[field] = url
+    if not patch:
+        return {}
+    return {GROK_CAMPAIGNS_ENV: json.dumps([{"id": CAPTURE_CAMPAIGN, "model": patch}, *other_campaigns(env.get(GROK_CAMPAIGNS_ENV))])}
 
 
 # --------------------------------------------------------------------------
@@ -800,7 +828,8 @@ class GrokLiveSession(LiveSession):
         binary = resolve_binary()
         if not binary:
             raise FileNotFoundError(not_found(_defaults().get("binary") or ""))
-        env = agent_env()  # not captured: only config.toml says where a model's calls go (GROK_CONFIG may not)
+        env = agent_env()
+        env.update(capture_env(self.spec, self.session_id, env))
         self.client = AcpClient([binary, "--no-auto-update", "agent", "stdio"], cwd=self.spec.cwd, env=env,
                                 on_notify=self._on_notify, on_request=self._on_request, name=f"grok {self.session_id[:8]}")
         await self.client.start()

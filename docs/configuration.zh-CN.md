@@ -271,12 +271,13 @@ agent 的 base URL 指向它。代理把每个请求原样转发到 harness 本�
 响应边收边转：流式的仍然是流式。
 
 - 它信任的 CA 比 harness 自己的更多：系统的（macOS 钥匙串、Windows 证书库、OpenSSL 的路径）、certifi 的，以及
-  给 harness 配置的（`NODE_EXTRA_CA_CERTS`、`CODEX_CA_CERTIFICATE`、`SSL_CERT_FILE`、`SSL_CERT_DIR`）。它还会出示
+  给 harness 配置的（`NODE_EXTRA_CA_CERTS`、`CODEX_CA_CERTIFICATE`、`GROK_EXTRA_CA_BUNDLE`、`SSL_CERT_FILE`、
+  `SSL_CERT_DIR`）。它还会出示
   Claude Code 的客户端证书（`CLAUDE_CODE_CLIENT_CERT`、`CLAUDE_CODE_CLIENT_KEY`）。复现不了的配置（比如读不到的 CA
   文件）就不抓包：那个 agent 直接调用它的 API。
 - 写盘之前先抹掉凭证：`Authorization`、`x-api-key`、`x-goog-api-key`、cookie、名字表明是凭证的请求头（`key`、
-  `token`、`secret`、`auth` 等）、`ANTHROPIC_CUSTOM_HEADERS` 或 Codex provider 的 `http_headers` /
-  `env_http_headers` 添加的头，以及 URL 里的 `key=`。请求体和响应体完整保留，里面有整段对话，包括 agent 读过的
+  `token`、`secret`、`auth` 等）、`ANTHROPIC_CUSTOM_HEADERS`、Codex provider 的 `http_headers` /
+  `env_http_headers` 或 Grok 模型的 `extra_headers` / `env_http_headers` 添加的头，以及 URL 里的 `key=`。请求体和响应体完整保留，里面有整段对话，包括 agent 读过的
   文件。数据库只有你自己能读。
 - 转发时只改一处：如果 `Accept-Encoding` 里提供了 br 或 zstd，会改成只提供 gzip 和 deflate，这样响应才能被解开
   查看（Request 视图里能看到 harness 原本提供的值）。
@@ -291,12 +292,15 @@ agent 的 base URL 指向它。代理把每个请求原样转发到 harness 本�
   的 "CRITICAL: Respond with TEXT ONLY… Your task is to create a detailed summary of the conversation so far"（或它
   专门用来总结的系统提示词）、Codex 的 "You are performing a CONTEXT CHECKPOINT COMPACTION"（或调用
   `/responses/compact`）、Antigravity 的 "You have been working on the task described above… Write a continuation
-  summary"。harness 换了说法的版本，要等 Atrium 跟着更新后才认得出来。
+  summary"、Grok Build 的 "Your task is to produce a faithful, concise summary of the conversation so far… a
+  successor assistant"。harness 换了说法的版本，要等 Atrium 跟着更新后才认得出来。
 - **agent 启动的进程。** Claude Code agent 的环境里，`ANTHROPIC_BASE_URL` 是这个代理，所以它启动的进程（比如跑
   `claude -p` 的脚本）会继承下来，它们的调用记在这个 agent 名下。它们还会拿到 `ATRIUM_CAPTURE_URL`（代理的地址）和
   `ATRIUM_CAPTURE_UPSTREAM`（它代替的地址，`""` = Anthropic 的 API）。这样的进程可能比 Atrium 活得久：代理在端口
   空闲时会再用同一个端口，路由保留 90 天，所以 Atrium 重启后它们的调用照样能用。从 agent 里启动的 Atrium（比如测试
   实例）会先把自己的环境改回 `ATRIUM_CAPTURE_UPSTREAM`：它自己的 agent 经它自己的代理调用 API，而不是经过两层代理。
+  Grok Build agent 的环境里，`GROK_CAMPAIGNS_OVERRIDE` 带着下面说的那个 campaign，它启动的 `grok` 同样会继承；从它
+  里面启动的 Atrium 会把 Atrium 的 campaign 从这个变量里去掉。
 
 哪些调用会经过代理：
 
@@ -306,8 +310,13 @@ agent 的 base URL 指向它。代理把每个请求原样转发到 harness 本�
   内置的 OpenAI provider（ChatGPT 登录、`openai_base_url`），以及设置了 `supports_websockets` 的 provider，
   都直接调用。
 - **Antigravity**：发往 Gemini API 端点的调用，不管是自定义模型的中转站还是 Google 自己的。Vertex AI 不经过。
-- **Grok Build**：不记录。模型的调用发到哪里只由它的 `config.toml` 决定，没法给单个 agent 的进程换一个地址
-  （CLI 的覆盖层 `GROK_CONFIG` 不允许设置模型的 `base_url`）。
+- **Grok Build**：发往自定义模型端点的调用（设了 `base_url` 或 `api_base_url` 的 `[model.<id>]`），包括会话标题和
+  摘要这类辅助调用。它的 `config.toml` 不会被改动：agent 的进程拿到的是 `GROK_CAMPAIGNS_OVERRIDE` 里一个 Atrium 自己的
+  campaign（`atrium-capture`）。campaign 是 Grok 的配置补丁，盖在它各层配置文件之上，可以设置模型的 `base_url`（它的
+  覆盖层 `GROK_CONFIG` 不行）。这个变量里原有的 campaign 照常生效；没设这个变量时，Grok 自己的 campaign（xAI 下发的、
+  它配置文件里的 `[[campaigns]]`）在 Atrium 的 agent 里不生效。xAI 自己的端点（`grok login`、`XAI_API_KEY`）地址取决于
+  登录方式，直接调用；设了 `mtls_cert_dir` 的模型、`base_url` 被 `requirements.toml` 锁定的模型也直接调用。新加进
+  `config.toml` 的模型，在之后启动的 agent 里才会被抓包。
 
 harness 发出的其他流量不会被记录：遥测、更新检查、走 HTTP 的 MCP 服务器、Codex 拉取的插件、网页。
 
@@ -550,6 +559,7 @@ name = "Grok 4.7 (relay)"
 api_key = "..."                       # 或 env_key = "RELAY_API_KEY"：Atrium 环境里的一个变量
 api_backend = "chat_completions"      # 或 "responses"、"messages"
 supports_reasoning_effort = true      # 端点接受 reasoning_effort 时：Atrium 的 effort 选择器才起作用
+reasoning_effort = "high"             # 没选 effort 时用这一档（不写则不发送）
 context_window = 500000               # 用于上下文用量显示和自动压缩（默认 200000）
 ```
 
@@ -557,9 +567,14 @@ context_window = 500000               # 用于上下文用量显示和自动压�
 （Azure 的 Responses API 会这样），对这个模型改用 `api_backend = "chat_completions"` 即可。
 
 **用哪个模型**：这个 agent 选的模型（新 agent 用 `harnesses.grok.model`），否则用 `[models] default`，否则用
-Grok 自己的默认值。模型选择器里列出 *Default* 和 `grok models` 列出的模型。**effort** 是模型自己的档位
-（设了 `supports_reasoning_effort` 的自定义模型用 Grok 的档位，`minimal` … `xhigh`；端点接受哪几档由端点决定），
-对运行中的 agent 立即生效；没有 `supports_reasoning_effort` 的模型会忽略它。
+Grok 自己的默认值。模型选择器里列出 *Default* 和 `grok models` 列出的模型。
+
+**effort** 是模型自己的，Atrium 的选择器列出模型有的档位。xAI 的模型自带档位和默认档（Grok 4.5：`low`、`medium`、
+`high`，默认 `high`）。自定义模型没有档位，除非它那一段写了 `supports_reasoning_effort = true`：不写时 Grok 不发送
+`reasoning_effort`（由端点决定），选择器也不提供选项。写了以后，档位是 Grok 的（`minimal` … `xhigh`，或
+`reasoning_efforts = [{value = "low"}, …]` 列出的），*Default* 是这一段的 `reasoning_effort`，没有就用
+`[models] default_reasoning_effort`（只对默认模型），再没有就不发送。端点接受哪几档由端点决定。
+`harnesses.grok.effort`（`""`：模型的默认档）和选择器设置单个 agent 的 effort，对运行中的 agent 立即生效。
 
 **Atrium 为每个 agent 设置的内容：**
 
@@ -575,6 +590,8 @@ Grok 自己的默认值。模型选择器里列出 *Default* 和 `grok models` �
   （`board__status` 等）。这些工具不经询问直接运行。
 - Atrium `mcp_servers` 里的服务器，和 Grok 自己文件里的 `[mcp_servers]` 并存。
 - 不检查更新（`GROK_DISABLE_AUTOUPDATER`）。
+- 开启 `capture.enabled` 时，经 `GROK_CAMPAIGNS_OVERRIDE` 把它自定义模型的 `base_url` 换成 Atrium 的抓包代理
+  （见[请求抓取](#请求抓取)）。
 
 它的会话就是 CLI 自己的，保存在 `~/.grok/sessions/<目录>/<id>/`：`grok --resume` 能列出 Atrium 启动的 agent，
 Atrium 也能列出你在终端里开的会话。删除 agent 会同时删除它的会话。agent 的 worktree 没了以后，可以在你选的
@@ -585,7 +602,7 @@ Grok 还会自己接着干：它转入后台的命令结束、monitor 报告、�
 显示。输入框提供 CLI 的命令（`/compact`、
 `/session-info`、`/deep-research`、`/goal` 等）。Grok 默认还会读取 Claude Code 和 Cursor 的规则与 skills，并运行
 Claude Code 的 hooks；`config.toml` 里的 `[compat.claude]` 和 `[compat.cursor]` 可以关掉。暂不支持：fork agent、
-修改已发送的消息、在侧边栏列出它的子 agent、在 Requests 里看到它的调用。内置的 0.2.111 不接受图片（附加的图片
+修改已发送的消息、在侧边栏列出它的子 agent。内置的 0.2.111 不接受图片（附加的图片
 以路径的形式交给它）。
 
 ## MCP 服务器
@@ -673,8 +690,9 @@ Claude Code 的配置可以在 `env` 里另加变量；Antigravity 配置的 `en
 | `ANTIGRAVITY_HARNESS_PATH` | 用另一个 Antigravity 运行时二进制，代替 SDK wheel 里的那个。 |
 | `GROK_HOME` | Grok Build 的目录（默认 `~/.grok`）：`config.toml`、登录信息、会话、它安装的 CLI（`bin/`）。 |
 | `XAI_API_KEY` | Grok Build 访问 xAI API 用的 key，在没有 `grok login` 登录时使用（见 [Grok Build](#grok-build)）。 |
-| `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` | 原样传给每个 agent。开启 `capture.enabled` 时，Claude Code 和 Codex 的 `NO_PROXY` 会加上回环地址，抓包代理再按它们本来会用的代理把调用发出去。 |
+| `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` | 原样传给每个 agent。开启 `capture.enabled` 时，Claude Code、Codex 和 Grok Build 的 `NO_PROXY` 会加上回环地址，抓包代理再按它们本来会用的代理把调用发出去。 |
 | `ATRIUM_CAPTURE_URL`、`ATRIUM_CAPTURE_UPSTREAM` | Atrium 给被抓包的 Claude Code agent 设置的：代理的地址，以及它代替的地址。带着它们启动的 Atrium 会让自己的 agent 改用 `ATRIUM_CAPTURE_UPSTREAM`（见[请求抓取](#请求抓取)）。 |
+| `GROK_CAMPAIGNS_OVERRIDE` | Grok Build 的配置补丁（JSON 列表）。Atrium 给被抓包的 Grok Build agent 加上自己的 campaign（`atrium-capture`），你设的照样保留；带着它启动的 Atrium 会去掉这个 campaign（见[请求抓取](#请求抓取)）。 |
 
 ## 检查配置
 

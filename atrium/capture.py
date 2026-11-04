@@ -2,9 +2,9 @@
 
 Every live agent's model calls go through a reverse proxy that Atrium runs on a loopback port of its own.
 Atrium points the agent's base URL (Claude Code's ``ANTHROPIC_BASE_URL``, the ``base_url`` of the Codex
-model provider, the Gemini endpoint of Antigravity) at ``http://127.0.0.1:<port>/<token>``. The proxy sends
-each request on, unchanged, to where the harness would have sent it, and the answer back as it arrives:
-a stream stays a stream. On the way, both are recorded in ``$ATRIUM_HOME/captures/captures.db`` (SQLite,
+model provider, the Gemini endpoint of Antigravity, the ``base_url`` of Grok Build's custom models) at
+``http://127.0.0.1:<port>/<token>``. The proxy sends each request on, unchanged, to where the harness would
+have sent it, and the answer back as it arrives: a stream stays a stream. On the way, both are recorded in ``$ATRIUM_HOME/captures/captures.db`` (SQLite,
 bodies zlib-compressed) with credentials blanked; past ``capture.max_mb`` the oldest go first. One thing
 is changed on the way out: an ``Accept-Encoding`` offering what can't be read back here (br, zstd) is
 narrowed to gzip and deflate.
@@ -65,14 +65,15 @@ MAX_MARKS = 4000  # when the response's bytes came, to place each event of a str
 ROW_KEYS = ("harness", "session", "method", "path", "host", "started", "ttfb", "duration", "status", "req_bytes", "resp_bytes",
             "turn", "error", "summary", "narrowed")
 # How a harness's request to have the model summarize the conversation (compaction) starts its last user text, and
-# what it says further on: Claude Code appends it to the last user message, Codex and Antigravity send it as a user
-# message of its own. Claude Code without the agent's prompt (when there is no prompt cache to share) has its own system
-# prompt instead; Codex on OpenAI's own provider posts to /responses/compact.
+# what it says further on: Claude Code appends it to the last user message, Codex, Antigravity and Grok Build send it
+# as a user message of its own. Claude Code without the agent's prompt (when there is no prompt cache to share) has its
+# own system prompt instead; Codex on OpenAI's own provider posts to /responses/compact.
 COMPACTION_PROMPTS = (
     ("CRITICAL: Respond with TEXT ONLY", "create a detailed summary of the conversation so far"),  # Claude Code
     ("Your task is to create a detailed summary of the conversation so far", ""),  # Claude Code, without that preamble
     ("You are performing a CONTEXT CHECKPOINT COMPACTION", ""),  # Codex
     ("You have been working on the task described above but have not yet completed it", "continuation summary"),  # Antigravity
+    ("Your task is to produce a faithful, concise summary of the conversation so far", "successor assistant"),  # Grok Build
 )
 SUMMARIZER_SYSTEM = "You are a helpful AI assistant tasked with summarizing conversations"  # Claude Code's
 # request headers blanked by their name too: a relay's own auth header (response headers: SECRET_HEADERS only, their
@@ -82,8 +83,12 @@ SECRET_NAME = re.compile(r"auth|key|token|secret|passw|signature|credential|cook
 # Anthropic's own API), and the CLI's switch for Anthropic's API behind a proxy (it takes any other base URL for a
 # gateway, and leaves out what only Anthropic's API has). A process started from the agent inherits them.
 CAPTURE_URL_ENV, UPSTREAM_ENV, FIRST_PARTY_ENV = "ATRIUM_CAPTURE_URL", "ATRIUM_CAPTURE_UPSTREAM", "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL"
-# What the harnesses add to the CAs they trust: Claude Code (Node), Codex, OpenSSL's
-CA_ENV = ("NODE_EXTRA_CA_CERTS", "CODEX_CA_CERTIFICATE", "SSL_CERT_FILE", "SSL_CERT_DIR")
+# A Grok Build process's custom models reach a capture proxy through a campaign of Atrium's in GROK_CAMPAIGNS_OVERRIDE:
+# Grok's config patches, which apply over every layer of its config.toml but the required ones (requirements.toml), and
+# may set a model's base_url (its GROK_CONFIG overlay may not). A process started from the agent inherits it.
+GROK_CAMPAIGNS_ENV, CAPTURE_CAMPAIGN = "GROK_CAMPAIGNS_OVERRIDE", "atrium-capture"
+# What the harnesses add to the CAs they trust: Claude Code (Node), Codex, Grok Build, OpenSSL's
+CA_ENV = ("NODE_EXTRA_CA_CERTS", "CODEX_CA_CERTIFICATE", "GROK_EXTRA_CA_BUNDLE", "SSL_CERT_FILE", "SSL_CERT_DIR")
 ROUTE_DAYS = 90  # a route outlives the agent it was made for: a process started from it may still use it
 RELEASE_DAYS = 7  # a session Atrium no longer finds: its kept calls are pruned like the others this long after its last
 
@@ -205,9 +210,9 @@ def loopback_env(env: Mapping[str, str]) -> dict[str, str]:
 
 
 def unwrap_inherited(env: MutableMapping[str, str]) -> None:
-    """The environment of a process started from a captured Claude Code agent (an Atrium, say), back to the address its
-    base URL stands for: this process's own agents and calls then don't depend on that Atrium, nor go through two
-    proxies."""
+    """The environment of a process started from a captured Claude Code or Grok Build agent (an Atrium, say), back to the
+    address its base URL stands for: this process's own agents and calls then don't depend on that Atrium, nor go through
+    two proxies."""
     url, upstream = env.pop(CAPTURE_URL_ENV, None), env.pop(UPSTREAM_ENV, None)
     if url and env.get("ANTHROPIC_BASE_URL") == url:
         env.pop(FIRST_PARTY_ENV, None)
@@ -215,6 +220,22 @@ def unwrap_inherited(env: MutableMapping[str, str]) -> None:
             env["ANTHROPIC_BASE_URL"] = upstream
         else:
             env.pop("ANTHROPIC_BASE_URL", None)
+    if CAPTURE_CAMPAIGN in env.get(GROK_CAMPAIGNS_ENV, ""):
+        others = other_campaigns(env[GROK_CAMPAIGNS_ENV])
+        if others:
+            env[GROK_CAMPAIGNS_ENV] = json.dumps(others)
+        else:
+            env.pop(GROK_CAMPAIGNS_ENV)
+
+
+def other_campaigns(value: str | None) -> list[Any]:
+    """The campaigns of a GROK_CAMPAIGNS_OVERRIDE value besides Atrium's; none when it isn't a JSON list (Grok then applies
+    none)."""
+    try:
+        campaigns = json.loads(value or "[]")
+    except ValueError:
+        return []
+    return [c for c in campaigns if not (isinstance(c, dict) and c.get("id") == CAPTURE_CAMPAIGN)] if isinstance(campaigns, list) else []
 
 
 # --------------------------------------------------------------------------
@@ -340,7 +361,10 @@ def _first_line(texts: list[str]) -> str | None:
 
 
 def _conversation(api: str, body: dict[str, Any]) -> Any:
-    """The messages of a request: Anthropic's ``messages``, the Responses API's ``input``, Gemini's ``contents``."""
+    """The messages of a request: Anthropic's ``messages``, the Responses API's ``input`` (Chat Completions' ``messages``,
+    the system prompt first), Gemini's ``contents``."""
+    if api == "openai" and "input" not in body:
+        return body.get("messages")
     return body.get({"anthropic": "messages", "openai": "input", "gemini": "contents"}.get(api, ""))
 
 
@@ -388,8 +412,9 @@ def conversation_head(api: str, body: Any) -> str | None:
 def request_summary(path: str, body: Any) -> dict[str, Any]:
     """What the list shows of a request: its API, model, how much it carries (messages, tools, system prompt) and
     the kind of call: ``agent`` (the agent's own loop), ``sub`` (a subagent's: Claude Code's have no Agent tool, a
-    Codex sub-agent's is for a thread of its own), ``aux`` (no tools: titles, summaries…), ``count`` (token counting)
-    or ``compact`` (the harness having the model summarize the conversation, to go on with the summary instead)."""
+    Codex sub-agent's is for a thread of its own), ``aux`` (no tools, or one it must call: titles, summaries…),
+    ``count`` (token counting) or ``compact`` (the harness having the model summarize the conversation, to go on with
+    the summary instead)."""
     api = api_of(path)
     s: dict[str, Any] = {"api": api}
     if not isinstance(body, dict):
@@ -403,9 +428,14 @@ def request_summary(path: str, body: Any) -> dict[str, Any]:
     elif api == "openai":
         inp = body.get("input") if "input" in body else body.get("messages")
         system = _texts(body.get("instructions"))
+        if "input" not in body and isinstance(inp, list):  # Chat Completions: the system prompt is a message of its own
+            system = [t for m in inp if isinstance(m, dict) and m.get("role") in ("system", "developer") for t in _texts(m.get("content"))]
+            inp = [m for m in inp if not (isinstance(m, dict) and m.get("role") in ("system", "developer"))]
         s.update(model=body.get("model"), messages=len(inp) if isinstance(inp, list) else 1, tools=len(body.get("tools") or []),
                  system=sum(map(len, system)), first=_first_line(system), stream=bool(body.get("stream")))
-        s["kind"] = "agent" if body.get("tools") else "aux"
+        # a call made to call one function is for an answer in a set shape (Grok's session title), not the agent's loop
+        forced = isinstance(body.get("tool_choice"), dict) and body["tool_choice"].get("type") == "function"
+        s["kind"] = "agent" if body.get("tools") and not forced else "aux"
         if isinstance(body.get("prompt_cache_key"), str):
             s["thread"] = body["prompt_cache_key"]  # Codex: the thread it is for (a sub-agent's is its own)
     elif api == "gemini":
@@ -487,12 +517,18 @@ def response_summary(api: str, body: bytes, content_type: str) -> dict[str, Any]
                 error = e.get("error") or e.get("message") or e
             elif "choices" in e:  # chat completions
                 for c in e["choices"]:
-                    out.append(((c.get("delta") or c.get("message") or {}).get("content")) or "")
+                    d = c.get("delta") or c.get("message") or {}
+                    out.append(d.get("content") or "")
+                    for t in d.get("tool_calls") or []:  # a stream names a call once, in its first delta
+                        if isinstance(t, dict) and (t.get("function") or {}).get("name"):
+                            calls.append(t["function"]["name"])
                     stop = c.get("finish_reason") or stop
                 if e.get("usage"):
                     u = e["usage"]
                     usage = {"input": u.get("prompt_tokens"), "cached": (u.get("prompt_tokens_details") or {}).get("cached_tokens"),
-                             "output": u.get("completion_tokens")}
+                             "output": u.get("completion_tokens"), "reasoning": (u.get("completion_tokens_details") or {}).get("reasoning_tokens")}
+            elif e.get("error"):  # a relay's error, in the stream or as the body
+                error = e["error"]
     elif api == "gemini":
         for e in events:
             if e.get("usageMetadata"):

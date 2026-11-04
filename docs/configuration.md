@@ -287,14 +287,14 @@ have sent it (through the same `HTTPS_PROXY`), and the answer back as it arrives
 
 - It trusts what the harness trusts, and more: the system's CAs (the macOS keychain, Windows' store, OpenSSL's
   paths), certifi's, and the ones the harness is given (`NODE_EXTRA_CA_CERTS`, `CODEX_CA_CERTIFICATE`,
-  `SSL_CERT_FILE`, `SSL_CERT_DIR`). It presents Claude Code's client certificate (`CLAUDE_CODE_CLIENT_CERT`,
-  `CLAUDE_CODE_CLIENT_KEY`). A setup it can't reproduce (a CA file it can't read) isn't captured: that agent
-  calls its API directly.
-- Credentials are blanked before anything is written: `Authorization`, `x-api-key`, `x-goog-api-key`,
-  cookies, any request header whose name says it holds one (`key`, `token`, `secret`, `auth`…), the headers
-  `ANTHROPIC_CUSTOM_HEADERS` or a Codex provider's `http_headers` / `env_http_headers` add, and a `key=` in the
-  URL. The bodies are kept whole. They hold the conversation, including the files the agent read. The database
-  is readable by you alone.
+  `GROK_EXTRA_CA_BUNDLE`, `SSL_CERT_FILE`, `SSL_CERT_DIR`). It presents Claude Code's client certificate
+  (`CLAUDE_CODE_CLIENT_CERT`, `CLAUDE_CODE_CLIENT_KEY`). A setup it can't reproduce (a CA file it can't read) isn't
+  captured: that agent calls its API directly.
+- Credentials are blanked before anything is written: `Authorization`, `x-api-key`, `x-goog-api-key`, cookies, any
+  request header whose name says it holds one (`key`, `token`, `secret`, `auth`…), the headers
+  `ANTHROPIC_CUSTOM_HEADERS`, a Codex provider's `http_headers` / `env_http_headers` or a Grok model's
+  `extra_headers` / `env_http_headers` add, and a `key=` in the URL. The bodies are kept whole. They hold the
+  conversation, including the files the agent read. The database is readable by you alone.
 - One thing changes on the way out. An `Accept-Encoding` offering br or zstd offers gzip and deflate
   instead, so the answer can be read back (the Request view shows what the harness offered).
 - Deleting an agent deletes its calls; the tab's trash button deletes them too.
@@ -310,15 +310,18 @@ have sent it (through the same `HTTPS_PROXY`), and the answer back as it arrives
   words isn't one): Claude Code's "CRITICAL: Respond with TEXT ONLY… Your task is to create a detailed summary of the
   conversation so far" (or its summarizing system prompt), Codex's "You are performing a CONTEXT CHECKPOINT
   COMPACTION" (or a call to `/responses/compact`), Antigravity's "You have been working on the task described
-  above… Write a continuation summary". A harness version that words it differently isn't recognized until Atrium
-  learns the new words.
+  above… Write a continuation summary", Grok Build's "Your task is to produce a faithful, concise summary of the
+  conversation so far… a successor assistant". A harness version that words it differently isn't recognized until
+  Atrium learns the new words.
 - **Processes an agent starts.** A Claude Code agent's environment has the proxy as `ANTHROPIC_BASE_URL`, so a
   process it starts (a script running `claude -p`) inherits it, and its calls are recorded under that agent. They
   also get `ATRIUM_CAPTURE_URL` (the proxy's address) and `ATRIUM_CAPTURE_UPSTREAM` (the one it stands for, `""` =
   Anthropic's API). Such a process can outlive Atrium: the proxy takes the same port again when it is free, and
   keeps its routes for 90 days, so its calls go on working after a restart. An Atrium started from an agent (a test
   instance) first takes its environment back to `ATRIUM_CAPTURE_UPSTREAM`: its own agents call the API through
-  their own proxy, not through two.
+  their own proxy, not through two. A Grok Build agent's environment has the campaign below in
+  `GROK_CAMPAIGNS_OVERRIDE`, which a `grok` it starts inherits likewise; an Atrium started from it drops Atrium's
+  campaign from that variable.
 
 What goes through it:
 
@@ -329,8 +332,14 @@ What goes through it:
   (`[model_providers]`). The built-in OpenAI provider (ChatGPT sign-in, `openai_base_url`), and providers
   with `supports_websockets`, call out directly.
 - **Antigravity**: what goes to the Gemini API endpoint, a custom model's relay or Google's. Not on Vertex AI.
-- **Grok Build**: nothing. Only its `config.toml` says where a model's calls go, and an agent's process can't be
-  given another address (`GROK_CONFIG`, the CLI's overlay, may not set a model's `base_url`).
+- **Grok Build**: what goes to a custom model's endpoint (a `[model.<id>]` with a `base_url`, or `api_base_url`),
+  its title and summary calls included. Its `config.toml` is left alone: the agent's process gets a campaign of
+  Atrium's (`atrium-capture`) in `GROK_CAMPAIGNS_OVERRIDE`, Grok's config patches that apply over its config
+  files and may set a model's `base_url` (`GROK_CONFIG`, its overlay, may not). Campaigns already in that variable
+  still apply; without it, Grok's own (xAI's, `[[campaigns]]` in its files) don't in Atrium's agents. xAI's
+  endpoints (`grok login`, `XAI_API_KEY`), whose address depends on the sign-in, are called directly, and so is a
+  model with `mtls_cert_dir`, or one whose `base_url` `requirements.toml` pins. A model added to `config.toml` is
+  captured in agents started afterwards.
 
 Anything else the harnesses send isn't recorded: telemetry, update checks, MCP servers over HTTP, the
 plugins Codex fetches, web pages.
@@ -592,6 +601,7 @@ name = "Grok 4.7 (relay)"
 api_key = "..."                       # or env_key = "RELAY_API_KEY": a variable in Atrium's environment
 api_backend = "chat_completions"      # or "responses", "messages"
 supports_reasoning_effort = true      # the endpoint takes reasoning_effort: Atrium's effort picker works
+reasoning_effort = "high"             # what it gets when none is picked (else none is sent)
 context_window = 500000               # for the context gauge and auto-compaction (default 200000)
 ```
 
@@ -599,10 +609,16 @@ An endpoint that answers `Invalid schema for function 'use_tool': schema must ha
 'oneOf'…` (Azure's Responses API does) takes the same model through `api_backend = "chat_completions"`.
 
 **Which model**: the agent's pick (`harnesses.grok.model` for new agents), else `[models] default`, else
-Grok's. The model picker lists *Default* and what `grok models` lists. **Effort** is the model's own
-levels (a custom model with `supports_reasoning_effort` gets Grok's, `minimal` … `xhigh`; which of them an
-endpoint accepts is up to it), applied to a running agent at once; a model without `supports_reasoning_effort`
-ignores it.
+Grok's. The model picker lists *Default* and what `grok models` lists.
+
+**Effort** is the model's own, and Atrium's picker offers the levels the model has. xAI's models list theirs and
+a default (Grok 4.5: `low`, `medium`, `high`; `high`). A custom model has none unless its block says
+`supports_reasoning_effort = true`: without it Grok sends no `reasoning_effort` (the endpoint decides), and the
+picker offers none. With it, the levels are Grok's (`minimal` … `xhigh`, or what
+`reasoning_efforts = [{value = "low"}, …]` lists), and *Default* is the block's `reasoning_effort`, else
+`[models] default_reasoning_effort` (for the default model), else nothing is sent. Which levels an endpoint
+takes is up to it. `harnesses.grok.effort` (`""`: the model's default) and the picker set an agent's, applied to a
+running agent at once.
 
 **What Atrium sets for each agent:**
 
@@ -619,6 +635,8 @@ ignores it.
   them with `search_tool` and calls them through `use_tool` (`board__status`…). They run without asking.
 - the servers in Atrium's `mcp_servers`, beside the `[mcp_servers]` of Grok's own files.
 - no update checks (`GROK_DISABLE_AUTOUPDATER`).
+- with `capture.enabled`, its custom models' `base_url` set to Atrium's capture proxy, through
+  `GROK_CAMPAIGNS_OVERRIDE` ([Request capture](#request-capture)).
 
 Its sessions are the CLI's own, in `~/.grok/sessions/<directory>/<id>/`: `grok --resume` lists the agents
 Atrium started, and Atrium lists the sessions you start in a terminal. Deleting an agent deletes its session.
@@ -632,7 +650,7 @@ aren't shown.
 The composer offers the CLI's commands (`/compact`, `/session-info`, `/deep-research`, `/goal`…). By default
 Grok also reads Claude Code's and Cursor's rules and skills, and runs Claude Code's hooks; `[compat.claude]`
 and `[compat.cursor]` in `config.toml` turn that off. Not yet: forking an agent, editing a message already
-sent, its subagents in the rail, its calls in Requests. The bundled 0.2.111 takes no images (an attached one
+sent, its subagents in the rail. The bundled 0.2.111 takes no images (an attached one
 reaches it by its path).
 
 ## MCP servers
@@ -726,8 +744,9 @@ proxy the agents need. Claude Code's settings can add variables of their own und
 | `ANTIGRAVITY_HARNESS_PATH` | Another Antigravity runtime binary instead of the one in the SDK's wheel. |
 | `GROK_HOME` | Grok Build's directory (default `~/.grok`): `config.toml`, the login, sessions, its installed CLI (`bin/`). |
 | `XAI_API_KEY` | Grok Build's key for xAI's API, when it isn't signed in with `grok login` ([Grok Build](#grok-build)). |
-| `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` | Passed on to every agent. With `capture.enabled`, Claude Code and Codex get the loopback addresses added to `NO_PROXY`, and the capture proxy sends their calls out through the proxy they would have used. |
+| `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` | Passed on to every agent. With `capture.enabled`, Claude Code, Codex and Grok Build get the loopback addresses added to `NO_PROXY`, and the capture proxy sends their calls out through the proxy they would have used. |
 | `ATRIUM_CAPTURE_URL`, `ATRIUM_CAPTURE_UPSTREAM` | Set by Atrium for a captured Claude Code agent: the proxy's address and the one it replaced. An Atrium started with them sends its agents to `ATRIUM_CAPTURE_UPSTREAM` ([Request capture](#request-capture)). |
+| `GROK_CAMPAIGNS_OVERRIDE` | Grok Build's config patches (a JSON list). Atrium adds a campaign of its own (`atrium-capture`) for a captured Grok Build agent, and keeps the ones you set; an Atrium started with it drops that campaign ([Request capture](#request-capture)). |
 
 ## Checking your setup
 

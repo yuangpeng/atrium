@@ -1,6 +1,7 @@
 // What a model API request and its answer hold, in one shape for the three APIs the harnesses speak: Anthropic
-// Messages (Claude Code), OpenAI Responses (Codex; Chat Completions roughly) and Gemini generateContent (Antigravity).
-// Pure functions over the bodies capture.py recorded; the Requests panel renders what they return.
+// Messages (Claude Code), OpenAI Responses (Codex) and Chat Completions (Grok Build's custom models), and Gemini
+// generateContent (Antigravity). Pure functions over the bodies capture.py recorded; the Requests panel renders what
+// they return.
 
 export type PartKind = "text" | "thinking" | "call" | "result" | "media" | "other";
 
@@ -209,40 +210,63 @@ function chatRequest(body: Record<string, any>): Request {
   const system = msgs.filter((m) => m?.role === "system" || m?.role === "developer");
   return {
     params: Object.entries(body).filter(([k]) => !["messages", "tools"].includes(k)),
-    system: system.map((m) => ({ kind: "text", text: str(m.content) })),
+    system: system.flatMap((m) => chatParts(obj(m))),
     tools: arr(body.tools).map((t) => ({ name: t.function?.name ?? t.type, description: t.function?.description, schema: t.function?.parameters ?? t })),
-    messages: msgs
-      .filter((m) => !system.includes(m))
-      .map((m) => ({
-        role: m.role,
-        raw: m,
-        parts: [
-          ...(m.content ? [{ kind: m.role === "tool" ? "result" : "text", title: m.tool_call_id, text: str(m.content) } as Part] : []),
-          ...arr(m.tool_calls).map((c): Part => ({ kind: "call", title: c.function?.name, data: json(c.function?.arguments ?? "") })),
-        ],
-      })),
+    messages: msgs.filter((m) => !system.includes(m)).map((m) => ({ role: m.role, raw: m, parts: chatParts(obj(m)) })),
   };
 }
 
+/** A Chat Completions message: its thinking (what relays send as `reasoning_content` or `reasoning`), its text (a
+ *  tool's result, in a tool message) and the calls it makes. */
+function chatParts(m: Record<string, any>): Part[] {
+  const parts: Part[] = [];
+  const thinking = m.reasoning_content ?? m.reasoning;
+  if (typeof thinking === "string" && thinking) parts.push({ kind: "thinking", text: thinking });
+  const kind: PartKind = m.role === "tool" ? "result" : "text";
+  const content = typeof m.content === "string" ? (m.content ? [{ type: "text", text: m.content }] : []) : arr(m.content);
+  for (const c of content) {
+    if (c?.type === "text") parts.push({ kind, title: m.tool_call_id, text: c.text });
+    else if (c?.type === "image_url" || c?.type === "input_audio" || c?.type === "file")
+      parts.push({ kind: "media", title: c.type, text: str(c.image_url?.url ?? c.input_audio?.format ?? c.file?.filename ?? "").slice(0, 200) });
+    else parts.push({ kind: "other", title: c?.type, data: c });
+  }
+  for (const c of arr(m.tool_calls)) parts.push({ kind: "call", title: c.function?.name, data: json(c.function?.arguments ?? "") });
+  return parts;
+}
+
+/** A Chat Completions answer: the message, or a stream's deltas summed into one (a call's name comes in its first). */
+function chatAnswer(events: StreamEvent[]): Part[] {
+  const msg = { reasoning_content: "", content: "", tool_calls: [] as { function: { name: string; arguments: string } }[] };
+  for (const { data } of events)
+    for (const c of arr(obj(data).choices).slice(0, 1)) {
+      if (c.message) return chatParts(obj(c.message)); // not streamed
+      const d = obj(c.delta);
+      const thinking = d.reasoning_content ?? d.reasoning;
+      if (typeof thinking === "string") msg.reasoning_content += thinking;
+      if (typeof d.content === "string") msg.content += d.content;
+      for (const t of arr(d.tool_calls)) {
+        const call = (msg.tool_calls[typeof t.index === "number" ? t.index : msg.tool_calls.length] ??= { function: { name: "", arguments: "" } });
+        call.function.name ||= t.function?.name ?? "";
+        call.function.arguments += t.function?.arguments ?? "";
+      }
+    }
+  return chatParts({ ...msg, tool_calls: msg.tool_calls.filter(Boolean) });
+}
+
 function responsesAnswer(events: StreamEvent[]): Part[] {
+  if (events.some((e) => Array.isArray(obj(e.data).choices))) return chatAnswer(events);
   let final: Record<string, any> | null = null;
   const done: Record<string, any>[] = [];
   let text = "";
-  const chat: Part[] = [];
   for (const { data } of events) {
     const e = obj(data);
     const r = String(e.type ?? "").startsWith("response.") ? obj(e.response) : e.object === "response" ? e : null;
     if (r && r.output && !["in_progress", "queued", undefined].includes(r.status)) final = r;
     if (e.type === "response.output_item.done") done.push(obj(e.item));
     if (e.type === "response.output_text.delta") text += e.delta ?? "";
-    for (const c of arr(e.choices)) {
-      const d = obj(c.delta ?? c.message);
-      if (d.content) chat.push({ kind: "text", text: d.content });
-    }
   }
   const items = arr(final?.output).length ? arr(final!.output) : done;
   if (items.length) return items.flatMap((i) => responsesItem(obj(i)).parts);
-  if (chat.length) return [{ kind: "text", text: chat.map((p) => p.text).join("") }];
   return text ? [{ kind: "text", text }] : [];
 }
 
