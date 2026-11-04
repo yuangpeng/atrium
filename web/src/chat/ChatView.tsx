@@ -5,7 +5,7 @@ import { api, EditAt, ForkAt, Item, LiveState, MoveWorkspace, SessionRow, Sessio
 import { socket } from "../ws";
 import { useApp } from "../store";
 import { EMPTY_REPLY, Workspace, useDrafts } from "../drafts";
-import { clsx, fmtClock, fmtDuration } from "../util";
+import { clsx, fmtClock, fmtDuration, throttle } from "../util";
 import { Markdown, Spinner } from "../components/ui";
 import { useOpenCompaction } from "../components/Compactions";
 import { BoardToolRow, PermissionCard, ToolRow, isBoardTool, useOpenSubagent } from "./ToolViews";
@@ -390,6 +390,7 @@ export function ChatView({ pid, sid, cwd, compact, forkable, editable, modeLocke
   const scrollRef = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const reload = useRef<() => void>(() => {});
 
   // load snapshot + live stream (buffer live items until the snapshot lands)
   useEffect(() => {
@@ -432,6 +433,9 @@ export function ChatView({ pid, sid, cwd, compact, forkable, editable, modeLocke
         })
         .catch((e) => toast(String(e.message || e), "error"))
         .finally(() => alive && setLoading(false));
+    reload.current = throttle(() => {
+      if (alive && ready) void load();
+    }, 1000);
     void load();
     const offRe = socket.onReconnect(() => {
       ready = false;
@@ -443,6 +447,15 @@ export function ChatView({ pid, sid, cwd, compact, forkable, editable, modeLocke
       offRe();
     };
   }, [pid, sid, toast]);
+
+  // when a CLI session runs outside Atrium, reload as the transcript watcher reports new writes
+  const updatedAt = listed?.updated_at;
+  const lastUpdated = useRef(updatedAt);
+  useEffect(() => {
+    if (updatedAt === lastUpdated.current) return;
+    lastUpdated.current = updatedAt;
+    if (!st.state && !listed?.live) reload.current();
+  }, [updatedAt, st.state, listed?.live]);
 
   // autoscroll when pinned to the bottom
   useLayoutEffect(() => {

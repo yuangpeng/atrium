@@ -8,12 +8,13 @@ a Google account sign-in: Antigravity's terms don't allow third-party apps to us
 of the Antigravity app and CLI. Where they go is read from the Antigravity CLI's own settings file,
 ``~/.gemini/antigravity-cli/settings.json`` (see "Antigravity's own settings" below).
 
-Conversations live in Atrium's own store, ``$ATRIUM_HOME/antigravity``:
+Conversations come from two stores — Atrium's own (``$ATRIUM_HOME/antigravity``) and the Antigravity
+CLI's (``~/.gemini/antigravity-cli``, or ``$ANTIGRAVITY_GEMINI_DIR/antigravity-cli``):
 
-    save/<id>.db         the runtime's state of a conversation (what it resumes from)
-    data/brain/<id>/     the runtime's data directory, with its JSONL transcript
-                         (``.system_generated/logs/transcript_full.jsonl``: history, diffs, tracker)
-    sessions/<id>.json   Atrium's index of the conversation: working directory, title, start
+    save/<id>.db, conversations/<id>.db       the runtime's state of a conversation (what it resumes from)
+    data/brain/<id>/, brain/<id>/             the runtime's data directory, with its JSONL transcript
+                                              (``.system_generated/logs/transcript_full.jsonl``: history, diffs, tracker)
+    sessions/<id>.json, conversation_summaries.db  index of the conversation: working directory, title, start
 
 Atrium's tools are Python tools of the SDK named ``<namespace>_<tool>`` (``board_status``…).
 Approvals go through a pre-tool hook that asks in the chat, as the session's permission mode says.
@@ -40,8 +41,8 @@ from typing import Any
 
 from .. import gitops
 from ..config import ATRIUM_HOME, atomic_write, config
-from .base import Attachment, Emit, FileEdit, Harness, Item, LiveSession, LiveSpec, SessionSummary, ToolSpec
-from .util import attachment_note, clip, hhmm, iso_to_epoch, parse_json_loose, short, split_attachment_note, upload_url
+from .base import Attachment, Compaction, Emit, FileEdit, Harness, Item, LiveSession, LiveSpec, SessionSummary, ToolSpec
+from .util import TailScan, attachment_note, clip, hhmm, iso_to_epoch, parse_json_loose, short, split_attachment_note, tail_scan, upload_url
 
 log = logging.getLogger("atrium.antigravity")
 
@@ -68,16 +69,19 @@ CONTEXT_WINDOW = 1_048_576  # Gemini 3.x models
 # Tools that only read: never asked about. Names as the pre-tool hook sees them (the SDK maps
 # write_to_file to create_file and replace_file_content to edit_file).
 READ_TOOLS = {
-    "view_file", "list_directory", "search_directory", "find_file", "finish", "list_skills", "lookup_skill", "lookup_skills",
-    "get_skill_resources", "skill_lookup", "invoke_subagent", "define_subagent", "manage_subagents", "send_message", "manage_task",
+    "view_file", "read_file", "list_directory", "search_directory", "find_file", "finish", "list_skills", "lookup_skill",
+    "lookup_skills", "get_skill_resources", "skill_lookup", "invoke_subagent", "define_subagent", "manage_subagents",
+    "send_message", "manage_task",
 }
-EDIT_TOOLS = {"write_to_file", "create_file", "replace_file_content", "multi_replace_file_content", "edit_file"}
+EDIT_TOOLS = {"write_to_file", "write_file", "create_file", "replace_file_content", "multi_replace_file_content", "edit_file"}
 META_ARGS = ("toolAction", "toolSummary")  # the runtime adds them to every tool's arguments
 ATRIUM_NAMESPACES = ("board", "web", "graph", "review")  # Atrium's tools are <namespace>_<tool> here
 TOOL_NAMES_NOTE = "Atrium's tools are named `<namespace>_<tool>` in this session: {examples}."
 RULE_FILES = ("AGENTS.md", "GEMINI.md", ".agents/AGENTS.md", ".agents/GEMINI.md")
 MAX_RULE_BYTES = 24_000  # Antigravity's per-file limit for rules
 _STAMP_RE = re.compile(r"^(?:Created|Completed) At: .*\n?", re.M)
+_CMD_EXIT_RE = re.compile(r"(?:^|\n)Command exited with code (-?\d+)\.\n\n(?:Command output:\n([\s\S]*)|No output from the command\.\s*$)")
+_EDIT_LINE_RE = re.compile(r"starting at line (\d+)")
 _FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---\n?", re.S)
 _CMD_RULE_RE = re.compile(r"Bash\((.+?)(?::\*)?\)$")  # Claude-style allow rules ("Bash(git log:*)")
 _API_ERROR_RE = re.compile(r"Error (\d{3}), Message: ([^\[\]\"(]+)")  # "Error 503, Message: Upstream service unavailable [trace…"
@@ -108,16 +112,47 @@ def _index_path(sid: str) -> Path:
     return ag_home() / "sessions" / f"{sid}.json"
 
 
-def _logs(sid: str) -> Path:
-    return _brain_dir() / sid / ".system_generated" / "logs"
+def cli_home() -> Path:
+    return Path(os.environ.get("ANTIGRAVITY_GEMINI_DIR") or str(Path.home() / ".gemini")) / "antigravity-cli"
+
+
+def _cli_save_dir() -> Path:
+    return cli_home() / "conversations"
+
+
+def _cli_brain_dir() -> Path:
+    return cli_home() / "brain"
+
+
+def _cli_summaries_db() -> Path:
+    return cli_home() / "conversation_summaries.db"
+
+
+def _state_db(sid: str) -> Path | None:
+    """The conversation's runtime state database: Atrium's store first, else the CLI's."""
+    for d in (_save_dir(), _cli_save_dir()):
+        p = d / f"{sid}.db"
+        if p.exists():
+            return p
+    return None
+
+
+def _session_store(sid: str) -> tuple[Path, Path]:
+    """(save_dir, app_data_dir) for ``sid``: the CLI's store when the conversation lives there, else Atrium's."""
+    if not (_save_dir() / f"{sid}.db").exists() and not (_brain_dir() / sid).exists():
+        if (_cli_save_dir() / f"{sid}.db").exists() or (_cli_brain_dir() / sid).exists():
+            return _cli_save_dir(), cli_home()
+    return _save_dir(), _data_dir()
 
 
 def transcript_file(sid: str) -> Path | None:
     """The conversation's transcript: the full one (tool outputs as the model saw them), else the abridged one."""
-    for name in ("transcript_full.jsonl", "transcript.jsonl"):
-        p = _logs(sid) / name
-        if p.exists():
-            return p
+    for brain in (_brain_dir(), _cli_brain_dir()):
+        logs = brain / sid / ".system_generated" / "logs"
+        for name in ("transcript_full.jsonl", "transcript.jsonl"):
+            p = logs / name
+            if p.exists():
+                return p
     return None
 
 
@@ -153,10 +188,137 @@ def _file_uri(path: str) -> str:
     return "file://" + urllib.parse.quote(path, safe="/:@!$&'()*+,;=-._~")
 
 
+def _uri_path(uri: str) -> str | None:
+    if uri.startswith("file://"):
+        return urllib.parse.unquote(uri[len("file://"):])
+    return uri or None
+
+
 def _within(path: str, root: str) -> str | None:
     """``path`` (resolved) if it is ``root`` (resolved) or inside it, else None."""
     real = os.path.realpath(path)
     return real if real == root or real.startswith(root.rstrip(os.sep) + os.sep) else None
+
+
+_db_meta_cache: dict[str, tuple[tuple[int, int], tuple[bool, list[str]]]] = {}
+
+
+def _db_workspaces(db: Path) -> tuple[bool, list[str]]:
+    """(is_subagent, workspace paths) from a conversation's state database, cached by mtime and size."""
+    import sqlite3
+
+    try:
+        st = db.stat()
+    except OSError:
+        return False, []
+    sig = (st.st_mtime_ns, st.st_size)
+    hit = _db_meta_cache.get(str(db))
+    if hit and hit[0] == sig:
+        return hit[1]
+    sub, paths = False, []
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=2)
+        try:
+            sub = con.execute("SELECT 1 FROM parent_references LIMIT 1").fetchone() is not None
+            for (data,) in con.execute("SELECT data FROM trajectory_metadata_blob"):
+                i, raw = 0, bytes(data or b"")
+                while i < len(raw):
+                    key, j = _varint(raw, i)
+                    if key & 7 == 0:
+                        _, j = _varint(raw, j)
+                    elif key & 7 == 2:
+                        n, k = _varint(raw, j)
+                        val, j = raw[k:k + n], k + n
+                        if key >> 3 == 7 and val.startswith(b"file://"):
+                            paths.append(urllib.parse.unquote(val[len(b"file://"):].decode()))
+                    elif key & 7 == 1:
+                        j += 8
+                    elif key & 7 == 5:
+                        j += 4
+                    else:
+                        break
+                    i = j
+        finally:
+            con.close()
+    except Exception:
+        return False, []
+    res = (sub, paths)
+    _db_meta_cache[str(db)] = (sig, res)
+    return res
+
+
+def _cli_summaries() -> dict[str, dict[str, Any]]:
+    """CLI conversations from ``conversation_summaries.db``: sid -> {cwd, title, subagent}."""
+    import sqlite3
+
+    db = _cli_summaries_db()
+    if not db.exists():
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=2)
+        try:
+            rows = con.execute(
+                "SELECT conversation_id, title, workspace_uris, parent_conversation_id, nesting_depth FROM conversation_summaries"
+            ).fetchall()
+        finally:
+            con.close()
+    except Exception:
+        return {}
+    for sid, title, raw_uris, parent, depth in rows:
+        if not sid:
+            continue
+        try:
+            uris = json.loads(raw_uris or "[]")
+        except ValueError:
+            uris = []
+        paths = [p for u in (uris if isinstance(uris, list) else []) if isinstance(u, str) and (p := _uri_path(u))]
+        out[str(sid)] = {
+            "cwd": paths[0] if paths else None,
+            "title": str(title).strip() if title else None,
+            "subagent": bool(parent) or int(depth or 0) > 0,
+        }
+    return out
+
+
+def _cli_session_meta(sid: str, summaries: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Metadata for a CLI conversation ``sid``: {cwd, title, subagent}."""
+    info = dict((summaries if summaries is not None else _cli_summaries()).get(sid) or {})
+    if not info.get("cwd") or "subagent" not in info:
+        db = _cli_save_dir() / f"{sid}.db"
+        if db.exists():
+            sub, paths = _db_workspaces(db)
+            info.setdefault("subagent", sub)
+            if sub:
+                info["subagent"] = True
+            if not info.get("cwd") and paths:
+                info["cwd"] = paths[0]
+    return info
+
+
+def _update_cli_summary(sid: str, *, title: str | None = None, cwd: str | None = None, delete: bool = False) -> None:
+    """Keep the CLI's ``conversation_summaries.db`` in step when a CLI session is renamed, moved or deleted."""
+    import sqlite3
+
+    db = _cli_summaries_db()
+    if not db.exists():
+        return
+    try:
+        con = sqlite3.connect(db, timeout=2)
+        try:
+            with con:
+                if delete:
+                    con.execute("DELETE FROM conversation_summaries WHERE conversation_id = ?", (sid,))
+                else:
+                    if title is not None:
+                        con.execute("UPDATE conversation_summaries SET title = ? WHERE conversation_id = ?", (title, sid))
+                    if cwd is not None:
+                        uris = json.dumps([_file_uri(os.path.realpath(cwd))])
+                        con.execute("UPDATE conversation_summaries SET workspace_uris = ? WHERE conversation_id = ?", (uris, sid))
+        finally:
+            con.close()
+    except sqlite3.Error as e:
+        log.debug("updating CLI conversation_summaries.db for %s failed: %s", sid, e)
 
 
 def rewrite_workspace(sid: str, old: str, new: str) -> bool:
@@ -168,8 +330,8 @@ def rewrite_workspace(sid: str, old: str, new: str) -> bool:
     runtime would go on working there) or have a format Atrium doesn't know."""
     import sqlite3
 
-    db = _save_dir() / f"{sid}.db"
-    if not db.exists():
+    db = _state_db(sid)
+    if not db:
         return False
     old, new = os.path.realpath(old), os.path.realpath(new)
     rows: list[Any] = []
@@ -276,7 +438,7 @@ _bad_max_tokens: set[tuple[str, str]] = set()  # (custom model, maxTokens) alrea
 
 
 def cli_settings_path() -> Path:
-    return Path.home() / ".gemini" / "antigravity-cli" / "settings.json"
+    return cli_home() / "settings.json"
 
 
 def cli_settings() -> tuple[dict[str, Any], str | None]:
@@ -569,19 +731,23 @@ def call_view(name: str, args: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         return f"mcp__{a['ServerName']}__{a['ToolName']}", mcp_args(a)
     if "CommandLine" in a:
         return "Bash", {"command": a.get("CommandLine") or "", "cwd": a.get("Cwd") or None}
-    if "CodeContent" in a:
-        return "Write", {"file_path": a.get("TargetFile"), "content": a.get("CodeContent") or ""}
+    if "CodeContent" in a or name == "write_file":
+        return "Write", {"file_path": a.get("TargetFile") or a.get("Path"), "content": a.get("CodeContent") if "CodeContent" in a else (a.get("Content") or "")}
     if "ReplacementChunks" in a:
         edits = [{"old_string": c.get("TargetContent") or "", "new_string": c.get("ReplacementContent") or ""}
                  for c in a.get("ReplacementChunks") or [] if isinstance(c, dict)]
-        return "MultiEdit", {"file_path": a.get("TargetFile"), "edits": edits}
-    if "TargetContent" in a:
-        return "Edit", {"file_path": a.get("TargetFile"), "old_string": a.get("TargetContent") or "",
-                        "new_string": a.get("ReplacementContent") or "", "replace_all": bool(a.get("AllowMultiple"))}
-    if "AbsolutePath" in a:
-        inp: dict[str, Any] = {"file_path": a["AbsolutePath"]}
+        return "MultiEdit", {"file_path": a.get("TargetFile") or a.get("Path"), "edits": edits}
+    if "TargetContent" in a or name == "edit_file":
+        return "Edit", {"file_path": a.get("TargetFile") or a.get("Path"),
+                        "old_string": a.get("TargetContent") if "TargetContent" in a else (a.get("Target") or ""),
+                        "new_string": a.get("ReplacementContent") if "ReplacementContent" in a else (a.get("Replacement") or ""),
+                        "replace_all": bool(a.get("AllowMultiple"))}
+    if "AbsolutePath" in a or name == "read_file":
+        inp: dict[str, Any] = {"file_path": a.get("AbsolutePath") or a.get("Path")}
         if a.get("StartLine"):
             inp["offset"] = a["StartLine"]
+        if a.get("EndLine") and a.get("StartLine"):
+            inp["limit"] = max(1, int(a["EndLine"]) - int(a["StartLine"]) + 1)
         return "Read", inp
     if name == "search_web":
         return "WebSearch", {"query": a.get("query") or "", **({"domain": a["domain"]} if a.get("domain") else {})}
@@ -591,10 +757,11 @@ def call_view(name: str, args: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         return "ImageGen", {"prompt": a.get("Prompt") or ""}
     if name == "invoke_subagent":
         subs = [s for s in a.get("Subagents") or [] if isinstance(s, dict)]
-        first = subs[0] if subs else {}
-        desc = first.get("Prompt") or first.get("Task") or first.get("Description") or ""
-        return "Agent", {"description": short(desc, 200), "subagent_type": first.get("Name") or first.get("Type") or "subagent",
-                         "subagents": len(subs)}
+        first = subs[0] if subs else a
+        desc = first.get("Prompt") or first.get("Task") or first.get("Description") or a.get("Role") or ""
+        sub_type = first.get("Name") or first.get("Type") or first.get("TypeName") or a.get("Role") or "subagent"
+        return "Agent", {"description": short(desc, 200), "subagent_type": sub_type,
+                         **({"subagents": len(subs)} if subs else {"subagents": 1})}
     return name, a
 
 
@@ -744,6 +911,12 @@ def _result_text(d: dict[str, Any]) -> tuple[str, bool]:
         text = out if sep else text
         if d.get("exit_code") not in (0, None):
             return clip(text.rstrip() + f"\n[exit code {d['exit_code']}]"), True
+    if d.get("type") == "GENERIC" and (m := _CMD_EXIT_RE.search(text)):
+        code = int(m.group(1))
+        out = m.group(2) if m.group(2) is not None else ""
+        if code != 0:
+            return clip(out.rstrip() + f"\n[exit code {code}]" if out.strip() else f"[exit code {code}]"), True
+        return clip(out), False
     m = re.match(r"Tool response for [^\n]*:\n```(?:json)?\n(.*)\n```\s*$", text, re.S)
     if m:  # one of Atrium's tools: {"result": ...}
         try:
@@ -752,6 +925,11 @@ def _result_text(d: dict[str, Any]) -> tuple[str, bool]:
         except ValueError:
             pass
     return clip(text), False
+
+
+def _is_compact_step(d: dict[str, Any]) -> bool:
+    t = d.get("type") or ""
+    return "COMPACT" in t or (t == "CHECKPOINT" and (d.get("content") or "").startswith("# Resuming from a compaction"))
 
 
 def _calls(entries: list[dict[str, Any]]) -> list[tuple[dict[str, Any], int, dict[str, Any], dict[str, Any] | None]]:
@@ -766,7 +944,7 @@ def _calls(entries: list[dict[str, Any]]) -> list[tuple[dict[str, Any], int, dic
                 if isinstance(c, dict):
                     waiting.append(len(out))
                     out.append((d, n, c, None))
-        elif t == "USER_INPUT":
+        elif t == "USER_INPUT" or _is_compact_step(d):
             waiting = []
         elif waiting:
             i = waiting.pop(0)
@@ -804,8 +982,11 @@ def history_items(entries: list[dict[str, Any]]) -> list[Item]:
                 if res is not None:
                     content, err = _result_text(res)
                     items.append({"kind": "tool_result", "id": f"{iid}:{n}", "content": content, "is_error": err})
-        elif t and "COMPACT" in t:
+        elif _is_compact_step(d):
             items.append({"kind": "system", "id": iid, "subtype": "compact", "text": "Conversation compacted", "compaction": iid})
+            summary = (d.get("content") or "").removeprefix("# Resuming from a compaction").strip()
+            if summary and t == "CHECKPOINT":
+                items.append({"kind": "system", "id": f"{iid}:summary", "subtype": "compact_summary", "text": "Summary of the earlier conversation", "detail": summary})
         elif id(d) not in results and t == "ERROR_MESSAGE" and d.get("status") != "ERROR":  # the call was retried
             items.append(retry_item(iid, str(d.get("error") or _result_text(d)[0])))
         elif id(d) not in results and (d.get("status") == "ERROR" or t == "ERROR_MESSAGE"):
@@ -814,6 +995,41 @@ def history_items(entries: list[dict[str, Any]]) -> list[Item]:
             for it in items[made:]:
                 it["ts"] = ts
     return items
+
+
+class _CompactionScan(TailScan):
+    """A transcript's compactions, with when each part began, its first prompt and the context's size before."""
+
+    def __init__(self, ino: int):
+        super().__init__(ino)
+        self.started: float | None = None
+        self.prompt: str | None = None
+        self.tokens: int | None = None
+        self.found: dict[str, Compaction] = {}
+
+    def line(self, raw: bytes) -> None:
+        wanted = (b'"COMPACT', b'"CHECKPOINT"', b'"input_tokens"') + ((b'"USER_EXPLICIT"',) if self.prompt is None else ())
+        if self.started is not None and not any(w in raw for w in wanted):
+            return
+        try:
+            d = json.loads(raw)
+        except ValueError:
+            return
+        if not isinstance(d, dict) or not isinstance(d.get("step_index"), int):
+            return
+        ts = iso_to_epoch(d.get("created_at"))
+        if self.started is None and ts:
+            self.started = ts
+        if d.get("input_tokens"):
+            self.tokens = int(d["input_tokens"]) + int(d.get("cache_read_tokens") or 0) + int(d.get("output_tokens") or 0)
+        if _is_compact_step(d):
+            iid = f"s{d['step_index']}"
+            self.found[iid] = Compaction(id=iid, at=ts, started_at=self.started, tokens=self.tokens, first_prompt=self.prompt or "")
+            self.started, self.prompt = ts, None
+        elif self.prompt is None and d.get("type") == "USER_INPUT" and d.get("source") == "USER_EXPLICIT":
+            text = split_attachment_note(user_text(d.get("content") or ""))[0]
+            if text.strip():
+                self.prompt = short(text, 300)
 
 
 def digest_entry(d: dict[str, Any]) -> list[str]:
@@ -831,10 +1047,11 @@ def digest_entry(d: dict[str, Any]) -> list[str]:
             name, a = c.get("name") or "", _targs(c.get("args"))
             if "CommandLine" in a:
                 out.append(f"{pre}TOOL Bash: {short(a['CommandLine'], 180)}")
-            elif "CodeContent" in a:
-                out.append(f"{pre}wrote {a.get('TargetFile')} ({len(str(a['CodeContent']).splitlines())} lines)")
-            elif "TargetContent" in a or "ReplacementChunks" in a:
-                out.append(f"{pre}edited {a.get('TargetFile')}")
+            elif "CodeContent" in a or name == "write_file":
+                content = a.get("CodeContent") if "CodeContent" in a else (a.get("Content") or "")
+                out.append(f"{pre}wrote {a.get('TargetFile') or a.get('Path')} ({len(str(content).splitlines())} lines)")
+            elif "TargetContent" in a or "ReplacementChunks" in a or name == "edit_file":
+                out.append(f"{pre}edited {a.get('TargetFile') or a.get('Path')}")
             elif atrium_tool(name):
                 out.append(f"{pre}TOOL {name.replace('_', '.', 1)}: {short({k: v for k, v in _plain(a).items() if k != 'html'}, 200)}")
             elif name not in READ_TOOLS:
@@ -842,6 +1059,10 @@ def digest_entry(d: dict[str, Any]) -> list[str]:
         return out
     if t == "RUN_COMMAND" and d.get("exit_code") not in (0, None):
         return [f"{pre}(command failed: exit {d['exit_code']})"]
+    if t == "GENERIC":
+        m = _CMD_EXIT_RE.search(_STAMP_RE.sub("", d.get("content") or ""))
+        if m and int(m.group(1)) != 0:
+            return [f"{pre}(command failed: exit {m.group(1)})"]
     if t == "ERROR_MESSAGE":
         return [f"{pre}(error: {short(d.get('error') or '', 200)})"]
     return []
@@ -861,21 +1082,27 @@ def _patch(chunks: list[tuple[Any, str, str]]) -> str:
 def file_edits_of(entries: list[dict[str, Any]]) -> list[FileEdit]:
     edits: list[FileEdit] = []
     for p, _n, c, res in _calls(entries):
-        a = _targs(c.get("args"))
-        path = a.get("TargetFile")
+        name, a = c.get("name") or "", _targs(c.get("args"))
+        path = a.get("TargetFile") or a.get("Path")
         if not path or res is None or res.get("status") == "ERROR":
             continue
         ts = p.get("created_at")
-        if "CodeContent" in a:
+        if "CodeContent" in a or name == "write_file":
             append = bool(a.get("Append"))
-            edits.append(FileEdit(path=path, tool="Write", ts=ts, before=None, after=None if append else str(a["CodeContent"]),
+            content = a.get("CodeContent") if "CodeContent" in a else (a.get("Content") or "")
+            edits.append(FileEdit(path=path, tool="Write", ts=ts, before=None, after=None if append else str(content),
                                   kind="update" if append or a.get("Overwrite") else "create"))
         elif "ReplacementChunks" in a:
             chunks = [(x.get("StartLine"), str(x.get("TargetContent") or ""), str(x.get("ReplacementContent") or ""))
                       for x in a["ReplacementChunks"] or [] if isinstance(x, dict)]
             edits.append(FileEdit(path=path, tool="MultiEdit", ts=ts, before=None, after=None, kind="update", patch=_patch(chunks)))
-        elif "TargetContent" in a:
-            chunk = (a.get("StartLine"), str(a.get("TargetContent") or ""), str(a.get("ReplacementContent") or ""))
+        elif "TargetContent" in a or name == "edit_file":
+            start = a.get("StartLine")
+            if not start and (m := _EDIT_LINE_RE.search(res.get("content") or "")):
+                start = int(m.group(1))
+            old = a.get("TargetContent") if "TargetContent" in a else (a.get("Target") or "")
+            new = a.get("ReplacementContent") if "ReplacementContent" in a else (a.get("Replacement") or "")
+            chunk = (start, str(old), str(new))
             edits.append(FileEdit(path=path, tool="Edit", ts=ts, before=None, after=None, kind="update", patch=_patch([chunk])))
     return edits
 
@@ -975,7 +1202,7 @@ class AntigravityLiveSession(LiveSession):
         except Exception as e:
             self._set_state("error")
             raise RuntimeError(f"Antigravity could not start: {e}") from e
-        if not _index_path(self.session_id).exists():
+        if not _index_path(self.session_id).exists() and _session_store(self.session_id)[0] == _save_dir():
             write_index(self.session_id, cwd=self.spec.cwd, created_at=time.time())
         self._connected("Connected")
         self._set_state("idle")
@@ -1044,6 +1271,7 @@ class AntigravityLiveSession(LiveSession):
         notes = [spec.system_append, workspace_rules(spec.cwd)]
         if self._atrium:
             notes.append(TOOL_NAMES_NOTE.format(examples=", ".join(f"`{n}` is `{n.replace('_', '.', 1)}`" for n in sorted(self._atrium))))
+        save_dir, data_dir = _session_store(self.session_id)
         return LocalAgentConfig(
             system_instructions="\n\n".join(n for n in notes if n) or None,
             capabilities=CapabilitiesConfig(disabled_tools=disabled),
@@ -1056,15 +1284,16 @@ class AntigravityLiveSession(LiveSession):
             workspaces=[spec.cwd],
             conversation_id=self.session_id,
             session_continuation_mode=SessionContinuationMode.CREATE_OR_RESUME,
-            save_dir=str(_save_dir()),
-            app_data_dir=str(_data_dir()),
+            save_dir=str(save_dir),
+            app_data_dir=str(data_dir),
         )
 
     async def _open(self) -> None:
         from google.antigravity import Agent
 
-        _save_dir().mkdir(parents=True, exist_ok=True)
-        _brain_dir().mkdir(parents=True, exist_ok=True)
+        save_dir, data_dir = _session_store(self.session_id)
+        save_dir.mkdir(parents=True, exist_ok=True)
+        (data_dir / "brain").mkdir(parents=True, exist_ok=True)
         await asyncio.to_thread(_warm_runtime)
         self._choice = resolve_model(self.model)  # the settings file may have changed since
         agent = Agent(self._config())
@@ -1252,7 +1481,7 @@ class AntigravityLiveSession(LiveSession):
         key = mcp or (f"{name}:{command}" if command is not None else name)
         if key in self._remembered:
             return True, ""
-        path = None if mcp else tc.canonical_path or args.get("TargetFile") or args.get("AbsolutePath")
+        path = None if mcp else tc.canonical_path or args.get("TargetFile") or args.get("AbsolutePath") or args.get("Path")
         edit = not mcp and name in EDIT_TOOLS
         if self.mode == "accept-edits" and edit and _inside(path, self.spec.cwd):
             return True, ""
@@ -1304,7 +1533,10 @@ class AntigravityHarness(Harness):
 
     def __init__(self) -> None:
         self._prompts: dict[str, str] = {}  # transcript -> its first message
+        self._started: dict[str, float] = {}  # transcript -> its first timestamp
         self._cwds: dict[str, str | None] = {}  # session id -> cwd (index)
+        self._compaction_cache: dict[str, _CompactionScan] = {}
+        self._compaction_lock = threading.Lock()
 
     def available(self) -> tuple[bool, str | None]:
         if not _defaults().get("enabled", True):
@@ -1355,6 +1587,7 @@ class AntigravityHarness(Harness):
     def _list(self, roots: list[str]) -> list[SessionSummary]:
         real = [os.path.realpath(r) for r in roots]
         out: list[SessionSummary] = []
+        seen: set[str] = set()
         for f in (ag_home() / "sessions").glob("*.json"):
             sid = f.stem
             meta = read_index(sid)
@@ -1368,22 +1601,60 @@ class AntigravityHarness(Harness):
                 st = None
             if path is None or st is None:
                 continue  # no message yet
+            seen.add(sid)
             prompt = self._first_prompt(path)
             out.append(SessionSummary(
                 id=sid, harness=self.id, title=meta.get("title") or short(prompt, 80) or "Untitled", updated_at=st.st_mtime,
-                created_at=meta.get("created_at"), first_prompt=prompt, cwd=cwd, size=st.st_size, transcript=str(path),
+                created_at=meta.get("created_at") or self._started.get(str(path)), first_prompt=prompt, cwd=cwd, size=st.st_size, transcript=str(path),
             ))
+        cli_brain = _cli_brain_dir()
+        if cli_brain.is_dir():
+            summaries = _cli_summaries()
+            try:
+                entries = list(cli_brain.iterdir())
+            except OSError:
+                entries = []
+            for d in entries:
+                sid = d.name
+                if sid in seen or not d.is_dir():
+                    continue
+                meta = {**_cli_session_meta(sid, summaries), **read_index(sid)}
+                if meta.get("subagent"):
+                    continue
+                cwd = meta.get("cwd")
+                if not cwd or not any(_inside(cwd, r) for r in real):
+                    continue
+                path = transcript_file(sid)
+                try:
+                    st = path.stat() if path else None
+                except OSError:
+                    st = None
+                if path is None or st is None:
+                    continue
+                prompt = self._first_prompt(path)
+                out.append(SessionSummary(
+                    id=sid, harness=self.id, title=meta.get("title") or short(prompt, 80) or "Untitled", updated_at=st.st_mtime,
+                    created_at=meta.get("created_at") or self._started.get(str(path)), first_prompt=prompt, cwd=cwd, size=st.st_size, transcript=str(path),
+                ))
         return out
 
     def _first_prompt(self, path: Path) -> str:
         """The conversation's first message, read up to that line; once found it never changes, so it is kept."""
-        hit = self._prompts.get(str(path))
+        key = str(path)
+        hit = self._prompts.get(key)
         if hit:
             return hit
         prompt = ""
         try:
             with path.open(encoding="utf-8", errors="replace") as fh:
                 for line in fh:
+                    if key not in self._started and '"created_at"' in line:
+                        try:
+                            d0 = json.loads(line)
+                            if isinstance(d0, dict) and (ts := iso_to_epoch(d0.get("created_at"))):
+                                self._started[key] = ts
+                        except ValueError:
+                            pass
                     if '"USER_EXPLICIT"' not in line:
                         continue
                     try:
@@ -1391,12 +1662,14 @@ class AntigravityHarness(Harness):
                     except ValueError:
                         continue
                     if isinstance(d, dict) and d.get("type") == "USER_INPUT" and d.get("source") == "USER_EXPLICIT":
+                        if key not in self._started and (ts := iso_to_epoch(d.get("created_at"))):
+                            self._started[key] = ts
                         prompt = split_attachment_note(user_text(d.get("content") or ""))[0]
                         break
         except OSError:
             return ""
         if prompt:
-            self._prompts[str(path)] = prompt
+            self._prompts[key] = prompt
         return prompt
 
     def transcript_path(self, session_id: str, cwd: str) -> Path | None:
@@ -1405,55 +1678,115 @@ class AntigravityHarness(Harness):
     def watch_roots(self) -> list[Path]:
         root = _brain_dir()
         root.mkdir(parents=True, exist_ok=True)
-        return [Path(os.path.realpath(root))]
+        roots = [Path(os.path.realpath(root))]
+        cli = _cli_brain_dir()
+        if cli.is_dir():
+            real_cli = Path(os.path.realpath(cli))
+            if real_cli not in roots:
+                roots.append(real_cli)
+        return roots
 
     def transcript_cwd(self, path: str) -> str | None:
         rel = None
-        for root in (_brain_dir(), Path(os.path.realpath(_brain_dir()))):
-            try:
-                rel = Path(path).relative_to(root)
+        from_cli = False
+        for is_cli, b in ((False, _brain_dir()), (True, _cli_brain_dir())):
+            for root in (b, Path(os.path.realpath(b))):
+                try:
+                    rel = Path(path).relative_to(root)
+                    from_cli = is_cli
+                    break
+                except ValueError:
+                    continue
+            if rel is not None:
                 break
-            except ValueError:
-                continue
         if rel is None or not rel.parts:
             return None
         sid = rel.parts[0]
         if sid not in self._cwds:
-            self._cwds[sid] = read_index(sid).get("cwd")  # None for a subagent's own conversation
+            if not from_cli:
+                self._cwds[sid] = read_index(sid).get("cwd")  # None for a subagent's own conversation
+            else:
+                meta = {**_cli_session_meta(sid), **read_index(sid)}
+                if meta.get("subagent"):
+                    self._cwds[sid] = None
+                elif meta.get("cwd"):
+                    self._cwds[sid] = meta["cwd"]
+                else:
+                    return None
         return self._cwds[sid]
 
     async def rename_session(self, session_id: str, title: str, cwd: str) -> None:
-        if _index_path(session_id).exists():
-            await asyncio.to_thread(write_index, session_id, title=title)
+        def rename() -> None:
+            if _index_path(session_id).exists() or (_cli_save_dir() / f"{session_id}.db").exists() or (_cli_brain_dir() / session_id).exists():
+                write_index(session_id, title=title)
+            _update_cli_summary(session_id, title=title)
+
+        await asyncio.to_thread(rename)
 
     async def move_session(self, session_id: str, cwd: str, target_cwd: str, note: str = "") -> None:
         # ``note`` reaches the model through the system prompt, which a resumed runtime takes anew
-        if not _index_path(session_id).exists():
+        if not _index_path(session_id).exists() and not _state_db(session_id) and not transcript_file(session_id):
             raise FileNotFoundError(f"Antigravity session {session_id}")
 
         def move() -> None:  # the index follows only once the runtime's own state does (rewrite_workspace raises otherwise)
-            rewrite_workspace(session_id, read_index(session_id).get("cwd") or cwd, target_cwd)
-            write_index(session_id, cwd=os.path.realpath(target_cwd))
+            old_cwd = read_index(session_id).get("cwd") or _cli_session_meta(session_id).get("cwd") or cwd
+            rewrite_workspace(session_id, old_cwd, target_cwd)
+            real_target = os.path.realpath(target_cwd)
+            if _index_path(session_id).exists() or not (_cli_save_dir() / f"{session_id}.db").exists():
+                write_index(session_id, cwd=real_target)
+            _update_cli_summary(session_id, cwd=real_target)
 
         await asyncio.to_thread(move)
         self._cwds.pop(session_id, None)
 
     async def delete_session(self, session_id: str, cwd: str) -> None:
         def delete() -> None:
-            for p in _save_dir().glob(f"{session_id}.db*"):
-                p.unlink(missing_ok=True)
-            shutil.rmtree(_brain_dir() / session_id, ignore_errors=True)
+            for d in (_save_dir(), _cli_save_dir()):
+                for p in d.glob(f"{session_id}.db*"):
+                    p.unlink(missing_ok=True)
+            for b in (_brain_dir(), _cli_brain_dir()):
+                shutil.rmtree(b / session_id, ignore_errors=True)
             _index_path(session_id).unlink(missing_ok=True)
+            _update_cli_summary(session_id, delete=True)
 
         await asyncio.to_thread(delete)
         self._cwds.pop(session_id, None)
 
     # ---- content -----------------------------------------------------------
-    async def load_history(self, session_id: str, cwd: str) -> list[Item]:
+    def _parts(self, session_id: str) -> tuple[list[Item], list[int]]:
         path = transcript_file(session_id)
-        if not path:
-            return []
-        return await asyncio.to_thread(lambda: history_items(_entries(path)))
+        items = history_items(_entries(path)) if path else []
+        marks = [i for i, it in enumerate(items) if it["kind"] == "system" and it.get("subtype") == "compact"]
+        return items, marks
+
+    async def load_history(self, session_id: str, cwd: str) -> list[Item]:
+        def load() -> list[Item]:
+            items, marks = self._parts(session_id)
+            return items[marks[-1] :] if marks else items
+
+        return await asyncio.to_thread(load)
+
+    async def list_compactions(self, sessions: list[SessionSummary]) -> dict[str, list[Compaction]]:
+        def scan() -> dict[str, list[Compaction]]:
+            found = {s.id: self._compactions(Path(s.transcript)) for s in sessions if s.harness == self.id and s.transcript}
+            return {sid: cs for sid, cs in found.items() if cs}
+
+        return await asyncio.to_thread(scan)
+
+    def _compactions(self, path: Path) -> list[Compaction]:
+        with self._compaction_lock:
+            scan = tail_scan(self._compaction_cache, path, _CompactionScan)
+            return list(scan.found.values()) if scan else []
+
+    async def load_compacted_history(self, session_id: str, compaction_id: str, cwd: str) -> list[Item]:
+        def load() -> list[Item]:
+            items, marks = self._parts(session_id)
+            at = next((n for n, i in enumerate(marks) if items[i].get("compaction") == compaction_id), None)
+            if at is None:
+                raise FileNotFoundError(f"no compaction {compaction_id} in session {session_id}")
+            return items[marks[at - 1] if at else 0 : marks[at]]
+
+        return await asyncio.to_thread(load)
 
     def digest_lines(self, lines: list[str]) -> list[str]:
         out: list[str] = []
