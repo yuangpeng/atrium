@@ -216,6 +216,7 @@ a { color: var(--accent-strong); }
 .agent-av.h-claude-code { --hc: #d97757; }
 .agent-av.h-codex { --hc: #10a37f; }
 .agent-av.h-antigravity { --hc: #3186ff; }
+.agent-av.h-grok { --hc: #6b6f78; } /* xAI's mark is black or white: graphite */
 [data-theme="dark"] .agent-av {
   background: radial-gradient(circle at 32% 28%, color-mix(in srgb, var(--hc) 30%, var(--surface)), color-mix(in srgb, var(--hc) 16%, var(--surface)));
   color: color-mix(in srgb, var(--hc) 70%, #fff);

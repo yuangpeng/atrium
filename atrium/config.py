@@ -47,6 +47,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         # Effort "high": Gemini returns its thoughts only with a thinking level set, and they are what the chat and
         # the Tracker see of a long turn (it seldom writes between tool calls); "" sends none and gets none back.
         "antigravity": {"enabled": True, "permission_mode": "always-proceed", "model": "", "effort": "high"},
+        # xAI's Grok Build, its CLI installed with Atrium (grok-cli-bin); binary as for Codex. Its models, endpoints
+        # and keys are Grok's own config.toml (~/.grok, or $GROK_HOME).
+        "grok": {"enabled": True, "binary": "", "permission_mode": "always-approve", "model": "", "effort": ""},
     },
     "sessions": {"idle_close_minutes": 30},
     # Desktop notifications when an agent asks for approval or finishes a turn — skipped while its
@@ -81,7 +84,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "jina_api_key": "",  # env JINA_API_KEY wins (optional, raises rate limits)
         "replace_builtin_web_tools": True,
     },
-    # Extra MCP servers for Claude Code and Antigravity sessions ({"name": {"command": ..., "args": [...]}}).
+    # Extra MCP servers for Claude Code, Antigravity and Grok Build sessions ({"name": {"command": ..., "args": [...]}}).
     # Codex sessions use the [mcp_servers] table of ~/.codex/config.toml instead.
     "mcp_servers": {},
     # Voice input (the composer's mic), through an OpenAI-compatible server: the recording goes to

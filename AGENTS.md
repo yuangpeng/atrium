@@ -8,12 +8,13 @@ running inside the app you are editing.
 - Setup: `make install`, then `make build` (builds the UI into `atrium/static`).
   The Claude Code and Codex CLIs come from the venv (`claude-agent-sdk`, `openai-codex-cli-bin`),
   not from `PATH`, and so does Antigravity's runtime (`google-antigravity`); run `make install` again
-  after changing their versions in `pyproject.toml`.
+  after changing their versions in `pyproject.toml`. The Grok Build CLI is in the venv too
+  (`grok-cli-bin`), but a `grok` of the human's own (`~/.grok/bin/grok`, or on `PATH`) runs instead.
 - Start: `make run` (port 8787; if it is taken, `make run PORT=8790`).
   Development: `make dev-backend` + `make dev-web` (Vite on 5173).
 - Check: `curl -s --noproxy '*' -H "Authorization: Bearer $(.venv/bin/atrium --token)" http://127.0.0.1:<port>/api/meta`
-  lists each harness and whether it is available (for Codex also which CLI runs: `cli.path`,
-  `cli.version`). Every request needs a login: the browser's cookie, or this token for scripts
+  lists each harness and whether it is available (for Codex and Grok Build also which CLI runs:
+  `cli.path`, `cli.version`). Every request needs a login: the browser's cookie, or this token for scripts
   (`--token` reads `$ATRIUM_HOME/auth.json`: the same `ATRIUM_HOME` as the server's).
 - Antigravity reads `~/.gemini/antigravity-cli/settings.json` (the human's real key and relay). For
   tests without model calls, start the instance with `HOME` set to a temp dir whose
@@ -21,6 +22,12 @@ running inside the app you are editing.
   (`"customModelsConfig": {"customModels": {"fake": {"modelName": "gemini-api://http://127.0.0.1:<port>/models/fake"}}}, "model": "fake", "env": {"GEMINI_API_KEY": "fake"}`;
   it gets `POST /v1beta/models/fake:streamGenerateContent?alt=sse`; a relay only gets a key from that file,
   and the runtime won't start without one). Never write the human's file.
+- Grok Build reads `$GROK_HOME/config.toml` (default `~/.grok`: the human's login, models and keys) and
+  keeps its sessions under `$GROK_HOME/sessions`. For tests without model calls, start the instance with
+  `GROK_HOME` set to a temp dir whose `config.toml` makes a local fake of OpenAI's Chat Completions API
+  the model (`[models] default = "fake"`, `[model.fake]` with `model = "fake-model"`,
+  `base_url = "http://127.0.0.1:<port>/v1"`, `api_key = "fake"`, `api_backend = "chat_completions"`; it gets
+  streamed `POST /v1/chat/completions`, whose chunks need `created`). Never write the human's file.
 
 ## Restarting stops every agent
 

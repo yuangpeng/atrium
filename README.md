@@ -1,6 +1,6 @@
 # Atrium
 
-A project-centric workbench for coding agents — Claude Code, Codex and Antigravity side by side, harness-agnostic by design.
+A project-centric workbench for coding agents — Claude Code, Codex, Antigravity and Grok Build side by side, harness-agnostic by design.
 
 > *Atrium* — the central hall of a house where everyone meets. Here it is the shared space of one
 > project: every agent session, the human, the files, the diffs and the git history, around one board.
@@ -97,7 +97,8 @@ A project-centric workbench for coding agents — Claude Code, Codex and Antigra
      answer); its stream is shown event by event, both bodies as they were. It shows how each harness works
      underneath. `capture` in the settings turns it off and caps what is kept (1 GB). Compactions are marked
      (*Compact*) and kept, with the agent's last call before each: they hold the whole conversation the compaction
-     replaced, so pruning leaves them.
+     replaced, so pruning leaves them. Grok Build's calls aren't recorded: only its own `config.toml` says where a
+     model's calls go.
    * **Git** — commit graph with lanes (pick a commit: its files as a tree, each one diffed side by
      side against the first parent, renames followed); *Smart* / *All* / *Custom* branch sets, and an
      **Agent view**: the **Git Agent** (a chat drawer) investigates with read-only git and drives
@@ -108,21 +109,26 @@ A project-centric workbench for coding agents — Claude Code, Codex and Antigra
    Claude sees them as `mcp__web__search` / `mcp__web__fetch` (optionally replacing the built-in
    WebSearch/WebFetch); Codex reserves the `web` namespace, so there they are `internet.search` /
    `internet.fetch`; Antigravity names Atrium's tools `<namespace>_<tool>` (`web_search`,
-   `board_status`…). Extra MCP servers for Claude and Antigravity sessions go under `mcp_servers` in
-   Atrium's settings; Codex uses the `[mcp_servers]` of its own `config.toml`. The web tools are also
-   available as a stdio MCP server: `atrium-web-mcp`.
+   `board_status`…); Grok Build reaches them over its own connection to Atrium, as in-process MCP servers,
+   finds them with its `search_tool` and calls them as `web__search`, `board__status`… Extra MCP servers
+   for Claude, Antigravity and Grok Build sessions go under `mcp_servers` in Atrium's settings; Codex uses
+   the `[mcp_servers]` of its own `config.toml`. The web tools are also available as a stdio MCP server:
+   `atrium-web-mcp`.
 5. **Several harnesses, one workbench.** Claude Code runs through `claude-agent-sdk`; Codex through
    `codex app-server` (JSON-RPC over stdio, one process shared by all Codex sessions); Google
    Antigravity through its SDK, `google-antigravity`, whose platform wheels bundle the agent runtime
-   (one runtime process per live session). Sessions don't convert between harnesses — each continues
-   in its own — but they collaborate through the board, the files and git: a Codex agent sees what a
-   Claude agent published, and vice versa.
+   (one runtime process per live session); xAI's Grok Build through its CLI's agent mode,
+   `grok agent stdio` (the Agent Client Protocol, one process per live session). Sessions don't convert
+   between harnesses — each continues in its own — but they collaborate through the board, the files and
+   git: a Codex agent sees what a Claude agent published, and vice versa.
 6. **The composer.** Paste, drop or pick images and files (stored in `~/.atrium/uploads`): images go
-   to the model as images (base64 for Claude, `localImage` for Codex, inline media for Antigravity),
-   other files are passed by path. Next to send there is a **reasoning-effort** picker (`Auto` = whatever the harness config
+   to the model as images (base64 for Claude, `localImage` for Codex, inline media for Antigravity, and for
+   Grok Build when its CLI takes images — the bundled 0.2.111 gets their paths), other files are passed by path.
+   Next to send there is a **reasoning-effort** picker (`Auto` = whatever the harness config
    says; Claude low…max, applied mid-session; Codex per turn, from the model's supported levels;
-   Antigravity: Gemini's thinking level, minimal…high, applied from the next turn).
-   Sending while a Codex turn runs steers that turn (Claude and Antigravity queue it). The **mic** next to send
+   Antigravity: Gemini's thinking level, minimal…high, applied from the next turn; Grok Build: the
+   model's own levels, applied mid-session).
+   Sending while a Codex turn runs steers that turn (Claude, Antigravity and Grok Build queue it). The **mic** next to send
    (once `voice` is set in Atrium's settings) takes dictation for phones: the recording goes to a speech-to-text
    model, then the transcript and the agent's conversation (thinking left out) to a model that writes what you
    meant — paths and code as the project spells them, filler dropped, English made fluent — into the draft, to
@@ -151,7 +157,8 @@ A project-centric workbench for coding agents — Claude Code, Codex and Antigra
    (`thread/fork`, between turns; a turn kept in part is added to the fork's rollout, ended where
    it was cut). An Antigravity fork is a copy of the conversation — its runtime's state database
    and its transcript — under a new id, with the steps after the fork point taken out. The fork's
-   Changes and the Tracker only count what happened after the fork.
+   Changes and the Tracker only count what happened after the fork. Grok Build sessions can't be
+   forked yet.
    To fix a message in place instead, **edit it** (✎, next to ⑂): the same agent goes back to just
    before it and carries on with what you send, the message and everything after it dropped from
    what it remembers (a turn in progress is stopped first). The files stay as they are. Claude Code
@@ -192,6 +199,11 @@ Antigravity CLI's own settings file, `~/.gemini/antigravity-cli/settings.json`:
 `{"env": {"GEMINI_API_KEY": "..."}}`. Relays, Vertex AI and which key goes where are in
 [Antigravity](docs/configuration.md#antigravity). Antigravity's terms keep the Google account sign-in to
 Google's own apps, so Atrium doesn't use it.
+Grok Build comes with `make install` as well: xAI's `grok-cli-bin` wheel bundles its CLI (0.2.111), and
+Atrium uses your own `grok` instead when there is one (xAI's installer puts it in `~/.grok/bin`), being newer
+and the one your terminal writes sessions with. It signs in as the CLI does: `grok login`, or `XAI_API_KEY`;
+a relay or any OpenAI-compatible endpoint is a custom model in its `~/.grok/config.toml`
+([Grok Build](docs/configuration.md#grok-build)).
 
 How to configure Atrium and each harness — which file sets what, sign-in and relays, the defaults new
 agents get, MCP servers, instructions: [docs/configuration.md](docs/configuration.md)
@@ -273,6 +285,8 @@ own login, so you log in once more there.
 | `~/.atrium/captures/captures.db` | the agents' model calls, requests and responses (credentials blanked; `capture.max_mb`, 1 GB by default, for all but compactions and the call before each; `chmod 600`) |
 | `~/.gemini/antigravity-cli/settings.json` | Antigravity's model, custom models (relays) and Gemini API key (`env`) — the Antigravity CLI's own file |
 | `~/.atrium/antigravity/` | Antigravity conversations: the runtime's state (`save/`), its data and JSONL transcripts (`data/brain/<id>/`), Atrium's index (`sessions/`) |
+| `~/.grok/config.toml` | Grok Build's models, custom endpoints and their keys, MCP servers, permission rules — the Grok CLI's own file (`$GROK_HOME`) |
+| `~/.grok/sessions/` | Grok Build sessions, the CLI's own: per directory, `updates.jsonl` (history), `rewind_points.jsonl` (edits), `summary.json` |
 | `<project>/.atrium/board.html` | the board (generated from `board.json`) |
 | `<project>/.atrium/agents.json` | session → agent name / role / harness / mode / model / effort / turn snapshots |
 | `<project>/.atrium/tracker.json` | tracker transcript offsets + run log |
@@ -283,14 +297,16 @@ own login, so you log in once more there.
 
 `.atrium/` contains a `.gitignore` with `*`, so it never shows up in your repo.
 
-Agent names are also written back to the harness (Claude Code session title, Codex thread name),
-so `claude --resume` and `codex resume` show them. Antigravity sessions are Atrium's own: no CLI lists them.
+Agent names are also written back to the harness (Claude Code session title, Codex thread name, Grok
+session title), so `claude --resume`, `codex resume` and `grok --resume` show them. Antigravity sessions are
+Atrium's own: no CLI lists them.
 
 **Settings** edits the real files, raw, in Monaco: Atrium's `settings.json`, Claude Code's
 `~/.claude/settings.json` plus the project's `.claude/settings.json` / `settings.local.json`, and
 Codex's `~/.codex/config.toml` plus the project's `.codex/config.toml`, and Antigravity's
 `~/.gemini/antigravity-cli/settings.json` (Antigravity sessions also get the `AGENTS.md` / `GEMINI.md`
-rules Antigravity's own apps load). Saves are validated
+rules Antigravity's own apps load), and Grok Build's `~/.grok/config.toml` plus the project's
+`.grok/config.toml`. Saves are validated
 (JSON / TOML), refused if the file changed on disk meanwhile, and back up the previous version.
 The editor's language servers are configured under `lsp` there (`enabled`, `commands` to override
 the server per language, `python.typeCheckingMode`). What each file sets, and what Atrium decides over
@@ -316,6 +332,9 @@ atrium/
   harness/codex_rpc.py   the shared JSON-RPC client for `codex app-server`
   harness/antigravity.py Antigravity via its SDK (bundled runtime): live sessions, approvals through a
                          pre-tool hook, history / digests / edits from the runtime's JSONL transcript
+  harness/grok.py        Grok Build via `grok agent stdio`: live sessions, approvals, Atrium's tools as
+                         in-process MCP servers, history / digests / edits from the CLI's session files
+  harness/acp.py         a JSON-RPC client for an agent speaking the Agent Client Protocol on stdio
   sessions.py            live session manager (start/resume, forks, streaming, permissions, idle
                          reaping, turn snapshots)
   notify.py              desktop notifications (approval requests, finished turns) unless watched
@@ -338,7 +357,8 @@ web/                     React + TypeScript + Vite UI (Monaco for editor/diffs)
 ### Adding another harness (pi, …)
 
 Implement `atrium.harness.base.Harness` and register it in `atrium/harness/__init__.py`
-(`claude_code.py`, `codex.py` and `antigravity.py` are the references):
+(`claude_code.py`, `codex.py`, `antigravity.py` and `grok.py` are the references; `acp.py` speaks the
+Agent Client Protocol, which many agents do):
 
 * `available()`, `catalog()` (models + supported efforts), `permission_modes`, `efforts`;
 * `list_sessions(project_dir, roots)` (async), `transcript_path`, `watch_roots`, `transcript_cwd` — discovery;
@@ -360,5 +380,5 @@ Implement `atrium.harness.base.Harness` and register it in `atrium/harness/__ini
 
 Atrium's own tools are harness-neutral `ToolSpec`s grouped by server (`board.*`, `web.*`,
 `graph.set_view`); expose them however the harness supports tools — in-process MCP for Claude,
-dynamic tools for Codex, Python tools for Antigravity. Everything else (UI, board, tracker, diffs,
-git) works unchanged.
+dynamic tools for Codex, Python tools for Antigravity, MCP over the ACP connection for Grok Build.
+Everything else (UI, board, tracker, diffs, git) works unchanged.

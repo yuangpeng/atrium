@@ -3,8 +3,8 @@
 [中文](configuration.zh-CN.md)
 
 Atrium has one settings file of its own, `~/.atrium/settings.json`. Everything else is each harness's
-own configuration — the files the `claude` and `codex` CLIs and the Antigravity CLI read — so a setup
-that works in the `claude` and `codex` CLIs works in Atrium too.
+own configuration — the files the `claude`, `codex` and `grok` CLIs and the Antigravity CLI read — so a
+setup that works in those CLIs works in Atrium too.
 
 **⚙ Settings** (at the bottom of the rail) opens all of these files in an editor, the open project's
 too. A save is checked first (valid JSON / TOML, not changed on disk since you opened it), and the
@@ -26,6 +26,7 @@ The permission mode always comes from 1 or 2; the harness's own default mode isn
 - [Claude Code](#claude-code)
 - [Codex](#codex)
 - [Antigravity](#antigravity)
+- [Grok Build](#grok-build)
 - [MCP servers](#mcp-servers)
 - [Instructions for agents](#instructions-for-agents)
 - [Files in a project](#files-in-a-project)
@@ -34,16 +35,16 @@ The permission mode always comes from 1 or 2; the harness's own default mode isn
 
 ## Which file sets what
 
-| To set… | Claude Code | Codex | Antigravity |
-|---|---|---|---|
-| Sign-in or API key | `claude auth login`, or `ANTHROPIC_API_KEY` | `codex login` | `env.GEMINI_API_KEY` in `~/.gemini/antigravity-cli/settings.json` |
-| A relay or another endpoint | `env.ANTHROPIC_BASE_URL` in `~/.claude/settings.json` | `openai_base_url` or `[model_providers]` in `~/.codex/config.toml` | a custom model in `~/.gemini/antigravity-cli/settings.json` |
-| Model and effort of new agents | Atrium's `harnesses.claude-code`; `""` = `model` / `effortLevel` in Claude Code's settings | Atrium's `harnesses.codex`; `""` = `model` / `model_reasoning_effort` in `config.toml` | Atrium's `harnesses.antigravity`; `""` = `model` in its settings file |
-| Permission mode of new agents | Atrium's `harnesses.claude-code.permission_mode` | Atrium's `harnesses.codex.permission_mode` | Atrium's `harnesses.antigravity.permission_mode` |
-| What runs without asking | the mode, and the `permissions` rules in Claude Code's settings | the mode (approval policy + sandbox) | the mode |
-| MCP servers | Atrium's `mcp_servers`, and Claude Code's own | `[mcp_servers]` in `config.toml` | Atrium's `mcp_servers` |
-| Instructions | `CLAUDE.md` (or `AGENTS.md`) | `AGENTS.md` | `AGENTS.md`, `GEMINI.md`, `.agents/rules/` |
-| Which CLI runs | the one bundled with `claude-agent-sdk` | the bundled one, or `harnesses.codex.binary` | the runtime bundled with `google-antigravity` |
+| To set… | Claude Code | Codex | Antigravity | Grok Build |
+|---|---|---|---|---|
+| Sign-in or API key | `claude auth login`, or `ANTHROPIC_API_KEY` | `codex login` | `env.GEMINI_API_KEY` in `~/.gemini/antigravity-cli/settings.json` | `grok login`, or `XAI_API_KEY`; a custom model's `api_key` / `env_key` |
+| A relay or another endpoint | `env.ANTHROPIC_BASE_URL` in `~/.claude/settings.json` | `openai_base_url` or `[model_providers]` in `~/.codex/config.toml` | a custom model in `~/.gemini/antigravity-cli/settings.json` | a custom model (`[model.<id>]`) in `~/.grok/config.toml` |
+| Model and effort of new agents | Atrium's `harnesses.claude-code`; `""` = `model` / `effortLevel` in Claude Code's settings | Atrium's `harnesses.codex`; `""` = `model` / `model_reasoning_effort` in `config.toml` | Atrium's `harnesses.antigravity`; `""` = `model` in its settings file | Atrium's `harnesses.grok`; `""` = `[models] default` in `config.toml`, and the model's own effort |
+| Permission mode of new agents | Atrium's `harnesses.claude-code.permission_mode` | Atrium's `harnesses.codex.permission_mode` | Atrium's `harnesses.antigravity.permission_mode` | Atrium's `harnesses.grok.permission_mode` |
+| What runs without asking | the mode, and the `permissions` rules in Claude Code's settings | the mode (approval policy + sandbox) | the mode | the mode, and the `[permission]` rules in `config.toml` |
+| MCP servers | Atrium's `mcp_servers`, and Claude Code's own | `[mcp_servers]` in `config.toml` | Atrium's `mcp_servers` | Atrium's `mcp_servers`, and `[mcp_servers]` in `config.toml` |
+| Instructions | `CLAUDE.md` (or `AGENTS.md`) | `AGENTS.md` | `AGENTS.md`, `GEMINI.md`, `.agents/rules/` | `AGENTS.md`, `CLAUDE.md`, `.grok/rules/` (and Claude's and Cursor's rules) |
+| Which CLI runs | the one bundled with `claude-agent-sdk` | the bundled one, or `harnesses.codex.binary` | the runtime bundled with `google-antigravity` | yours (`~/.grok/bin/grok`, `PATH`), else the bundled one; or `harnesses.grok.binary` |
 
 ## Atrium's settings.json
 
@@ -72,7 +73,8 @@ The defaults:
   "harnesses": {
     "claude-code": {"permission_mode": "bypassPermissions", "model": "", "effort": ""},
     "codex": {"enabled": true, "binary": "", "permission_mode": "full-access", "model": "", "effort": ""},
-    "antigravity": {"enabled": true, "permission_mode": "always-proceed", "model": "", "effort": "high"}
+    "antigravity": {"enabled": true, "permission_mode": "always-proceed", "model": "", "effort": "high"},
+    "grok": {"enabled": true, "binary": "", "permission_mode": "always-approve", "model": "", "effort": ""}
   },
   "sessions": {"idle_close_minutes": 30},
   "notifications": {"enabled": true, "permission": true, "turn_end": true, "sound": true},
@@ -95,12 +97,13 @@ What the new-agent page starts with. The pickers there and in the chat change it
 
 | Key | Default | |
 |---|---|---|
-| `defaults.harness` | `"claude-code"` | The harness the new-agent page starts on: `claude-code`, `codex` or `antigravity`. |
+| `defaults.harness` | `"claude-code"` | The harness the new-agent page starts on: `claude-code`, `codex`, `antigravity` or `grok`. |
 | `harnesses.<harness>.permission_mode` | see [below](#permission-modes) | The mode new agents start in. |
-| `harnesses.<harness>.model` | `""` | `""` = the harness's own default, from its files. Claude Code: `opus`, `sonnet`, `haiku` or a model id; Codex: a model from its list; Antigravity: a model id, or a custom model's key or label. |
-| `harnesses.<harness>.effort` | `""`; Antigravity `"high"` | `""` = the harness's own. Claude Code: `low`, `medium`, `high`, `xhigh`, `max`; Codex: what the model supports (`low` … `xhigh`); Antigravity: Gemini's thinking level, `minimal` … `high` — with `""` no thinking config is sent, so no thoughts come back for the chat to show or the Tracker to read ([below](#antigravity)). |
-| `harnesses.codex.enabled`, `harnesses.antigravity.enabled` | `true` | `false` turns the harness off. |
+| `harnesses.<harness>.model` | `""` | `""` = the harness's own default, from its files. Claude Code: `opus`, `sonnet`, `haiku` or a model id; Codex: a model from its list; Antigravity: a model id, or a custom model's key or label; Grok Build: a model from `grok models`, a custom model's key among them. |
+| `harnesses.<harness>.effort` | `""`; Antigravity `"high"` | `""` = the harness's own. Claude Code: `low`, `medium`, `high`, `xhigh`, `max`; Codex: what the model supports (`low` … `xhigh`); Antigravity: Gemini's thinking level, `minimal` … `high` — with `""` no thinking config is sent, so no thoughts come back for the chat to show or the Tracker to read ([below](#antigravity)); Grok Build: the model's levels, for a model that takes one ([below](#grok-build)). |
+| `harnesses.codex.enabled`, `harnesses.antigravity.enabled`, `harnesses.grok.enabled` | `true` | `false` turns the harness off. |
 | `harnesses.codex.binary` | `""` | Which Codex CLI runs. `""` (or `"codex"`) = the one bundled with Atrium, else `codex` on `PATH`; a path such as `/opt/homebrew/bin/codex` = that one. Takes effect when Codex's app-server starts again: restart Atrium. |
+| `harnesses.grok.binary` | `""` | Which Grok CLI runs. `""` (or `"grok"`) = yours when there is one — `~/.grok/bin/grok`, where xAI's installer puts it, else `grok` on `PATH` — else the one bundled with Atrium; a path = that one. Applies to agents started afterwards. |
 
 ### Permission modes
 
@@ -117,6 +120,9 @@ What the new-agent page starts with. The pickers there and in the chat change it
 | Antigravity | `request-review` | Request review | Reads freely; asks before edits, commands and MCP tools. |
 | | `accept-edits` | Accept edits | Edits inside the agent's directory without asking; asks before the rest. |
 | | `always-proceed` | Always proceed | Never asks. The default. |
+| Grok Build | `ask` | Ask | Reads and commands Grok knows to be safe run; asks before edits and the rest. |
+| | `auto` | Auto | Grok's classifier approves safe actions and asks before risky ones. |
+| | `always-approve` | Always approve | Never asks; deny rules in `config.toml` still apply. The default. |
 
 The Git Agent and the Code Review Agent have modes of their own, whatever these say: they read, and the
 Git Agent asks before anything else.
@@ -176,8 +182,8 @@ These reach agents started afterwards (or woken up after `sessions.idle_close_mi
 |---|---|---|
 | `web.serper_api_key` | `""` | [Serper](https://serper.dev) key for `web.search`. `SERPER_API_KEY` wins. |
 | `web.jina_api_key` | `""` | Optional [Jina Reader](https://jina.ai/reader) key: higher rate limits for `web.fetch`. `JINA_API_KEY` wins. |
-| `web.replace_builtin_web_tools` | `true` | Agents use Atrium's web tools instead of their own: Claude Code goes without WebFetch, and without WebSearch when there is a Serper key; Antigravity likewise without `read_url_content` and `search_web`. Codex's own web search is set in its `config.toml`. |
-| `mcp_servers` | `{}` | Your MCP servers for Claude Code and Antigravity agents: see [MCP servers](#mcp-servers). |
+| `web.replace_builtin_web_tools` | `true` | Agents use Atrium's web tools instead of their own: Claude Code goes without WebFetch, and without WebSearch when there is a Serper key; Antigravity likewise without `read_url_content` and `search_web`. Codex's own web search is set in its `config.toml`; Grok Build keeps its `web_search`. |
+| `mcp_servers` | `{}` | Your MCP servers for Claude Code, Antigravity and Grok Build agents: see [MCP servers](#mcp-servers). |
 
 ### Voice input
 
@@ -323,6 +329,8 @@ What goes through it:
   (`[model_providers]`). The built-in OpenAI provider (ChatGPT sign-in, `openai_base_url`), and providers
   with `supports_websockets`, call out directly.
 - **Antigravity**: what goes to the Gemini API endpoint, a custom model's relay or Google's. Not on Vertex AI.
+- **Grok Build**: nothing. Only its `config.toml` says where a model's calls go, and an agent's process can't be
+  given another address (`GROK_CONFIG`, the CLI's overlay, may not set a model's `base_url`).
 
 Anything else the harnesses send isn't recorded: telemetry, update checks, MCP servers over HTTP, the
 plugins Codex fetches, web pages.
@@ -555,14 +563,77 @@ right away, in an open page after a save in ⚙ Settings or a reload. Its conver
 `~/.atrium/antigravity/`, and no CLI lists them. A fork copies one there under a new id (the runtime's
 state database and the transcript, cut at the fork point); changing a message cuts it in place.
 
+## Grok Build
+
+Atrium runs xAI's Grok Build through its CLI's agent mode, `grok agent stdio` (the
+[Agent Client Protocol](https://agentclientprotocol.com) on stdio), one process per live agent. The CLI
+comes with `make install`: xAI's `grok-cli-bin` wheel bundles it, pinned in `pyproject.toml` (0.2.111). When
+you have your own — `~/.grok/bin/grok`, where xAI's installer (`curl -fsSL https://x.ai/cli/install.sh | bash`)
+puts it, or `grok` on `PATH` — Atrium runs that one instead: it is newer, and the one your terminal writes
+sessions with. `harnesses.grok.binary` names another; `/api/meta` says which runs (`cli`). Everything else is
+Grok's own `~/.grok/config.toml` (`$GROK_HOME/config.toml`; ⚙ Settings → Grok Build), plus a project's
+`.grok/config.toml` for its MCP servers, plugins and permission rules.
+
+**Signing in** is the CLI's: `grok login` (your Grok subscription), or an API key from
+[console.x.ai](https://console.x.ai) as `XAI_API_KEY` in Atrium's environment. A model with a key of its own
+needs neither.
+
+**A relay**, or any endpoint that speaks OpenAI's Chat Completions or Responses API or Anthropic's
+Messages API, is a custom model:
+
+```toml
+[models]
+default = "my-grok"
+
+[model.my-grok]
+model = "grok-4.7"                    # the id the endpoint takes
+base_url = "https://relay.example.com/v1"
+name = "Grok 4.7 (relay)"
+api_key = "..."                       # or env_key = "RELAY_API_KEY": a variable in Atrium's environment
+api_backend = "chat_completions"      # or "responses", "messages"
+supports_reasoning_effort = true      # the endpoint takes reasoning_effort: Atrium's effort picker works
+context_window = 500000               # for the context gauge and auto-compaction (default 200000)
+```
+
+An endpoint that answers `Invalid schema for function 'use_tool': schema must have type 'object' and not have
+'oneOf'…` (Azure's Responses API does) takes the same model through `api_backend = "chat_completions"`.
+
+**Which model**: the agent's pick (`harnesses.grok.model` for new agents), else `[models] default`, else
+Grok's. The model picker lists *Default* and what `grok models` lists. **Effort** is the model's own
+levels (a custom model with `supports_reasoning_effort` gets Grok's, `minimal` … `xhigh`; which of them an
+endpoint accepts is up to it), applied to a running agent at once; a model without `supports_reasoning_effort`
+ignores it.
+
+**What Atrium sets for each agent:**
+
+- the **permission mode** (`ask`, `auto`, `always-approve`), for the agent alone and changed live: `[ui]
+  permission_mode` in `config.toml` isn't used, its `[permission]` rules are. Turning an action down ends
+  Grok's turn; what you write when you turn it down reaches the agent as your next message, in the same
+  turn.
+- **its own section of the system prompt**, when the agent starts: Grok keeps a session's prompt, so a
+  change reaches agents started afterwards, not resumed ones.
+- **Atrium's tools**, as in-process MCP servers named after their namespace (`board`, `web`, `graph`,
+  `review`) that the agent reaches over its connection to Atrium. Grok defers MCP tools: the model finds
+  them with `search_tool` and calls them through `use_tool` (`board__status`…). They run without asking.
+- the servers in Atrium's `mcp_servers`, beside the `[mcp_servers]` of Grok's own files.
+- no update checks (`GROK_DISABLE_AUTOUPDATER`).
+
+Its sessions are the CLI's own, in `~/.grok/sessions/<directory>/<id>/`: `grok --resume` lists the agents
+Atrium started, and Atrium lists the sessions you start in a terminal. Deleting an agent deletes its session.
+The composer offers the CLI's commands (`/compact`, `/session-info`, `/deep-research`, `/goal`…). By default
+Grok also reads Claude Code's and Cursor's rules and skills, and runs Claude Code's hooks; `[compat.claude]`
+and `[compat.cursor]` in `config.toml` turn that off. Not yet: forking an agent, editing a message already
+sent, its subagents in the rail, its calls in Requests. The bundled 0.2.111 takes no images (an attached one
+reaches it by its path).
+
 ## MCP servers
 
 Every agent gets Atrium's own tools — the board (`board.status`, `board.publish`, `board.note`,
 `board.read`, `board.todo_add`, `board.todo_done`) and the web (`web.search`, `web.fetch`) — with nothing to set up but the
 [web keys](#web-tools-and-mcp-servers).
 
-**Claude Code and Antigravity** take your servers from `mcp_servers` in Atrium's settings, in Claude
-Code's format:
+**Claude Code, Antigravity and Grok Build** take your servers from `mcp_servers` in Atrium's settings, in
+Claude Code's format:
 
 ```json
 "mcp_servers": {
@@ -575,6 +646,8 @@ Code's format:
   `.mcp.json`).
 - Antigravity takes `command` servers (stdio) and `url` servers (streamable HTTP), with names of
   letters, digits, `_` and `-`.
+- Grok Build takes `command` servers and `url` servers (`"type": "sse"` for SSE, else streamable HTTP),
+  besides the `[mcp_servers]` of its own `config.toml` (`grok mcp add`).
 
 **Codex** takes them from `[mcp_servers]` in `~/.codex/config.toml`; `/mcp` in a Codex agent's chat lists
 them:
@@ -601,9 +674,10 @@ prompt (the board, the agent's worktree); there is nothing to set up for it.
 |---|---|
 | Claude Code | `CLAUDE.md`: `~/.claude/CLAUDE.md`, and the project's and its parent directories' (`CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md`), `.claude/rules/`. Where none of those three is in the agent's directory or above it, its `AGENTS.md` files instead. |
 | Codex | `AGENTS.md`: `~/.codex/AGENTS.md`, then each directory's from the repository root down to the agent's. |
+| Grok Build | Its own: `AGENTS.md`, `AGENT.md`, `CLAUDE.md` and `CLAUDE.local.md` in each directory from the repository root down to the agent's, `.grok/rules/*.md` and `~/.grok/rules/`; and, unless `[compat]` in its `config.toml` turns them off, Claude Code's (`~/.claude/`, `.claude/rules/`) and Cursor's. |
 | Antigravity | Atrium adds them, since the SDK's runtime doesn't load them: `~/.gemini/AGENTS.md` and `~/.gemini/GEMINI.md`, then for each directory from the repository root down to the agent's, `AGENTS.md`, `GEMINI.md`, `.agents/AGENTS.md`, `.agents/GEMINI.md` and the rules in `.agents/rules/*.md` (`trigger: always_on` in full, `trigger: model_decision` with a `description` as a pointer the agent follows when it applies). Up to 24 KB per file. |
 
-One `AGENTS.md` serves all three. A project that also has a `CLAUDE.md` can pull it in there with a line
+One `AGENTS.md` serves all four. A project that also has a `CLAUDE.md` can pull it in there with a line
 `@AGENTS.md`, as this repository does. Or have Claude Code read both, in `~/.claude/settings.json`:
 
 ```json
@@ -620,6 +694,7 @@ settings can't set this.)
 | `.worktreeinclude` | Gitignored files to copy into each new worktree (gitignore syntax), e.g. `.env`. The file Claude Code and the Codex app read too. |
 | `.claude/settings.json`, `.claude/settings.local.json` | Claude Code's project settings ([above](#claude-code)). |
 | `.codex/config.toml` | Codex's project settings, once the project is trusted ([above](#codex)). |
+| `.grok/config.toml` | Grok Build's project settings: MCP servers, plugins, permission rules ([above](#grok-build)). |
 | `.mcp.json` | Claude Code's project MCP servers. |
 | `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.agents/rules/` | [Instructions](#instructions-for-agents). |
 | `.atrium/` | Atrium's state for the project: the board, agents, tracker, reviews, worktrees, trash. Not settings: Atrium manages it, and its `.gitignore` (`*`) keeps it out of git. |
@@ -640,6 +715,8 @@ proxy the agents need. Claude Code's settings can add variables of their own und
 | `CODEX_HOME` | Codex's (default `~/.codex`): `config.toml`, the login, threads. |
 | `GEMINI_API_KEY`, `GOOGLE_GEMINI_BASE_URL`, Vertex AI's variables | Antigravity's, where its settings file's `env` doesn't set them ([Antigravity](#antigravity)). |
 | `ANTIGRAVITY_HARNESS_PATH` | Another Antigravity runtime binary instead of the one in the SDK's wheel. |
+| `GROK_HOME` | Grok Build's directory (default `~/.grok`): `config.toml`, the login, sessions, its installed CLI (`bin/`). |
+| `XAI_API_KEY` | Grok Build's key for xAI's API, when it isn't signed in with `grok login` ([Grok Build](#grok-build)). |
 | `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` | Passed on to every agent. With `capture.enabled`, Claude Code and Codex get the loopback addresses added to `NO_PROXY`, and the capture proxy sends their calls out through the proxy they would have used. |
 | `ATRIUM_CAPTURE_URL`, `ATRIUM_CAPTURE_UPSTREAM` | Set by Atrium for a captured Claude Code agent: the proxy's address and the one it replaced. An Atrium started with them sends its agents to `ATRIUM_CAPTURE_UPSTREAM` ([Request capture](#request-capture)). |
 
@@ -647,7 +724,7 @@ proxy the agents need. Claude Code's settings can add variables of their own und
 
 - `curl -s --noproxy '*' -H "Authorization: Bearer $(.venv/bin/atrium --token)" http://127.0.0.1:8787/api/meta` lists each harness: `available`, and
   `unavailable_reason` when it isn't; `config_model` / `config_effort`, what *Default* resolves to; for
-  Codex, `cli` (`path`, `version`, `bundled`). `settings._error` says why `settings.json` couldn't be read.
+  Codex and Grok Build, `cli` (`path`, `version`, `bundled`). `settings._error` says why `settings.json` couldn't be read.
   `capture` says whether model calls are recorded (`enabled`), whether the capture proxy started (`running`), and how
   many megabytes the recorded calls take (`mb`), of them kept apart from `capture.max_mb` (`kept_mb`).
 - ⚙ Settings keeps the last 20 versions of each file in `~/.atrium/backups/` (`<file>-<date>-<time>`).
@@ -658,7 +735,8 @@ proxy the agents need. Claude Code's settings can add variables of their own und
 | A default from the code or this guide doesn't apply | Your `settings.json` still holds the value of its first start: change or delete the key. |
 | `model` or effort in a harness's file is ignored | The agent has one picked, or `harnesses.<harness>.model` / `effort` sets one; `""` there leaves it to the harness's file. In Claude Code's settings, `env.CLAUDE_CODE_EFFORT_LEVEL` wins over `effortLevel`. |
 | The harness's own default permission mode is ignored | Atrium always sets the mode: the agent's picker, or `harnesses.<harness>.permission_mode`. |
-| An MCP server is missing in Codex | Atrium's `mcp_servers` are for Claude Code and Antigravity; Codex reads `[mcp_servers]` in `config.toml`. |
+| An MCP server is missing in Codex | Atrium's `mcp_servers` are for Claude Code, Antigravity and Grok Build; Codex reads `[mcp_servers]` in `config.toml`. |
+| A Grok Build agent fails with `Invalid schema for function 'use_tool'` | Its endpoint's Responses API rejects the schema of Grok's `use_tool`: `api_backend = "chat_completions"` for that model ([Grok Build](#grok-build)). |
 | Antigravity is unavailable: "Needs the API key of …" | A relay set in its settings file only gets the key in that file's `env`. |
 | A running agent doesn't see a change | Harness settings apply when an agent's process starts: new agents, and agents woken up after `sessions.idle_close_minutes`. |
 | An agent's model calls fail with a 502 from "Atrium's capture proxy" | The proxy couldn't reach the API; the message says why (a certificate it doesn't trust, the proxy on the way). `"capture": {"enabled": false}` sends agents started afterwards straight to their API. |

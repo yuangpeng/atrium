@@ -383,7 +383,7 @@ export function useChatFloor(spare = false) {
 /** The model, read-only: its maker's mark + name while the chip row has room, else the mark (name on hover). */
 export function ModelChip({ harness, model, faded }: { harness: Harness; model: string | null | undefined; faded?: boolean }) {
   const name = modelName(harness, model);
-  const maker = model || ({ "claude-code": "claude", antigravity: "gemini" } as Record<string, string>)[harness.id] || null; // the harness's default model's maker
+  const maker = model || ({ "claude-code": "claude", antigravity: "gemini", grok: "grok" } as Record<string, string>)[harness.id] || null; // the harness's default model's maker
   const ref = useRef<HTMLSpanElement>(null);
   const roomy = useRoomy(ref, [name]);
   const [tipProps, tip] = useTip(
@@ -706,12 +706,18 @@ const MODE_INFO: Record<string, Record<string, { icon: LucideIcon; desc: string;
     "request-review": { icon: Hand, desc: "Ask before editing files, running commands, or using the web and MCP tools" },
     "accept-edits": { icon: FilePen, desc: "Edit files in the workspace without asking; ask for the rest" },
     "always-proceed": { icon: ShieldAlert, desc: "Run every tool without asking", danger: true },
+  },  // Grok Build's own modes
+  grok: {
+    ask: { icon: Hand, desc: "Ask before edits and commands not known to be safe" },
+    auto: { icon: ShieldCheck, desc: "A classifier approves safe actions; ask for risky ones" },
+    "always-approve": { icon: ShieldAlert, desc: "Run every tool without asking", danger: true },
   },
 };
 const MODE_DOCS: Record<string, string> = {
   "claude-code": "https://code.claude.com/docs/en/permission-modes",
   codex: "https://developers.openai.com/codex/permissions",
   antigravity: "https://antigravity.google/docs/permissions",
+  grok: "https://docs.x.ai/build/features/permissions",
 };
 
 /** Permission mode: only the mode's icon in the composer; the menu (after Codex's) explains each mode. */

@@ -3,7 +3,7 @@
 [English](configuration.md)
 
 Atrium 只有一个属于自己的配置文件：`~/.atrium/settings.json`。其余都是各个 harness 自己的配置，也就是
-`claude`、`codex` 命令行和 Antigravity CLI 读取的那些文件。所以在 `claude` 和 `codex` 命令行里能用的配置，
+`claude`、`codex`、`grok` 命令行和 Antigravity CLI 读取的那些文件。所以在这些命令行里能用的配置，
 在 Atrium 里同样能用。
 
 **⚙ Settings**（侧边栏底部）在编辑器里打开所有这些文件，当前项目的也在其中。保存前会先检查（JSON / TOML
@@ -24,6 +24,7 @@ Atrium 只有一个属于自己的配置文件：`~/.atrium/settings.json`。其
 - [Claude Code](#claude-code)
 - [Codex](#codex)
 - [Antigravity](#antigravity)
+- [Grok Build](#grok-build)
 - [MCP 服务器](#mcp-服务器)
 - [给 agent 的指令文件](#给-agent-的指令文件)
 - [项目里的文件](#项目里的文件)
@@ -32,16 +33,16 @@ Atrium 只有一个属于自己的配置文件：`~/.atrium/settings.json`。其
 
 ## 哪个文件管什么
 
-| 要设置什么 | Claude Code | Codex | Antigravity |
-|---|---|---|---|
-| 登录或 API key | `claude auth login`，或 `ANTHROPIC_API_KEY` | `codex login` | `~/.gemini/antigravity-cli/settings.json` 里的 `env.GEMINI_API_KEY` |
-| 中转站或其他端点 | `~/.claude/settings.json` 里的 `env.ANTHROPIC_BASE_URL` | `~/.codex/config.toml` 里的 `openai_base_url` 或 `[model_providers]` | `~/.gemini/antigravity-cli/settings.json` 里的自定义模型 |
-| 新 agent 的模型和 effort | Atrium 的 `harnesses.claude-code`；`""` = Claude Code 配置里的 `model` / `effortLevel` | Atrium 的 `harnesses.codex`；`""` = `config.toml` 里的 `model` / `model_reasoning_effort` | Atrium 的 `harnesses.antigravity`；`""` = 它配置文件里的 `model` |
-| 新 agent 的权限模式 | Atrium 的 `harnesses.claude-code.permission_mode` | Atrium 的 `harnesses.codex.permission_mode` | Atrium 的 `harnesses.antigravity.permission_mode` |
-| 哪些操作不用询问 | 权限模式，加上 Claude Code 配置里的 `permissions` 规则 | 权限模式（审批策略 + 沙箱） | 权限模式 |
-| MCP 服务器 | Atrium 的 `mcp_servers`，加上 Claude Code 自己的 | `config.toml` 里的 `[mcp_servers]` | Atrium 的 `mcp_servers` |
-| 指令文件 | `CLAUDE.md`（或 `AGENTS.md`） | `AGENTS.md` | `AGENTS.md`、`GEMINI.md`、`.agents/rules/` |
-| 运行哪个 CLI | `claude-agent-sdk` 内置的 | 内置的，或 `harnesses.codex.binary` 指定的 | `google-antigravity` 内置的运行时 |
+| 要设置什么 | Claude Code | Codex | Antigravity | Grok Build |
+|---|---|---|---|---|
+| 登录或 API key | `claude auth login`，或 `ANTHROPIC_API_KEY` | `codex login` | `~/.gemini/antigravity-cli/settings.json` 里的 `env.GEMINI_API_KEY` | `grok login`，或 `XAI_API_KEY`；自定义模型的 `api_key` / `env_key` |
+| 中转站或其他端点 | `~/.claude/settings.json` 里的 `env.ANTHROPIC_BASE_URL` | `~/.codex/config.toml` 里的 `openai_base_url` 或 `[model_providers]` | `~/.gemini/antigravity-cli/settings.json` 里的自定义模型 | `~/.grok/config.toml` 里的自定义模型（`[model.<id>]`） |
+| 新 agent 的模型和 effort | Atrium 的 `harnesses.claude-code`；`""` = Claude Code 配置里的 `model` / `effortLevel` | Atrium 的 `harnesses.codex`；`""` = `config.toml` 里的 `model` / `model_reasoning_effort` | Atrium 的 `harnesses.antigravity`；`""` = 它配置文件里的 `model` | Atrium 的 `harnesses.grok`；`""` = `config.toml` 里的 `[models] default`，以及模型自己的 effort |
+| 新 agent 的权限模式 | Atrium 的 `harnesses.claude-code.permission_mode` | Atrium 的 `harnesses.codex.permission_mode` | Atrium 的 `harnesses.antigravity.permission_mode` | Atrium 的 `harnesses.grok.permission_mode` |
+| 哪些操作不用询问 | 权限模式，加上 Claude Code 配置里的 `permissions` 规则 | 权限模式（审批策略 + 沙箱） | 权限模式 | 权限模式，加上 `config.toml` 里的 `[permission]` 规则 |
+| MCP 服务器 | Atrium 的 `mcp_servers`，加上 Claude Code 自己的 | `config.toml` 里的 `[mcp_servers]` | Atrium 的 `mcp_servers` | Atrium 的 `mcp_servers`，加上 `config.toml` 里的 `[mcp_servers]` |
+| 指令文件 | `CLAUDE.md`（或 `AGENTS.md`） | `AGENTS.md` | `AGENTS.md`、`GEMINI.md`、`.agents/rules/` | `AGENTS.md`、`CLAUDE.md`、`.grok/rules/`（以及 Claude 和 Cursor 的规则） |
+| 运行哪个 CLI | `claude-agent-sdk` 内置的 | 内置的，或 `harnesses.codex.binary` 指定的 | `google-antigravity` 内置的运行时 | 你自己装的（`~/.grok/bin/grok`、`PATH`），没有就用内置的；或 `harnesses.grok.binary` 指定的 |
 
 ## Atrium 的 settings.json
 
@@ -67,7 +68,8 @@ Atrium 只有一个属于自己的配置文件：`~/.atrium/settings.json`。其
   "harnesses": {
     "claude-code": {"permission_mode": "bypassPermissions", "model": "", "effort": ""},
     "codex": {"enabled": true, "binary": "", "permission_mode": "full-access", "model": "", "effort": ""},
-    "antigravity": {"enabled": true, "permission_mode": "always-proceed", "model": "", "effort": "high"}
+    "antigravity": {"enabled": true, "permission_mode": "always-proceed", "model": "", "effort": "high"},
+    "grok": {"enabled": true, "binary": "", "permission_mode": "always-approve", "model": "", "effort": ""}
   },
   "sessions": {"idle_close_minutes": 30},
   "notifications": {"enabled": true, "permission": true, "turn_end": true, "sound": true},
@@ -90,12 +92,13 @@ Atrium 只有一个属于自己的配置文件：`~/.atrium/settings.json`。其
 
 | Key | 默认值 | 说明 |
 |---|---|---|
-| `defaults.harness` | `"claude-code"` | 新建 agent 页面默认选中的 harness：`claude-code`、`codex` 或 `antigravity`。 |
+| `defaults.harness` | `"claude-code"` | 新建 agent 页面默认选中的 harness：`claude-code`、`codex`、`antigravity` 或 `grok`。 |
 | `harnesses.<harness>.permission_mode` | 见[下文](#权限模式) | 新 agent 的初始权限模式。 |
-| `harnesses.<harness>.model` | `""` | `""` = harness 自己的默认值（来自它的配置文件）。Claude Code：`opus`、`sonnet`、`haiku` 或模型 id；Codex：它模型列表里的模型；Antigravity：模型 id，或自定义模型的 key 或 label。 |
-| `harnesses.<harness>.effort` | `""`；Antigravity 为 `"high"` | `""` = harness 自己的默认值。Claude Code：`low`、`medium`、`high`、`xhigh`、`max`；Codex：模型支持的档位（`low` … `xhigh`）；Antigravity：Gemini 的思考等级，`minimal` … `high`。Antigravity 写 `""` 时不发送思考配置，Gemini 也就不返回思考内容：聊天里看不到，Tracker 也读不到（见[下文](#antigravity)）。 |
-| `harnesses.codex.enabled`、`harnesses.antigravity.enabled` | `true` | `false` 关闭这个 harness。 |
+| `harnesses.<harness>.model` | `""` | `""` = harness 自己的默认值（来自它的配置文件）。Claude Code：`opus`、`sonnet`、`haiku` 或模型 id；Codex：它模型列表里的模型；Antigravity：模型 id，或自定义模型的 key 或 label；Grok Build：`grok models` 列出的模型，自定义模型的 key 也在其中。 |
+| `harnesses.<harness>.effort` | `""`；Antigravity 为 `"high"` | `""` = harness 自己的默认值。Claude Code：`low`、`medium`、`high`、`xhigh`、`max`；Codex：模型支持的档位（`low` … `xhigh`）；Antigravity：Gemini 的思考等级，`minimal` … `high`。Antigravity 写 `""` 时不发送思考配置，Gemini 也就不返回思考内容：聊天里看不到，Tracker 也读不到（见[下文](#antigravity)）；Grok Build：模型自己的档位，只对支持 effort 的模型有效（见[下文](#grok-build)）。 |
+| `harnesses.codex.enabled`、`harnesses.antigravity.enabled`、`harnesses.grok.enabled` | `true` | `false` 关闭这个 harness。 |
 | `harnesses.codex.binary` | `""` | 运行哪个 Codex CLI。`""`（或 `"codex"`）= Atrium 内置的，没有的话用 `PATH` 里的 `codex`；写一个路径（比如 `/opt/homebrew/bin/codex`）就用那一个。Codex 的 app-server 重新启动后才生效：重启 Atrium。 |
+| `harnesses.grok.binary` | `""` | 运行哪个 Grok CLI。`""`（或 `"grok"`）= 你自己装的那个（xAI 安装脚本放的 `~/.grok/bin/grok`，没有的话 `PATH` 里的 `grok`），都没有就用 Atrium 内置的；写一个路径就用那一个。对之后启动的 agent 生效。 |
 
 ### 权限模式
 
@@ -112,6 +115,9 @@ Atrium 只有一个属于自己的配置文件：`~/.atrium/settings.json`。其
 | Antigravity | `request-review` | Request review | 随意读取；编辑、执行命令和调用 MCP 工具前询问。 |
 | | `accept-edits` | Accept edits | 在 agent 自己的目录里编辑不问，其余询问。 |
 | | `always-proceed` | Always proceed | 从不询问。默认值。 |
+| Grok Build | `ask` | Ask | 读取和 Grok 认为安全的命令直接运行；编辑和其他操作前询问。 |
+| | `auto` | Auto | 由 Grok 的分类器批准安全的操作，有风险的询问。 |
+| | `always-approve` | Always approve | 从不询问；`config.toml` 里的 deny 规则仍然有效。默认值。 |
 
 Git Agent 和 Code Review Agent 有自己的模式，不受这些设置影响：它们只读，Git Agent 做其他任何事之前都会询问。
 
@@ -167,8 +173,8 @@ Git Agent 和 Code Review Agent 有自己的模式，不受这些设置影响：
 |---|---|---|
 | `web.serper_api_key` | `""` | `web.search` 用的 [Serper](https://serper.dev) key。`SERPER_API_KEY` 优先。 |
 | `web.jina_api_key` | `""` | 可选的 [Jina Reader](https://jina.ai/reader) key，提高 `web.fetch` 的频率限制。`JINA_API_KEY` 优先。 |
-| `web.replace_builtin_web_tools` | `true` | 让 agent 用 Atrium 的 web 工具代替自带的：Claude Code 去掉 WebFetch，有 Serper key 时再去掉 WebSearch；Antigravity 同样去掉 `read_url_content` 和 `search_web`。Codex 自带的网页搜索在它的 `config.toml` 里设置。 |
-| `mcp_servers` | `{}` | 给 Claude Code 和 Antigravity agent 用的 MCP 服务器：见 [MCP 服务器](#mcp-服务器)。 |
+| `web.replace_builtin_web_tools` | `true` | 让 agent 用 Atrium 的 web 工具代替自带的：Claude Code 去掉 WebFetch，有 Serper key 时再去掉 WebSearch；Antigravity 同样去掉 `read_url_content` 和 `search_web`。Codex 自带的网页搜索在它的 `config.toml` 里设置；Grok Build 保留它的 `web_search`。 |
+| `mcp_servers` | `{}` | 给 Claude Code、Antigravity 和 Grok Build agent 用的 MCP 服务器：见 [MCP 服务器](#mcp-服务器)。 |
 
 ### 语音输入
 
@@ -300,6 +306,8 @@ agent 的 base URL 指向它。代理把每个请求原样转发到 harness 本�
   内置的 OpenAI provider（ChatGPT 登录、`openai_base_url`），以及设置了 `supports_websockets` 的 provider，
   都直接调用。
 - **Antigravity**：发往 Gemini API 端点的调用，不管是自定义模型的中转站还是 Google 自己的。Vertex AI 不经过。
+- **Grok Build**：不记录。模型的调用发到哪里只由它的 `config.toml` 决定，没法给单个 agent 的进程换一个地址
+  （CLI 的覆盖层 `GROK_CONFIG` 不允许设置模型的 `base_url`）。
 
 harness 发出的其他流量不会被记录：遥测、更新检查、走 HTTP 的 MCP 服务器、Codex 拉取的插件、网页。
 
@@ -514,12 +522,71 @@ Atrium 的环境变量里。Antigravity 的条款规定 Google 账号登录只�
 保存之后或刷新后才看到）。它的对话保存在 `~/.atrium/antigravity/`，没有 CLI 能列出它们。fork 会在那里以新 id
 复制一份对话（运行时的状态数据库和 transcript，截到 fork 点）；修改已发送的消息则就地截断原对话。
 
+## Grok Build
+
+Atrium 通过 xAI Grok Build 命令行的 agent 模式 `grok agent stdio`（stdio 上的
+[Agent Client Protocol](https://agentclientprotocol.com)）运行它，每个运行中的 agent 一个进程。`make install`
+会装好这个 CLI：xAI 的 `grok-cli-bin` wheel 内置了它，版本固定在 `pyproject.toml` 里（0.2.111）。如果你自己
+装了一个——xAI 的安装脚本（`curl -fsSL https://x.ai/cli/install.sh | bash`）放在 `~/.grok/bin/grok`，或者
+`PATH` 里有 `grok`——Atrium 改用那一个：它更新，也是你在终端里写会话用的那一个。`harnesses.grok.binary`
+可以指定别的；`/api/meta` 显示实际运行的是哪个（`cli`）。其余配置都在 Grok 自己的 `~/.grok/config.toml`
+（`$GROK_HOME/config.toml`；⚙ Settings → Grok Build），项目里的 `.grok/config.toml` 可以设置该项目的 MCP 服务器、
+插件和权限规则。
+
+**登录**跟 CLI 一样：`grok login`（你的 Grok 订阅），或者在 Atrium 的环境变量里设置
+[console.x.ai](https://console.x.ai) 的 API key `XAI_API_KEY`。自带 key 的模型两者都不需要。
+
+**中转站**，或者任何兼容 OpenAI Chat Completions / Responses API 或 Anthropic Messages API 的端点，写成
+自定义模型：
+
+```toml
+[models]
+default = "my-grok"
+
+[model.my-grok]
+model = "grok-4.7"                    # 端点认的模型 id
+base_url = "https://relay.example.com/v1"
+name = "Grok 4.7 (relay)"
+api_key = "..."                       # 或 env_key = "RELAY_API_KEY"：Atrium 环境里的一个变量
+api_backend = "chat_completions"      # 或 "responses"、"messages"
+supports_reasoning_effort = true      # 端点接受 reasoning_effort 时：Atrium 的 effort 选择器才起作用
+context_window = 500000               # 用于上下文用量显示和自动压缩（默认 200000）
+```
+
+如果端点报 `Invalid schema for function 'use_tool': schema must have type 'object' and not have 'oneOf'…`
+（Azure 的 Responses API 会这样），对这个模型改用 `api_backend = "chat_completions"` 即可。
+
+**用哪个模型**：这个 agent 选的模型（新 agent 用 `harnesses.grok.model`），否则用 `[models] default`，否则用
+Grok 自己的默认值。模型选择器里列出 *Default* 和 `grok models` 列出的模型。**effort** 是模型自己的档位
+（设了 `supports_reasoning_effort` 的自定义模型用 Grok 的档位，`minimal` … `xhigh`；端点接受哪几档由端点决定），
+对运行中的 agent 立即生效；没有 `supports_reasoning_effort` 的模型会忽略它。
+
+**Atrium 为每个 agent 设置的内容：**
+
+- **权限模式**（`ask`、`auto`、`always-approve`），只作用于这个 agent，可以在运行中切换：不使用 `config.toml`
+  里的 `[ui] permission_mode`，但它的 `[permission]` 规则有效。拒绝一个操作会结束 Grok 的这一轮；拒绝时
+  写下的说明会作为你的下一条消息发给 agent，仍算同一轮。
+- **系统提示词里 Atrium 的那一段**，在 agent 新建时加入：Grok 会保留会话的提示词，所以改动只影响之后新建的
+  agent，不影响恢复的。
+- **Atrium 的工具**：以命名空间命名的进程内 MCP 服务器（`board`、`web`、`graph`、`review`），agent 通过它和
+  Atrium 之间的连接调用。Grok 会延迟加载 MCP 工具：模型先用 `search_tool` 找到它们，再通过 `use_tool` 调用
+  （`board__status` 等）。这些工具不经询问直接运行。
+- Atrium `mcp_servers` 里的服务器，和 Grok 自己文件里的 `[mcp_servers]` 并存。
+- 不检查更新（`GROK_DISABLE_AUTOUPDATER`）。
+
+它的会话就是 CLI 自己的，保存在 `~/.grok/sessions/<目录>/<id>/`：`grok --resume` 能列出 Atrium 启动的 agent，
+Atrium 也能列出你在终端里开的会话。删除 agent 会同时删除它的会话。输入框提供 CLI 的命令（`/compact`、
+`/session-info`、`/deep-research`、`/goal` 等）。Grok 默认还会读取 Claude Code 和 Cursor 的规则与 skills，并运行
+Claude Code 的 hooks；`config.toml` 里的 `[compat.claude]` 和 `[compat.cursor]` 可以关掉。暂不支持：fork agent、
+修改已发送的消息、在侧边栏列出它的子 agent、在 Requests 里看到它的调用。内置的 0.2.111 不接受图片（附加的图片
+以路径的形式交给它）。
+
 ## MCP 服务器
 
 每个 agent 都自带 Atrium 的工具：看板（`board.status`、`board.publish`、`board.note`、`board.read`、`board.todo_add`、`board.todo_done`）和网页
 （`web.search`、`web.fetch`）。除了 [web 工具的 key](#web-工具与-mcp-服务器)，不需要任何配置。
 
-**Claude Code 和 Antigravity** 从 Atrium 配置的 `mcp_servers` 读取你的服务器，格式和 Claude Code 的相同：
+**Claude Code、Antigravity 和 Grok Build** 从 Atrium 配置的 `mcp_servers` 读取你的服务器，格式和 Claude Code 的相同：
 
 ```json
 "mcp_servers": {
@@ -530,6 +597,8 @@ Atrium 的环境变量里。Antigravity 的条款规定 Google 账号登录只�
 
 - Claude Code agent 还会加载为 Claude Code 本身配置的服务器（`claude mcp add` 添加的、项目里的 `.mcp.json`）。
 - Antigravity 支持 `command` 服务器（stdio）和 `url` 服务器（streamable HTTP），名称只能用字母、数字、`_` 和 `-`。
+- Grok Build 支持 `command` 服务器和 `url` 服务器（`"type": "sse"` 为 SSE，否则为 streamable HTTP），另外还有它
+  自己 `config.toml` 里的 `[mcp_servers]`（`grok mcp add`）。
 
 **Codex** 从 `~/.codex/config.toml` 的 `[mcp_servers]` 读取；在 Codex agent 的聊天里输入 `/mcp` 可以列出它们：
 
@@ -555,9 +624,10 @@ worktree），这部分不需要配置。
 |---|---|
 | Claude Code | `CLAUDE.md`：`~/.claude/CLAUDE.md`，以及项目和它各级父目录里的（`CLAUDE.md`、`CLAUDE.local.md`、`.claude/CLAUDE.md`），还有 `.claude/rules/`。如果 agent 所在目录及以上都没有这三种文件，就改读那里的 `AGENTS.md`。 |
 | Codex | `AGENTS.md`：`~/.codex/AGENTS.md`，然后是从仓库根目录到 agent 所在目录的每一级目录里的。 |
+| Grok Build | 它自己读取：从仓库根目录到 agent 所在目录每一级的 `AGENTS.md`、`AGENT.md`、`CLAUDE.md`、`CLAUDE.local.md`，`.grok/rules/*.md` 和 `~/.grok/rules/`；如果没有在 `config.toml` 的 `[compat]` 里关掉，还有 Claude Code 的（`~/.claude/`、`.claude/rules/`）和 Cursor 的。 |
 | Antigravity | 由 Atrium 加入，因为 SDK 的运行时不加载它们：`~/.gemini/AGENTS.md` 和 `~/.gemini/GEMINI.md`，然后从仓库根目录到 agent 所在目录的每一级：`AGENTS.md`、`GEMINI.md`、`.agents/AGENTS.md`、`.agents/GEMINI.md`，以及 `.agents/rules/*.md` 里的规则（`trigger: always_on` 的全文加入；`trigger: model_decision` 且带 `description` 的只列出提示，适用时由 agent 自己去读）。每个文件最多 24 KB。 |
 
-一个 `AGENTS.md` 就能同时服务三个 harness。如果项目里还有 `CLAUDE.md`，可以在里面加一行 `@AGENTS.md`
+一个 `AGENTS.md` 就能同时服务四个 harness。如果项目里还有 `CLAUDE.md`，可以在里面加一行 `@AGENTS.md`
 把它引进来，本仓库就是这么做的。也可以让 Claude Code 两个都读，写在 `~/.claude/settings.json` 里：
 
 ```json
@@ -573,6 +643,7 @@ worktree），这部分不需要配置。
 | `.worktreeinclude` | 新建 worktree 时要复制进去的、被 git 忽略的文件（gitignore 语法），比如 `.env`。Claude Code 和 Codex 应用也读这个文件。 |
 | `.claude/settings.json`、`.claude/settings.local.json` | Claude Code 的项目配置（见[上文](#claude-code)）。 |
 | `.codex/config.toml` | Codex 的项目配置，项目被信任后生效（见[上文](#codex)）。 |
+| `.grok/config.toml` | Grok Build 的项目配置：MCP 服务器、插件、权限规则（见[上文](#grok-build)）。 |
 | `.mcp.json` | Claude Code 的项目级 MCP 服务器。 |
 | `AGENTS.md`、`CLAUDE.md`、`GEMINI.md`、`.agents/rules/` | [指令文件](#给-agent-的指令文件)。 |
 | `.atrium/` | Atrium 在这个项目里的状态：看板、agent、tracker、审查记录、worktree、回收站。它不是配置，由 Atrium 管理；里面的 `.gitignore`（`*`）让它不进 git。 |
@@ -593,13 +664,15 @@ Claude Code 的配置可以在 `env` 里另加变量；Antigravity 配置的 `en
 | `CODEX_HOME` | Codex 的目录（默认 `~/.codex`）：`config.toml`、登录信息、对话线程。 |
 | `GEMINI_API_KEY`、`GOOGLE_GEMINI_BASE_URL`、Vertex AI 的变量 | Antigravity 用的，在它配置文件的 `env` 没有设置时生效（见 [Antigravity](#antigravity)）。 |
 | `ANTIGRAVITY_HARNESS_PATH` | 用另一个 Antigravity 运行时二进制，代替 SDK wheel 里的那个。 |
+| `GROK_HOME` | Grok Build 的目录（默认 `~/.grok`）：`config.toml`、登录信息、会话、它安装的 CLI（`bin/`）。 |
+| `XAI_API_KEY` | Grok Build 访问 xAI API 用的 key，在没有 `grok login` 登录时使用（见 [Grok Build](#grok-build)）。 |
 | `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` | 原样传给每个 agent。开启 `capture.enabled` 时，Claude Code 和 Codex 的 `NO_PROXY` 会加上回环地址，抓包代理再按它们本来会用的代理把调用发出去。 |
 | `ATRIUM_CAPTURE_URL`、`ATRIUM_CAPTURE_UPSTREAM` | Atrium 给被抓包的 Claude Code agent 设置的：代理的地址，以及它代替的地址。带着它们启动的 Atrium 会让自己的 agent 改用 `ATRIUM_CAPTURE_UPSTREAM`（见[请求抓取](#请求抓取)）。 |
 
 ## 检查配置
 
 - `curl -s --noproxy '*' -H "Authorization: Bearer $(.venv/bin/atrium --token)" http://127.0.0.1:8787/api/meta` 列出每个 harness：`available`（是否可用），不可用时的
-  `unavailable_reason`；`config_model` / `config_effort`，即 *Default* 实际解析成什么；Codex 还有 `cli`
+  `unavailable_reason`；`config_model` / `config_effort`，即 *Default* 实际解析成什么；Codex 和 Grok Build 还有 `cli`
   （`path`、`version`、`bundled`）。`settings._error` 说明 `settings.json` 读取失败的原因。`capture` 说明模型调用
   是否被记录（`enabled`）、抓包代理是否已经启动（`running`），以及记录占了多少 MB（`mb`），其中不计入
   `capture.max_mb` 的保留部分有多少（`kept_mb`）。
@@ -611,7 +684,8 @@ Claude Code 的配置可以在 `env` 里另加变量；Antigravity 配置的 `en
 | 代码或本指南里的默认值没有生效 | 你的 `settings.json` 里还是首次启动时写入的值：修改或删掉那个 key。 |
 | harness 配置文件里的 `model` 或 effort 被忽略 | 这个 agent 选了具体值，或者 `harnesses.<harness>.model` / `effort` 设了值；那里写 `""` 才交给 harness 的配置文件决定。在 Claude Code 的配置里，`env.CLAUDE_CODE_EFFORT_LEVEL` 优先于 `effortLevel`。 |
 | harness 自己的默认权限模式被忽略 | 权限模式总是由 Atrium 设置：来自 agent 的选择器，或 `harnesses.<harness>.permission_mode`。 |
-| Codex 里缺少某个 MCP 服务器 | Atrium 的 `mcp_servers` 只给 Claude Code 和 Antigravity；Codex 读 `config.toml` 里的 `[mcp_servers]`。 |
+| Codex 里缺少某个 MCP 服务器 | Atrium 的 `mcp_servers` 只给 Claude Code、Antigravity 和 Grok Build；Codex 读 `config.toml` 里的 `[mcp_servers]`。 |
+| Grok Build agent 报 `Invalid schema for function 'use_tool'` | 它的端点的 Responses API 不接受 Grok `use_tool` 的 schema：对这个模型改用 `api_backend = "chat_completions"`（见 [Grok Build](#grok-build)）。 |
 | Antigravity 不可用，提示 "Needs the API key of …" | 在它配置文件里设置的中转站只用该文件 `env` 里的 key。 |
 | 正在运行的 agent 看不到修改 | harness 配置在 agent 进程启动时才生效：新建的 agent，以及 `sessions.idle_close_minutes` 之后被重新唤醒的 agent。 |
 | agent 的模型调用失败，报 "Atrium's capture proxy" 的 502 | 代理连不上 API，消息里写了原因（不信任的证书、中间的代理）。`"capture": {"enabled": false}` 让之后启动的 agent 直接调用它们的 API。 |

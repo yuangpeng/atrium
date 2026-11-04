@@ -6,6 +6,7 @@ from .antigravity import AntigravityHarness
 from .base import Harness, LiveSession, LiveSpec, SessionSummary, ToolSpec
 from .claude_code import ClaudeCodeHarness
 from .codex import CodexHarness
+from .grok import GrokHarness
 
 _HARNESSES: dict[str, Harness] = {}
 
@@ -27,5 +28,6 @@ def all_harnesses() -> list[Harness]:
 register(ClaudeCodeHarness())
 register(CodexHarness())
 register(AntigravityHarness())
+register(GrokHarness())
 
 __all__ = ["Harness", "LiveSession", "LiveSpec", "SessionSummary", "ToolSpec", "get_harness", "all_harnesses", "register"]
