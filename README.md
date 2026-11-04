@@ -243,8 +243,8 @@ own login, so you log in once more there.
 | `~/.atrium/auth.json` | the login: the password's hash (and the made-up password, until you set yours), the secret that signs login cookies, the API token (`chmod 600`) |
 | `~/.atrium/uploads/` | composer attachments |
 | `~/.atrium/backups/` | the previous versions of config files saved from Settings (last 20 each) |
-| `~/.gemini/antigravity-cli/settings.json` | Antigravity's model, custom models (relays) and Gemini API key (`env`) — the Antigravity CLI's own file |
-| `~/.atrium/antigravity/` | Antigravity conversations: the runtime's state (`save/`), its data and JSONL transcripts (`data/brain/<id>/`), Atrium's index (`sessions/`) |
+| `~/.gemini/antigravity-cli/settings.json` | Antigravity's model, custom models (relays) and Gemini API key (`env`) — the Antigravity CLI's own file (`~/.gemini/antigravity-cli/` also holds the CLI's conversations) |
+| `~/.atrium/antigravity/` | Antigravity conversations started from Atrium: the runtime's state (`save/`), its data and JSONL transcripts (`data/brain/<id>/`), Atrium's index (`sessions/`) |
 | `<project>/.atrium/board.html` | the board (generated from `board.json`) |
 | `<project>/.atrium/agents.json` | session → agent name / role / harness / mode / model / effort / turn snapshots |
 | `<project>/.atrium/tracker.json` | tracker transcript offsets + run log |
@@ -255,8 +255,9 @@ own login, so you log in once more there.
 
 `.atrium/` contains a `.gitignore` with `*`, so it never shows up in your repo.
 
-Agent names are also written back to the harness (Claude Code session title, Codex thread name),
-so `claude --resume` and `codex resume` show them. Antigravity sessions are Atrium's own: no CLI lists them.
+Agent names are also written back to the harness (Claude Code session title, Codex thread name,
+Antigravity CLI summary), so `claude --resume`, `codex resume` and `agy` / `agt` show them;
+Antigravity CLI conversations in `~/.gemini/antigravity-cli/` are listed, watched and resumed too.
 
 **Settings** edits the real files, raw, in Monaco: Atrium's `settings.json`, Claude Code's
 `~/.claude/settings.json` plus the project's `.claude/settings.json` / `settings.local.json`, and

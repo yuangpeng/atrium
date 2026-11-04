@@ -446,7 +446,9 @@ Atrium 的环境变量里。Antigravity 的条款规定 Google 账号登录只�
 - **去掉**：开启 `web.replace_builtin_web_tools` 时去掉 `read_url_content`；有 Serper key 时再去掉 `search_web`。
 
 修改对之后启动的 agent 生效。Antigravity 是否可用、它的模型列表会立即更新（已打开的页面要在 ⚙ Settings
-保存之后或刷新后才看到）。它的对话保存在 `~/.atrium/antigravity/`：没有 CLI 能列出它们，也不能 fork，或者修改其中已发送的消息。
+保存之后或刷新后才看到）。它的对话保存在 `~/.atrium/antigravity/`（从 Atrium 启动的）和
+`~/.gemini/antigravity-cli/`（从 Antigravity CLI `agy` / `agt` 启动的，Atrium 同样会列出、监听并恢复它们）；
+它们不能 fork，或者修改其中已发送的消息。
 
 ## MCP 服务器
 
