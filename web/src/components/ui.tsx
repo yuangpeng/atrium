@@ -357,6 +357,28 @@ export function useTick(ms = 30000) {
   useInterval(() => set((x) => x + 1), ms);
 }
 
+/** Today (`toDateString`), new at local midnight: what shows a time as today's gives its date once it isn't. Looked at
+ *  again when the page comes back too: a timer sleeps with the machine, and with a phone's page in the background. */
+export function useDay(): string {
+  const [day, setDay] = useState(() => new Date().toDateString());
+  useEffect(() => {
+    let timer = 0;
+    const check = () => {
+      window.clearTimeout(timer);
+      const now = new Date();
+      setDay(now.toDateString());
+      timer = window.setTimeout(check, new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).getTime() - now.getTime() + 500);
+    };
+    check();
+    document.addEventListener("visibilitychange", check);
+    return () => {
+      window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", check);
+    };
+  }, []);
+  return day;
+}
+
 // Fullscreen without the browser's: iPhone's Safari has none for page elements (only for video), so there the
 // element fills the window instead (`data-fs-fill`, styles.css). One at a time, like the real thing.
 let filled: HTMLElement | null = null;

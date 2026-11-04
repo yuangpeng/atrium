@@ -6,7 +6,7 @@ import { socket } from "../ws";
 import { useApp } from "../store";
 import { EMPTY_REPLY, Workspace, useDrafts } from "../drafts";
 import { clsx, fmtClock, fmtDuration, samePoint } from "../util";
-import { Markdown, Spinner, StreamingMarkdown } from "../components/ui";
+import { Markdown, Spinner, StreamingMarkdown, useDay } from "../components/ui";
 import { useOpenCompaction } from "../components/Compactions";
 import { FileLinks } from "../components/FileLinks";
 import { BoardToolRow, PermissionCard, ToolRow, isBoardTool, useOpenSubagent } from "./ToolViews";
@@ -240,18 +240,19 @@ export function Transcript({ blocks, results, running, cwd, forks, onFork, steps
     if (!window.getSelection()?.isCollapsed) return;
     setTapped((k) => (k === key ? null : key));
   }, []);
+  const day = useDay();
   // the same elements while nothing here changes (a keystroke in the composer); else each block renders again only
   // if what it shows changed (sameBlock): a new item renders itself, not the whole conversation
   const rendered = useMemo(
     () =>
       blocks.map((b) => (
         <BlockView
-          key={b.key} b={b} results={results} running={running} cwd={cwd} shown={tapped === b.key} onTap={onTap}
+          key={b.key} b={b} results={results} running={running} cwd={cwd} day={day} shown={tapped === b.key} onTap={onTap}
           forks={forks} onFork={onFork} steps={steps} onForkStep={onForkStep}
           edits={edits} onEdit={onEdit} editing={b.type === "item" && b.item.kind === "user" && editing === b.item.id} editor={editor}
         />
       )),
-    [blocks, results, running, cwd, tapped, onTap, forks, onFork, steps, onForkStep, edits, onEdit, editing, editor],
+    [blocks, results, running, cwd, day, tapped, onTap, forks, onFork, steps, onForkStep, edits, onEdit, editing, editor],
   );
   return <FileLinks cwd={cwd} running={running}>{rendered}</FileLinks>;
 }
@@ -261,6 +262,7 @@ interface BlockProps {
   results: Record<string, ResultItem>;
   running: boolean;
   cwd: string;
+  day: string; // today (useDay): a message's time gets its date once it is yesterday's
   shown: boolean; // its time, tapped open
   onTap: (key: string, e: MouseEvent) => void;
   forks?: Map<string, ForkAt> | null;
@@ -277,7 +279,7 @@ interface BlockProps {
  *  again for every change, the items in them are kept), and so are the handlers of its buttons; where they fork or
  *  edit is worked out again for every change too, so it is compared by what it is. */
 function sameBlock(p: BlockProps, n: BlockProps): boolean {
-  if (p.cwd !== n.cwd || p.shown !== n.shown || p.onTap !== n.onTap || p.b.type !== n.b.type) return false;
+  if (p.cwd !== n.cwd || p.day !== n.day || p.shown !== n.shown || p.onTap !== n.onTap || p.b.type !== n.b.type) return false;
   const a = p.b, b = n.b;
   const step = (q: BlockProps, id: string) => (q.onForkStep ? q.steps?.get(id) : undefined);
   const sameStep = (id: string) => p.onForkStep === n.onForkStep && samePoint(step(p, id), step(n, id));
