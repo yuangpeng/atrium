@@ -138,6 +138,34 @@ function forkPoints(items: Item[]): Map<string, ForkAt> {
   return out;
 }
 
+/** Where "fork from here" on one of the agent's replies or tool calls cuts: after the model step holding it (its
+ *  reply and what its tools returned), in the middle of a turn too. A subagent's items are its own conversation's. */
+function stepForkPoints(items: Item[]): Map<string, ForkAt> {
+  const out = new Map<string, ForkAt>();
+  let n = 0;
+  for (const it of items) {
+    if (it.kind === "user" && !it.command) n++;
+    else if (n > 0 && (it.kind === "text" || it.kind === "tool") && !("parent" in it && it.parent)) {
+      out.set(it.id, { anchor: it.id, user_index: n - 1, after: true });
+    }
+  }
+  return out;
+}
+
+/** The button that forks after one of the agent's steps (a reply's; a tool's is in its row, ToolViews). */
+export function StepForkButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      className="icon-btn sm step-fork"
+      aria-label="Fork from here"
+      data-tip="Fork from here: a new agent that remembers everything up to this step, and does what you tell it next"
+      onClick={(e) => (e.stopPropagation(), onClick())}
+    >
+      <GitFork size={13} />
+    </button>
+  );
+}
+
 /** Where editing each of the user's messages (but slash commands) goes back to: as for a fork, after the last
  *  item the harness produced before it (a compaction too: what came before it is a summary). */
 function editPoints(items: Item[]): Map<string, EditAt> {
@@ -169,15 +197,18 @@ function MsgTime({ ts }: { ts?: number }) {
 /** What a tap on a message is not for: its own controls, and text being selected. */
 const TAPPABLE = "a, button, summary, input, textarea, select, label, img, video, .tool-row, [role='button']";
 
-/** The conversation; with `forks` and `onFork`, user messages get a "fork from here" button; with `edits` and
- *  `onEdit` one that changes the message, `editor` standing in for the one being changed (`editing`). */
-export function Transcript({ blocks, results, running, cwd, forks, onFork, edits, editing, onEdit, editor }: {
+/** The conversation; with `forks` and `onFork`, user messages get a "fork from here" button, and the agent's replies
+ *  and tool calls one too (`steps`, `onForkStep`); with `edits` and `onEdit` one that changes the message, `editor`
+ *  standing in for the one being changed (`editing`). */
+export function Transcript({ blocks, results, running, cwd, forks, onFork, steps, onForkStep, edits, editing, onEdit, editor }: {
   blocks: Block[];
   results: Record<string, ResultItem>;
   running: boolean;
   cwd: string;
   forks?: Map<string, ForkAt> | null;
   onFork?: (at: ForkAt, text: string) => void;
+  steps?: Map<string, ForkAt> | null;
+  onForkStep?: (at: ForkAt, step: string) => void;
   edits?: Map<string, EditAt> | null;
   editing?: string | null;
   onEdit?: (id: string) => void;
@@ -198,9 +229,15 @@ export function Transcript({ blocks, results, running, cwd, forks, onFork, edits
           return (
             <div className="timed" key={b.key} {...timed(b.key)}>
               <div className="tools">
-                {b.tools.map((t) => (
-                  <ToolRow key={t.id} tool={t} result={results[t.id]} cwd={cwd} running={running} />
-                ))}
+                {b.tools.map((t) => {
+                  const at = onForkStep && steps?.get(t.id);
+                  return (
+                    <ToolRow
+                      key={t.id} tool={t} result={results[t.id]} cwd={cwd} running={running}
+                      onFork={at ? (step: string) => onForkStep(at, step) : undefined}
+                    />
+                  );
+                })}
               </div>
               <MsgTime ts={b.tools[0].ts} />
             </div>
@@ -237,13 +274,16 @@ export function Transcript({ blocks, results, running, cwd, forks, onFork, edits
               </div>
             );
           }
-          case "text":
+          case "text": {
+            const at = onForkStep && steps?.get(it.id);
             return (
               <div className="msg-text timed" key={b.key} {...timed(b.key)}>
                 <Markdown text={it.text} />
                 <MsgTime ts={it.ts} />
+                {at && <StepForkButton onClick={() => onForkStep(at, it.text)} />}
               </div>
             );
+          }
           case "command_output":
             return (
               <div className="msg-output" key={b.key}>
@@ -284,7 +324,7 @@ export function Transcript({ blocks, results, running, cwd, forks, onFork, edits
             return null;
         }
       }),
-    [blocks, results, running, cwd, forks, onFork, edits, editing, onEdit, editor, timed],
+    [blocks, results, running, cwd, forks, onFork, steps, onForkStep, edits, editing, onEdit, editor, timed],
   );
   return <>{rendered}</>;
 }
@@ -475,6 +515,8 @@ export function ChatView({ pid, sid, cwd, compact, forkable, editable, modeLocke
   const canFork = forkable && harness?.can_fork !== false;
   const forks = useMemo(() => (canFork ? forkPoints(st.items) : null), [st.items, canFork]);
   const onFork = useCallback((at: ForkAt, text: string) => setForkRequest({ sid, at, text }), [sid, setForkRequest]);
+  const steps = useMemo(() => (canFork ? stepForkPoints(st.items) : null), [st.items, canFork]);
+  const onForkStep = useCallback((at: ForkAt, step: string) => setForkRequest({ sid, at, step }), [sid, setForkRequest]);
   // changing a message: the one being changed, if any
   const canEdit = !!editable && !!harness?.can_edit;
   const edits = useMemo(() => (canEdit ? editPoints(st.items) : null), [st.items, canEdit]);
@@ -594,7 +636,7 @@ export function ChatView({ pid, sid, cwd, compact, forkable, editable, modeLocke
           {!loading && blocks.length === 0 && emptyHint}
           <Transcript
             blocks={blocks} results={st.results} running={running} cwd={cwd} forks={forks} onFork={onFork}
-            edits={edits} editing={editing} onEdit={setEditing} editor={editor}
+            steps={steps} onForkStep={onForkStep} edits={edits} editing={editing} onEdit={setEditing} editor={editor}
           />
           {st.streaming && (
             <div className="msg-text stream-cursor">

@@ -69,6 +69,7 @@ AGENT_TASKS = (None, "local_agent", "remote_agent")  # task types that are subag
 TASK_STATUS = {"completed": "done", "failed": "failed", "stopped": "stopped", "killed": "stopped"}
 SUBAGENT_STALE = 300  # a subagent mid-turn whose transcript sat still this long (seconds) is presumed stopped
 SYNTHETIC = "<synthetic>"  # the model of messages the CLI writes itself (slash command output, API errors)
+NO_RESPONSE = "No response requested."  # what the CLI answers itself to a conversation resumed after a tool result (a fork's, cut there)
 SLASH_RE = re.compile(r"/([^\s/]+)(?:\s+(.*))?", re.S)  # "/name args"
 # /clear (aliases /reset, /new) switches the CLI to a new session id that Atrium wouldn't follow
 RESET_COMMANDS = {"clear", "reset", "new"}
@@ -568,7 +569,7 @@ def live_message_items(msg: Any, tasks: dict[str, str | None] | None = None) -> 
             it: Item | None = None
             if isinstance(b, TextBlock):
                 if parent is None and msg.model == SYNTHETIC and not msg.error:  # what a slash command printed
-                    it = _output_item(iid, b.text)
+                    it = _output_item(iid, b.text) if b.text.strip() != NO_RESPONSE else None
                 elif parent is None and b.text.strip():
                     it = {"kind": "text", "id": iid, "text": b.text}
             elif isinstance(b, ThinkingBlock):
@@ -708,6 +709,8 @@ def history_items(messages: list[Any], outputs: dict[str, list[tuple[str, str]]]
                     continue
                 t = b.get("type")
                 iid = f"{m.uuid}:{i}"
+                if t == "text" and raw.get("model") == SYNTHETIC and b.get("text", "").strip() == NO_RESPONSE:
+                    continue
                 if t == "text" and b.get("text", "").strip():
                     items.append({"kind": "text", "id": iid, "text": b["text"]})
                 elif t == "thinking" and b.get("thinking", "").strip():
@@ -1005,11 +1008,11 @@ class ClaudeCodeHarness(Harness):
             log.debug("rename_session(%s) skipped: %s", session_id, e)
 
     # ---- forks -------------------------------------------------------------
-    async def fork_point(self, session_id: str, cwd: str, anchor: str | None, user_index: int | None) -> ForkPoint:
+    async def fork_point(self, session_id: str, cwd: str, anchor: str | None, user_index: int | None, *, after: bool = False) -> ForkPoint:
         path = self.transcript_path(session_id, cwd)
         if not path:
             raise FileNotFoundError(f"transcript of session {session_id}")
-        return await asyncio.to_thread(_fork_point, path, anchor, user_index)
+        return await asyncio.to_thread(_fork_point, path, anchor, user_index, after)
 
     async def fork_session(self, session_id: str, cwd: str, point: ForkPoint, *, target_cwd: str, title: str, note: str = "") -> str:
         # ``note`` reaches the model through the system prompt, which Claude Code re-applies on resume
@@ -1477,10 +1480,11 @@ def _find_entry(entries: list[dict[str, Any]], anchor: str) -> int | None:
     return found
 
 
-def _branch(path: Path) -> tuple[list[dict[str, Any]], list[int]]:
-    """A transcript's entries as Claude Code resumes them, in file order, and where the prompts of the
-    conversation it resumes are among them: the ones on the way back from its newest message. (An edit
-    leaves the conversation it replaced in the file: a branch that ends earlier.)"""
+def _branch(path: Path) -> tuple[list[dict[str, Any]], list[int], list[int]]:
+    """A transcript's entries as Claude Code resumes them, in file order; where the entries of the
+    conversation it resumes are among them, the ones on the way back from its newest message; and
+    which of those are prompts. (An edit leaves the conversation it replaced in the file: a branch
+    that ends earlier.)"""
     entries, _ = _resumed([e for e in _transcript_entries(path) if not e.get("isSidechain")])
     by_uuid = {e["uuid"]: e for e in entries}
     cur = next((e for e in reversed(entries) if e.get("type") in ("user", "assistant") and not e.get("isMeta")), None)
@@ -1488,29 +1492,58 @@ def _branch(path: Path) -> tuple[list[dict[str, Any]], list[int]]:
     while cur and cur["uuid"] not in on:
         on.add(cur["uuid"])
         cur = by_uuid.get(cur.get("parentUuid") or "")
-    return entries, [i for i, e in enumerate(entries) if e["uuid"] in on and _is_prompt(e)]
+    chain = [i for i, e in enumerate(entries) if e["uuid"] in on]
+    return entries, chain, [i for i in chain if _is_prompt(entries[i])]
 
 
-def _fork_point(path: Path, anchor: str | None, user_index: int | None) -> ForkPoint:
-    entries, prompts = _branch(path)
-    at = _find_entry(entries, anchor) if anchor else None
-    if at is None and user_index and user_index < len(prompts):  # items shown live may not carry transcript ids
-        at = prompts[user_index] - 1
-    if at is None or at < 0:
-        raise ValueError("Couldn't find that point of the conversation in the transcript")
-    nxt = next((i for i in prompts if i > at), None)
+def _fork_point(path: Path, anchor: str | None, user_index: int | None, after: bool = False) -> ForkPoint:
+    entries, chain, prompts = _branch(path)
+    starts = set(prompts)
+    if after:
+        # the model step holding the anchor: its response (one message id, an entry per block), then what its
+        # tools returned, up to the next response or prompt
+        at = _response_entry(entries, anchor) if anchor else None
+        if at is None:
+            raise ValueError("Couldn't find that point of the conversation in the transcript")
+        mid = (entries[at].get("message") or {}).get("id")
+        nxt = next((i for i in chain if i > at and (i in starts or entries[i].get("type") == "assistant"
+                                                     and (entries[i].get("message") or {}).get("id") != mid)), None)
+    else:
+        at = _find_entry(entries, anchor) if anchor else None
+        if at is None and user_index and user_index < len(prompts):  # items shown live may not carry transcript ids
+            at = prompts[user_index] - 1
+        if at is None or at < 0:
+            raise ValueError("Couldn't find that point of the conversation in the transcript")
+        nxt = next((i for i in prompts if i > at), None)
     by_uuid = {e["uuid"]: e for e in entries}
-    # what the next prompt follows (the entry before it in the file may be on a branch an edit left)
+    # what the next prompt (or response) follows (the entry before it in the file may be on a branch an edit left)
     cut = (by_uuid.get(entries[nxt].get("parentUuid") or "") or entries[nxt - 1]) if nxt is not None else entries[-1]
+    started = None
+    if nxt is not None and nxt not in starts:  # cut in the middle of a turn: the prompt that began it
+        started = next((entries[i] for i in reversed(prompts) if i < nxt), None)
     return ForkPoint(
         cut=cut["uuid"],
         cut_ts=iso_to_epoch(cut.get("timestamp")),
         next_ts=iso_to_epoch(entries[nxt].get("timestamp")) if nxt is not None else None,
+        turn_ts=iso_to_epoch(started.get("timestamp")) if started else None,
     )
 
 
+def _response_entry(entries: list[dict[str, Any]], anchor: str) -> int | None:
+    """Index of the model's transcript entry behind a chat item id: "<uuid>:<block>" (text, thinking) or a
+    tool call id."""
+    key = anchor.split(":", 1)[0]
+    for i, e in enumerate(entries):
+        if e.get("type") != "assistant":
+            continue
+        content = (e.get("message") or {}).get("content")
+        if e["uuid"] == key or isinstance(content, list) and any(isinstance(b, dict) and b.get("id") == anchor for b in content):
+            return i
+    return None
+
+
 def _edit_point(path: Path, item: str | None, anchor: str | None, user_index: int) -> ForkPoint:
-    entries, prompts = _branch(path)
+    entries, _chain, prompts = _branch(path)
     key = (item or "").split(":", 1)[0]  # "<uuid>" or "<uuid>:<block>"; sent live, the message has an id of Atrium's
     target = next((i for i in prompts if entries[i]["uuid"] == key), None)
     if target is None and anchor:

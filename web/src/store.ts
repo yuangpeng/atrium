@@ -18,11 +18,13 @@ export interface FileTarget {
   content?: string;
 }
 
-/** The fork dialog: fork session `sid` from the latest point (`at` null) or before a user message. */
+/** The fork dialog: fork session `sid` from the latest point (`at` null), before a user message or after one of
+ *  the agent's steps (`at.after`). */
 export interface ForkRequest {
   sid: string;
   at: ForkAt | null;
-  text?: string; // that message, offered as the fork's first message
+  text?: string; // the message forked before, offered as the fork's first message
+  step?: string; // the step forked after, in a few words
 }
 
 interface Toast {

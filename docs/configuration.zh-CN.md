@@ -511,7 +511,8 @@ Atrium 的环境变量里。Antigravity 的条款规定 Google 账号登录只�
   地址（见[请求抓取](#请求抓取)）。
 
 修改对之后启动的 agent 生效。Antigravity 是否可用、它的模型列表会立即更新（已打开的页面要在 ⚙ Settings
-保存之后或刷新后才看到）。它的对话保存在 `~/.atrium/antigravity/`：没有 CLI 能列出它们，也不能 fork，或者修改其中已发送的消息。
+保存之后或刷新后才看到）。它的对话保存在 `~/.atrium/antigravity/`，没有 CLI 能列出它们。fork 会在那里以新 id
+复制一份对话（运行时的状态数据库和 transcript，截到 fork 点）；修改已发送的消息则就地截断原对话。
 
 ## MCP 服务器
 

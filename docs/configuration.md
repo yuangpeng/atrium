@@ -552,7 +552,8 @@ Custom models still go to their own endpoint.
 
 Changes apply to agents started afterwards. Whether Antigravity is available, and its model list, update
 right away, in an open page after a save in ⚙ Settings or a reload. Its conversations live in
-`~/.atrium/antigravity/`: no CLI lists them, and they can't be forked, nor a message in them edited.
+`~/.atrium/antigravity/`, and no CLI lists them. A fork copies one there under a new id (the runtime's
+state database and the transcript, cut at the fork point); changing a message cuts it in place.
 
 ## MCP servers
 

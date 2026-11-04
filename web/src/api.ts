@@ -20,7 +20,7 @@ export interface Harness {
   // what a session gets when Atrium doesn't pick: from ~/.claude/settings.json / config.toml (or the CLI's own default)
   config_model?: string | null;
   config_effort?: string | null;
-  can_fork?: boolean; // false: its sessions can't be forked (Antigravity)
+  can_fork?: boolean; // false: its sessions can't be forked
   can_edit?: boolean; // a message already sent can be changed, the conversation going back to it (Claude Code, Codex)
 }
 
@@ -267,10 +267,13 @@ export interface HomeProject {
 }
 
 /** Fork before a user message: keep everything up to the turn holding chat item `anchor`
- *  (the last harness item shown before it); `user_index` is the message's position among user messages. */
+ *  (the last harness item shown before it); `user_index` is the message's position among user messages.
+ *  With `after`: fork after the agent's item `anchor` instead — keep the model step holding it (its reply and what
+ *  its tools returned), in the middle of a turn too; `user_index` is then the message that turn answers. */
 export interface ForkAt {
   anchor: string | null;
   user_index: number;
+  after?: boolean;
 }
 
 /** A message to change (api.editMessage): its item id, and as for a fork the last harness item shown before it
@@ -289,8 +292,9 @@ export type MoveWorkspace = { kind: "root" } | { kind: "worktree"; path: string 
 /** What archiving an agent did to its worktree: removed (it was the last agent there, its work merged and committed), or why not. */
 export type WorktreeTidy = { removed: true; path: string; branch: string | null; branch_deleted: boolean } | { removed: false; path: string; branch: string | null; reason: string };
 
-/** What a forked worktree's files are: as at the fork point, the source's current files, or just the commit. */
-export type ForkFiles = "fork-point" | "current" | "committed";
+/** What a forked worktree's files are: as at the fork point, as when the turn it is in began with the agent's edits up
+ *  to it made again (a point in the middle of a turn), the source's current files, or just the commit. */
+export type ForkFiles = "fork-point" | "turn" | "current" | "committed";
 
 /** A chat item; `ts`: when it was sent or made (epoch seconds), when known (Codex records it per turn only). */
 export type Item = (

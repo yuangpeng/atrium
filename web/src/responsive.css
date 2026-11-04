@@ -167,6 +167,7 @@ html, body { overscroll-behavior: none; } /* the app doesn't rubber-band as a wh
      The rows holding them grow to match, so nothing spills out of its row. */
   .icon-btn.sm { width: 30px; height: 30px; }
   .btn-sm, .seg button, .chip-toggle, .pill.fork-pill, .sub-link { height: 30px; }
+  .topbar .t-name .pill.fork-pill { min-width: 30px; justify-content: center; } /* a fork's link to its original: just its icon when narrow */
   .ws-project, .composer-bar .chip, .composer-icon, .page-pick { height: 30px; }
   .diff-cols { height: 36px; } /* it holds .icon-btn.sm, which is 30px here */
   .rail-sub-more { height: 30px; min-width: 30px; }
@@ -205,6 +206,7 @@ html, body { overscroll-behavior: none; } /* the app doesn't rubber-band as a wh
 }
 @media (hover: none) {
   .msg-actions { opacity: 0.5; } /* fork from an earlier message, edit it */
+  .msg-text.timed[data-time] > .step-fork { opacity: 1; pointer-events: auto; } /* a tapped reply: fork after it */
   .tree-row.on .hover-actions { display: flex; } /* the open file's rename / delete */
   /* a project card's pin / archive / remove: hidden until hover, so a finger never reaches them */
   .proj-card-actions > * { opacity: 1; }

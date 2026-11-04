@@ -360,6 +360,18 @@ a { color: var(--accent-strong); }
 .tool-row .st.ok { color: var(--ok); }
 .tool-row .st.err { color: var(--err); }
 .tool-body { padding: 4px 12px 12px; display: flex; flex-direction: column; gap: 8px; }
+/* fork after one of the agent's steps. A reply's: at its bottom right, on hover (for a finger: on a tap, with its time,
+   responsive.css). A tool's: in its row on hover, and in its details, which a finger opens first */
+.step-fork {
+  position: absolute; right: -6px; bottom: -8px; opacity: 0; pointer-events: none; transition: opacity 0.12s;
+  background: var(--bg); box-shadow: 0 0 0 1px var(--border);
+}
+@media (hover: hover) { .msg-text.timed:hover > .step-fork { opacity: 1; pointer-events: auto; } }
+.step-fork:focus-visible { opacity: 1; pointer-events: auto; }
+.tool-row .row-fork { display: none; flex: none; margin: -4px 0; }
+@media (hover: hover) { .tool-row:hover .row-fork { display: inline-flex; } }
+.tool-fork { display: flex; align-items: center; gap: 4px 8px; flex-wrap: wrap; font-size: 12px; }
+.tool-fork .btn { flex: none; }
 .tool-body .lbl { font-size: 11px; font-weight: 600; color: var(--faint); text-transform: uppercase; letter-spacing: 0.04em; }
 .code-block { font: 12px/1.55 var(--font-mono); background: var(--surface-2); border-radius: 8px; padding: 9px 11px; overflow: auto; max-height: 340px; white-space: pre; margin: 0; }
 .code-block.wrap { white-space: pre-wrap; word-break: break-word; }

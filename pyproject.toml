@@ -6,14 +6,14 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "claude-agent-sdk>=0.2.170",
-    "openai-codex-cli-bin==0.160.0",  # the Codex CLI, one wheel per platform (pinned: app-server's protocol moves fast)
+    "openai-codex-cli-bin==0.160.0",  # the Codex CLI, one wheel per platform (pinned: app-server's protocol moves fast, and a fork mid-turn writes a rollout)
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "httpx>=0.27",
     "truststore>=0.10",  # the capture proxy trusts the CAs the system does, as the harnesses do (atrium/capture.py)
     "watchfiles>=0.24,<2",  # atrium/watch.py drives its RustNotify itself, not public API: below the next major
     "basedpyright>=1.30",  # Python language server for the editor (bundles its own Node)
-    "google-antigravity==0.1.23",  # Antigravity SDK, its runtime in each platform wheel (pinned: moving an agent rewrites the runtime's own state database)
+    "google-antigravity==0.1.23",  # Antigravity SDK, its runtime in each platform wheel (pinned: moving, forking and editing an agent rewrite the runtime's own state database)
 ]
 
 [project.scripts]

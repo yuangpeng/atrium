@@ -62,8 +62,13 @@ This conversation was forked from the agent "{source}" and shares its working di
 agent may still be changing the same files. Re-read a file before you edit it.
 """.strip()
 
+FORK_MID_TURN = """The fork point was in the middle of one of your turns: what came after it in the original conversation is not
+part of this one.""".replace("\n", " ")
+
 FORK_FILES = {
     "fork-point": "Its files were restored to how they were at the fork point, uncommitted changes included.",
+    "turn": ("Its files were restored to how they were when the turn the fork point is in began, then the file edits you made "
+             "in that turn up to the fork point were made again; what your commands changed in it may be missing."),
     "current": "Its files are a copy of the original checkout's files when the fork was made (their state at the fork point was not recorded).",
     "committed": "It only has the committed files: uncommitted changes from the original checkout were not copied.",
     "": "It has its own files, which may differ from what the earlier conversation saw — re-read before editing.",

@@ -1129,30 +1129,95 @@ class CodexHarness(Harness):
             log.debug("thread/name/set(%s) failed: %s", session_id, e)
 
     # ---- forks -------------------------------------------------------------
-    async def fork_point(self, session_id: str, cwd: str, anchor: str | None, user_index: int | None) -> ForkPoint:
+    async def fork_point(self, session_id: str, cwd: str, anchor: str | None, user_index: int | None, *, after: bool = False) -> ForkPoint:
         turns = await self._turns(session_id)
         at = _turn_of(turns, anchor) if anchor else None
-        if at is None and user_index:
+        if at is None and user_index and not after:
             reviews = review_prompts(turns)  # shown as commands, which don't count
             starts = [i for i, t in enumerate(turns) if i not in reviews and any(it.get("type") == "userMessage" for it in t.get("items") or [])]
             if user_index < len(starts):
                 at = starts[user_index] - 1
         if at is None or at < 0:
             raise ValueError("Couldn't find that point of the conversation in the thread")
+        if after and anchor:
+            point = await asyncio.to_thread(self._step_point, session_id, turns[at], anchor)
+            if point:
+                point.cut = turns[at - 1].get("id") if at else None
+                return point  # cut in the middle of the turn; else the step ends it: the turn is kept whole
         if turns[at].get("status") == "inProgress":
             raise ValueError("That turn is still running")
         nxt = turns[at + 1] if at + 1 < len(turns) else None
         return ForkPoint(cut=turns[at].get("id"), cut_ts=_epoch(turns[at].get("completedAt")), next_ts=_epoch((nxt or {}).get("startedAt")))
 
+    def _step_point(self, session_id: str, turn: dict[str, Any], anchor: str) -> ForkPoint | None:
+        """Where "fork after ``anchor``" cuts ``turn``: after the model response holding it and what its tool
+        calls returned. None if that ends the turn. ``part``: the turn's rollout lines up to there."""
+        lines = self._turn_lines(session_id, turn["id"])
+        if lines is None:
+            raise ValueError("This Codex conversation can only be forked between turns (its history has no item records)")
+        end = _step_end(lines, anchor)
+        if end is None:
+            raise ValueError("That step is still running: wait for its tools to finish, or fork from an earlier one")
+        if end < 0:  # one of the turn's own items (its plan, its end): after the turn
+            return None
+        rest = lines[end + 1:]
+        if not any(d.get("type") == "response_item" or (d.get("payload") or {}).get("type") == "item_completed" for d in rest):
+            return None
+        return ForkPoint(cut_ts=iso_to_epoch(lines[end].get("timestamp")), next_ts=iso_to_epoch(rest[0].get("timestamp")),
+                         turn_ts=_epoch(turn.get("startedAt")), part={"turn": turn["id"], "lines": lines[: end + 1]})
+
+    def _turn_lines(self, session_id: str, turn_id: str, seen: frozenset[str] = frozenset()) -> list[dict[str, Any]] | None:
+        """A turn's rollout lines (parsed), from its start: in the thread's rollouts, else in those of the thread
+        it was forked from (which hold the turns a fork inherited). None if it isn't found or the rollout has no
+        item records (a thread from before Codex kept them)."""
+        files = self._rollouts(session_id)
+        for path in reversed(files):
+            out: list[dict[str, Any]] | None = None
+            for d in _rollout_lines(path):
+                p = d.get("payload") or {}
+                if out is None:
+                    if d.get("type") == "event_msg" and p.get("type") == "task_started" and p.get("turn_id") == turn_id:
+                        out = [d]
+                    continue
+                if d.get("type") == "event_msg" and p.get("type") in ("task_complete", "turn_aborted", "task_started"):
+                    break  # its end, or the next turn's start
+                out.append(d)
+            if out is not None:
+                return out if any((d.get("payload") or {}).get("type") == "item_completed" for d in out) else None
+        head = next(iter(_rollout_lines(files[-1])), {}) if files else {}
+        base = ((head.get("payload") or {}).get("history_base") or {}).get("thread_id")
+        if base and base != session_id and base not in seen:
+            return self._turn_lines(base, turn_id, seen | {session_id})
+        return None
+
     async def fork_session(self, session_id: str, cwd: str, point: ForkPoint, *, target_cwd: str, title: str, note: str = "") -> str:
         params: dict[str, Any] = {"threadId": session_id, "cwd": target_cwd, "excludeTurns": True}
-        if point.cut:
+        if point.part:  # the turns before the one cut in the middle; what is kept of it is added to the fork's rollout
+            params["beforeTurnId"] = point.part["turn"]
+        elif point.cut:
             params["lastTurnId"] = point.cut
         res = await self.client.request("thread/fork", params, timeout=60)
         thread = res.get("thread") or {}
         tid = thread["id"]
         if thread.get("path"):
             self._paths[tid] = thread["path"]
+        if point.part:
+            # Codex forks between turns only. What is kept of the turn cut in the middle goes into a copy of that
+            # fork's rollout under a new id: the app-server keeps a thread it loaded (and its count of the lines
+            # it wrote), so the thread it made can't be added to; it is deleted, and the copy loaded instead.
+            path = thread.get("path") or str(self.transcript_path(tid, target_cwd) or "")
+            if not path:
+                raise RuntimeError(f"the fork's rollout (thread {tid}) wasn't found")
+            await self.client.request("thread/unsubscribe", {"threadId": tid}, timeout=5)
+            await _settled(Path(path))
+            made, tid = tid, _uuid7()
+            self._paths[tid] = str(await asyncio.to_thread(_rollout_with_turn, Path(path), made, tid, point.part))
+            try:
+                await self.client.request("thread/delete", {"threadId": made}, timeout=30)
+            except Exception as e:
+                log.warning("couldn't delete thread %s, made for fork %s: %s", made, tid, e)
+            self._paths.pop(made, None)
+            await self.client.request("thread/resume", {"threadId": tid, "excludeTurns": True}, timeout=60)
         if note:  # thread/resume doesn't show the model changed developerInstructions, so the note goes into the history
             item = {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": note}]}
             try:
@@ -1165,6 +1230,7 @@ class CodexHarness(Harness):
             pass
         await self.rename_session(tid, title, target_cwd)
         return tid
+
 
     # ---- edits: thread/revert drops turns (from the edited message's on) from the thread's history
     async def edit_point(self, session_id: str, cwd: str, item: str | None, anchor: str | None, user_index: int) -> ForkPoint:
@@ -1364,6 +1430,119 @@ def _rollouts(thread_id: str) -> list[Path]:
     for base in (codex_home() / "sessions", codex_home() / "archived_sessions"):
         found += [p for p in base.glob(f"**/rollout-*-{thread_id}*.jsonl") if p.stem.endswith(thread_id) or f"-{thread_id}_" in p.name]
     return sorted(found, key=lambda p: p.name)
+
+
+def _rollout_lines(path: Path):
+    """A rollout's lines, parsed (unreadable ones skipped)."""
+    try:
+        fh = path.open(encoding="utf-8", errors="replace")
+    except OSError:
+        return
+    with fh:
+        for line in fh:
+            try:
+                d = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(d, dict):
+                yield d
+
+
+# model output that is answered by an "<type>_output" item with the same call_id
+_CALL_ITEMS = ("function_call", "custom_tool_call", "local_shell_call", "tool_search_call")
+
+
+def _step_end(lines: list[dict[str, Any]], anchor: str) -> int | None:
+    """In a turn's rollout lines, the last line of the model step that holds chat item ``anchor``: the model's
+    response (it ends with Codex's token_usage_record) and the outputs of the tools it called. None if it isn't
+    complete yet; -1 if the anchor isn't in these lines."""
+    def holds(d: dict[str, Any]) -> bool:
+        p = d.get("payload") or {}
+        if d.get("type") == "event_msg" and p.get("type") == "item_completed":
+            return (p.get("item") or {}).get("id") == anchor
+        return d.get("type") == "response_item" and anchor in (p.get("id"), p.get("call_id"))
+
+    at = next((i for i, d in enumerate(lines) if holds(d)), None)
+    if at is None:
+        return -1
+    marks = [i for i, d in enumerate(lines) if d.get("type") == "token_usage_record"]
+    start = max((i for i in marks if i < at), default=-1) + 1
+    end = next((i for i in marks if i >= at), None)
+    if end is None:
+        return None
+    pending = {p.get("call_id") for d in lines[start:end] if d.get("type") == "response_item"
+               and (p := d.get("payload") or {}).get("type") in _CALL_ITEMS and p.get("call_id")}
+    last, i = end, end + 1
+    while pending and i < len(lines):
+        p = lines[i].get("payload") or {}
+        if lines[i].get("type") == "response_item" and str(p.get("type") or "").endswith("_output"):
+            pending.discard(p.get("call_id"))
+        last, i = i, i + 1
+    if pending:
+        return None
+    while i < len(lines) and lines[i].get("type") == "event_msg" and (lines[i].get("payload") or {}).get("type") == "token_count":
+        last, i = i, i + 1
+    return last
+
+
+def _rollout_with_turn(path: Path, made: str, thread_id: str, part: dict[str, Any]) -> Path:
+    """The rollout of a mid-turn fork: that of thread ``made`` (Codex's fork before the turn), as thread ``thread_id``,
+    then what the fork keeps of the turn (``ForkPoint.part``: its lines up to the cut, renumbered after the rollout's
+    own and recorded as this thread's), then the turn's end there (as completed: it wasn't interrupted, it was cut;
+    the model sees the same either way). Written beside it."""
+    lines = [d for d in (_loads(raw) for raw in path.read_bytes().splitlines()) if d]
+    if not lines or lines[0].get("type") != "session_meta":
+        raise ValueError(f"the rollout of thread {made} has a format Atrium doesn't know")
+
+    def own(d: dict[str, Any], recorder: str) -> dict[str, Any]:
+        d = json.loads(json.dumps(d))
+        p = d.get("payload")
+        if isinstance(p, dict):
+            for key in ("id", "session_id", "thread_id"):
+                if p.get(key) == recorder and (key != "id" or d.get("type") == "session_meta"):
+                    p[key] = thread_id
+        return d
+
+    out = [own(d, made) for d in lines]
+    ordinal = int(out[-1].get("ordinal") or 0) + 1
+    for d in part["lines"]:  # recorded by the source, or by a thread it was forked from
+        d = own(d, (d.get("payload") or {}).get("thread_id") or "")
+        d["ordinal"], ordinal = ordinal, ordinal + 1
+        out.append(d)
+    end = {"type": "task_complete", "turn_id": part["turn"], "last_agent_message": None}
+    out.append({"timestamp": part["lines"][-1].get("timestamp"), "ordinal": ordinal, "type": "event_msg", "payload": end})
+    dest = path.with_name(path.name.replace(made, thread_id))
+    tmp = dest.with_name(f".{dest.name}.tmp")
+    tmp.write_text("".join(json.dumps(d, ensure_ascii=False, separators=(",", ":")) + "\n" for d in out), encoding="utf-8")
+    os.replace(tmp, dest)
+    return dest
+
+
+def _uuid7() -> str:
+    """A UUID version 7 (time-ordered), the kind Codex gives its threads."""
+    b = bytearray(int(time.time() * 1000).to_bytes(6, "big") + os.urandom(10))
+    b[6] = 0x70 | (b[6] & 0x0F)
+    b[8] = 0x80 | (b[8] & 0x3F)
+    return str(uuid.UUID(bytes=bytes(b)))
+
+
+async def _settled(path: Path) -> None:
+    """Wait until a rollout stops growing (what Codex had to write about a thread it just made is written)."""
+    size = -1
+    for _ in range(30):
+        now = path.stat().st_size if path.exists() else -1
+        if now == size:
+            return
+        size = now
+        await asyncio.sleep(0.1)
+
+
+def _loads(line: bytes) -> dict[str, Any] | None:
+    try:
+        d = json.loads(line)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    return d if isinstance(d, dict) else None
 
 
 def _thread_cwds(roots: list[str]) -> list[str]:

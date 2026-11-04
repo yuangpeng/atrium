@@ -1,8 +1,8 @@
 import type { JSX } from "react";
 import { useMemo, useState } from "react";
 import {
-  ArrowUpRight, Bot, Check, ChevronDown, ChevronRight, ClipboardCheck, ExternalLink, FileDiff, FilePlus2, FileText, GitBranch, Globe, Image, LayoutDashboard,
-  Link2, ListTodo, Pencil, Plug, Search, ShieldAlert, Terminal, X,
+  ArrowUpRight, Bot, Check, ChevronDown, ChevronRight, ClipboardCheck, ExternalLink, FileDiff, FilePlus2, FileText, GitBranch, GitFork, Globe, Image,
+  LayoutDashboard, Link2, ListTodo, Pencil, Plug, Search, ShieldAlert, Terminal, X,
 } from "lucide-react";
 import { Item } from "../api";
 import { useApp } from "../store";
@@ -297,11 +297,16 @@ export function useOpenSubagent(toolUseId: string | null, agentIds?: string[]): 
   return aid && sessionId ? () => selectSubagent(sessionId, aid) : null;
 }
 
-export function ToolRow({ tool, result, cwd, running }: { tool: ToolItem; result?: ResultItem; cwd: string; running: boolean }) {
+/** A tool call's row, opening on its details. With `onFork` (given what the call was, in a few words), "fork from
+ *  here": in the row on hover, and in the details (for a finger, which opens them first). */
+export function ToolRow({ tool, result, cwd, running, onFork }: {
+  tool: ToolItem; result?: ResultItem; cwd: string; running: boolean; onFork?: (step: string) => void;
+}) {
   const [open, setOpen] = useState(tool.name === "TodoWrite");
   const meta = toolMeta(tool.name, tool.input || {}, cwd);
   const spawns = tool.name === "Agent" || tool.name === "Task";
   const openSub = useOpenSubagent(spawns ? tool.id : null, spawns ? tool.input?.agent_ids : undefined);
+  const fork = onFork && (() => onFork(meta.brief ? `${meta.label}: ${meta.brief}` : meta.label));
   return (
     <div className="tool">
       <div className="tool-row" onClick={() => setOpen((o) => !o)}>
@@ -313,6 +318,16 @@ export function ToolRow({ tool, result, cwd, running }: { tool: ToolItem; result
             Open <ArrowUpRight size={12} />
           </button>
         )}
+        {fork && (
+          <button
+            className="icon-btn sm row-fork"
+            aria-label="Fork from here"
+            data-tip="Fork from here: a new agent that remembers everything up to this step, and does what you tell it next"
+            onClick={(e) => (e.stopPropagation(), fork())}
+          >
+            <GitFork size={13} />
+          </button>
+        )}
         <span className={`st ${result ? (result.is_error ? "err" : "ok") : ""}`}>
           {result ? result.is_error ? <X size={14} /> : <Check size={14} /> : running ? <Spinner /> : null}
         </span>
@@ -321,6 +336,14 @@ export function ToolRow({ tool, result, cwd, running }: { tool: ToolItem; result
       {open && (
         <div className="tool-body">
           <ToolDetail tool={tool} result={result} cwd={cwd} />
+          {fork && (
+            <div className="tool-fork">
+              <button className="btn btn-sm btn-ghost" onClick={fork}>
+                <GitFork size={13} /> Fork from here
+              </button>
+              <span className="muted">a new agent that remembers everything up to this step</span>
+            </div>
+          )}
         </div>
       )}
     </div>

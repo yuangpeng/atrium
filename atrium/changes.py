@@ -97,6 +97,21 @@ def reverse_patch(after: str, patch: str) -> str | None:
     return "\n".join(lines)
 
 
+def apply_patch(before: str, patch: str) -> str | None:
+    """Apply unified-diff hunks to ``before``; None if they do not apply."""
+    inverse, hunks = [], False
+    for line in patch.splitlines():
+        m = _HUNK_RE.match(line)
+        if m:
+            hunks = True
+            inverse.append(f"@@ -{m.group(3)},{m.group(4) or 1} +{m.group(1)},{m.group(2) or 1} @@")
+        elif hunks and line[:1] in ("+", "-"):
+            inverse.append({"+": "-", "-": "+"}[line[0]] + line[1:])
+        else:
+            inverse.append(line)
+    return reverse_patch(before, "\n".join(inverse))
+
+
 def _snapshots(project: Project, sid: str) -> list[dict[str, Any]]:
     # "git": where to read them — every checkout of the repository has the objects, the project's
     # own one included, so a removed worktree's snapshots stay readable

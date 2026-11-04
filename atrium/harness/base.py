@@ -182,14 +182,16 @@ class ForkPoint:
     """Where a fork cuts a conversation: everything up to ``cut`` is kept.
 
     ``cut`` is harness-specific (Claude: the last kept transcript entry; Codex: the last kept
-    turn); None keeps the whole conversation. The timestamps (epoch seconds) bracket the moment
-    of the fork, to find the turn snapshot with the files as they were then.
+    turn; Antigravity: the last kept step); None keeps the whole conversation. The timestamps (epoch
+    seconds) bracket the moment of the fork, to find the turn snapshot with the files as they were then.
     """
 
     cut: str | None = None
     cut_ts: float | None = None  # when the kept part ended
     next_ts: float | None = None  # when the first dropped message was sent (None: nothing dropped)
     drop: str | None = None  # an edit's: the first message dropped (Claude: its transcript entry; Codex: its turn)
+    turn_ts: float | None = None  # cut in the middle of a turn: when that turn started (None: the cut ends a turn)
+    part: Any = None  # harness-specific: what of that turn is kept, when ``cut`` alone can't say (Codex)
 
 
 @dataclass
@@ -334,9 +336,12 @@ class Harness(ABC):
         """Remove the session from the harness's own store (so its CLI no longer lists it either)."""
         raise NotImplementedError(f"{self.label} sessions can't be deleted from Atrium")
 
-    async def fork_point(self, session_id: str, cwd: str, anchor: str | None, user_index: int | None) -> ForkPoint:
+    async def fork_point(self, session_id: str, cwd: str, anchor: str | None, user_index: int | None, *, after: bool = False) -> ForkPoint:
         """Resolve "fork before the ``user_index``-th user message" (0-based): keep the turn that
-        holds chat item ``anchor`` — the last item shown before that message — and all before it."""
+        holds chat item ``anchor`` — the last item shown before that message — and all before it.
+        With ``after``, "fork after chat item ``anchor``" instead: keep the model step that holds it — the
+        model's response and the results of the tools it called — and all before it, in the middle of a
+        turn too (``turn_ts`` then says when that turn started)."""
         raise NotImplementedError(f"{self.label} sessions can't be forked from an earlier message")
 
     async def fork_session(self, session_id: str, cwd: str, point: ForkPoint, *, target_cwd: str, title: str, note: str = "") -> str:

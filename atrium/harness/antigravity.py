@@ -40,7 +40,7 @@ from typing import Any
 
 from .. import gitops
 from ..config import ATRIUM_HOME, atomic_write, config
-from .base import Attachment, Emit, FileEdit, Harness, Item, LiveSession, LiveSpec, SessionSummary, ToolSpec
+from .base import Attachment, Emit, FileEdit, ForkPoint, Harness, Item, LiveSession, LiveSpec, Rewind, SessionSummary, ToolSpec
 from .util import attachment_note, clip, hhmm, iso_to_epoch, parse_json_loose, short, short_tail, split_attachment_note, upload_url
 
 log = logging.getLogger("atrium.antigravity")
@@ -930,6 +930,296 @@ def _last_usage(path: Path | None) -> int | None:
 
 
 # --------------------------------------------------------------------------
+# Forks: a copy of the conversation under a new id, cut after a step
+# --------------------------------------------------------------------------
+# The runtime has no fork of its own. A conversation is its state database (save/<id>.db) and its data
+# directory (data/brain/<id>/), so a fork is a copy of both under the new id, with every step after the cut
+# taken out. In the database (version 0.1.23's layout, read from its protos): ``steps`` (one row per step,
+# ``idx`` = the transcript's step_index), ``gen_metadata`` (one row per model call: #2 the steps it made,
+# #4 its execution), ``executor_metadata`` (one row per execution, i.e. per message the runtime answered:
+# #1 why it ended, #2 its model calls, #3 its last step, #9 its id), ``trajectory_meta`` and
+# ``trajectory_metadata_blob`` (#6 the id, #7 the workspaces). The id also appears inside the steps' and
+# model calls' records; the new id has the same length, so it is swapped byte for byte.
+
+_STEP_RE = re.compile(r"^(?:s|(?P<conv>[0-9A-Za-z-]{32,}):)(?P<step>\d+)(?::.*)?$")  # history ids s<step>[:…], live <conversation>:<step>[:…]
+_FINISHED = {3, 4, 5, 6, 7, 12}  # CortexStepStatus: done, invalid, cleared, canceled, error, interrupted
+_CANCELED = 2  # ExecutorTerminationReason USER_CANCELED: how an execution cut short ends
+_CHUNK = 102_400  # the runtime also keeps each transcript in chunks of this many bytes (logs/chunks/<name>/<n>.jsonl)
+
+
+def _pb_fields(data: bytes) -> list[tuple[int, int, Any, bytes]]:
+    """A protobuf message's top-level fields: (number, wire type, value, the field's bytes)."""
+    out, i = [], 0
+    while i < len(data):
+        key, j = _varint(data, i)
+        wt = key & 7
+        if wt == 0:
+            value, j = _varint(data, j)
+        elif wt == 2:
+            n, k = _varint(data, j)
+            value, j = data[k:k + n], k + n
+        elif wt in (1, 5):
+            value, j = data[j:j + (8 if wt == 1 else 4)], j + (8 if wt == 1 else 4)
+        else:
+            raise ValueError(f"unexpected wire type {wt}")
+        if j > len(data):
+            raise ValueError("truncated record")
+        out.append((key >> 3, wt, value, data[i:j]))
+        i = j
+    return out
+
+
+def _gen_steps(data: bytes) -> tuple[list[int], bytes]:
+    """A model call's record (gen_metadata): the steps it made (#2, packed or not) and its execution (#4)."""
+    steps: list[int] = []
+    execution = b""
+    for num, wt, value, _raw in _pb_fields(data):
+        if num == 2 and wt == 2:
+            i = 0
+            while i < len(value):
+                n, i = _varint(value, i)
+                steps.append(n)
+        elif num == 2 and wt == 0:
+            steps.append(value)
+        elif num == 4 and wt == 2:
+            execution = value
+    return steps, execution
+
+
+def _db_steps(sid: str) -> tuple[dict[int, int], list[list[int]]]:
+    """A conversation's steps in its state database ({idx: status}) and its model calls' steps."""
+    import sqlite3
+
+    db = _save_dir() / f"{sid}.db"
+    if not db.exists():
+        raise FileNotFoundError(f"Antigravity's state of {sid}")
+    con = sqlite3.connect(db)
+    try:
+        status = dict(con.execute("SELECT idx, status FROM steps"))
+        gens = [_gen_steps(bytes(d or b""))[0] for (d,) in con.execute("SELECT data FROM gen_metadata ORDER BY idx")]
+    except (sqlite3.Error, ValueError, IndexError) as e:
+        raise ValueError(f"Antigravity's state of {sid} has a format Atrium doesn't know ({e})") from e
+    finally:
+        con.close()
+    return status, gens
+
+
+def fork_cut(sid: str, anchor: str | None, user_index: int | None, after: bool) -> ForkPoint:
+    """Where a fork of conversation ``sid`` cuts it (``Harness.fork_point``): ``cut`` is the last step kept."""
+    path = transcript_file(sid)
+    entries = _entries(path) if path else []
+    if not entries:
+        raise ValueError("That conversation has nothing to fork yet")
+    by_step = {d["step_index"]: d for d in entries}
+    prompts = [d["step_index"] for d in entries if d.get("type") == "USER_INPUT" and d.get("source") == "USER_EXPLICIT"]
+    m = _STEP_RE.match(anchor or "")
+    at = int(m.group("step")) if m and m.group("conv") in (None, sid) else None  # (a subagent's steps are its own conversation's)
+    status, gens = _db_steps(sid)
+    if after:
+        if at is None or at not in by_step:
+            raise ValueError("Couldn't find that point of the conversation in its transcript")
+        # the model call that made the step: its response and the results of the tools it called
+        made = next((g for g in gens if at in g), [at])
+        cut = max(made)
+        if any(status.get(i) not in _FINISHED for i in made):
+            raise ValueError("That step is still running: wait for its tools to finish, or fork from an earlier one")
+    else:
+        if at is None and user_index and user_index < len(prompts):  # an item shown live may not carry a step
+            at = prompts[user_index] - 1
+        if at is None or at < 0:
+            raise ValueError("Couldn't find that point of the conversation in its transcript")
+        nxt = next((u for u in prompts if u > at), None)
+        cut = nxt - 1 if nxt is not None else max(by_step)
+    later = [i for i in by_step if i > cut]
+    nxt_step = min(later) if later else None
+    turn = max((u for u in prompts if u <= cut), default=None) if nxt_step is not None and nxt_step not in prompts else None
+    return ForkPoint(
+        cut=str(cut), cut_ts=iso_to_epoch((by_step.get(cut) or {}).get("created_at")),
+        next_ts=iso_to_epoch(by_step[nxt_step].get("created_at")) if nxt_step is not None else None,
+        turn_ts=iso_to_epoch(by_step[turn].get("created_at")) if turn is not None else None,
+    )
+
+
+def edit_cut(sid: str, item: str | None, anchor: str | None, user_index: int) -> ForkPoint:
+    """Where editing one of the user's messages cuts conversation ``sid`` (``Harness.edit_point``): just before
+    that message's step; ``drop`` is that step, ``cut`` None if nothing comes before it."""
+    path = transcript_file(sid)
+    entries = _entries(path) if path else []
+    by_step = {d["step_index"]: d for d in entries}
+    prompts = [d["step_index"] for d in entries if d.get("type") == "USER_INPUT" and d.get("source") == "USER_EXPLICIT"]
+    m = _STEP_RE.match(item or "")
+    target = int(m.group("step")) if m and m.group("conv") is None and int(m.group("step")) in prompts else None
+    if target is None and anchor:  # sent live, the message has an id of Atrium's: the first prompt after the anchor
+        a = _STEP_RE.match(anchor)
+        at = int(a.group("step")) if a and a.group("conv") in (None, sid) else None
+        target = next((u for u in prompts if at is not None and u > at), None)
+    elif target is None and user_index < len(prompts):  # nothing before it to find it by (0: the conversation's first)
+        target = prompts[user_index]
+    if target is None:
+        raise ValueError("Couldn't find that message in the transcript")
+    kept = [i for i in by_step if i < target]
+    return ForkPoint(cut=str(target - 1) if kept else None, cut_ts=iso_to_epoch(by_step[max(kept)].get("created_at")) if kept else None,
+                     next_ts=iso_to_epoch(by_step[target].get("created_at")), drop=str(target))
+
+
+def cut_conversation(sid: str, cut: int | None, backup: Path) -> bool:
+    """Make stopped conversation ``sid`` end after step ``cut``; what it drops goes to ``backup`` first (its whole
+    state and data directory). With ``cut`` None nothing is kept: both are moved there, and it starts over under
+    its id. Returns whether anything is left."""
+    db, brain = _save_dir() / f"{sid}.db", _brain_dir() / sid
+    backup.mkdir(parents=True, exist_ok=True)
+    if cut is None:
+        for p in [*_save_dir().glob(f"{sid}.db*"), brain]:
+            if p.exists():
+                shutil.move(p, backup / p.name)
+        return False
+    if not db.exists():
+        raise FileNotFoundError(f"Antigravity's state of {sid}")
+    tmp = _save_dir() / f".{sid}.db.tmp"
+    try:
+        _copy_state(db, backup / db.name, b"", b"", None)
+        if brain.is_dir():
+            shutil.copytree(brain, backup / brain.name, symlinks=True)
+        _copy_state(db, tmp, b"", b"", cut)
+        for suffix in ("-wal", "-shm"):  # the old database's, if its runtime didn't close it
+            Path(f"{db}{suffix}").unlink(missing_ok=True)
+        os.replace(tmp, db)
+    finally:
+        tmp.unlink(missing_ok=True)
+    if brain.is_dir():
+        _cut_transcripts(_logs(sid), sid, sid, cut)
+    return True
+
+
+def new_conversation_id(like: str) -> str:
+    """A fresh conversation id of the same length as ``like`` (the runtime takes 32+ of [a-zA-Z0-9-]): the id is
+    swapped byte for byte in the copied records."""
+    out = uuid.uuid4().hex
+    while len(out) < len(like):
+        out += uuid.uuid4().hex
+    return out[: max(len(like), 32)]
+
+
+def copy_conversation(sid: str, new: str, cut: int | None, cwd: str, target_cwd: str, title: str) -> None:
+    """Copy conversation ``sid`` to ``new`` — its state, its data directory with the transcripts, Atrium's index —
+    keeping the steps up to ``cut`` (None: all of them), working in ``target_cwd``."""
+    if len(new) != len(sid):
+        raise ValueError("a copy's id must have the length of the original's")
+    db, dest = _save_dir() / f"{sid}.db", _save_dir() / f"{new}.db"
+    if not db.exists():
+        raise FileNotFoundError(f"Antigravity's state of {sid}")
+    brain, new_brain = _brain_dir() / sid, _brain_dir() / new
+    tmp = _save_dir() / f".{new}.db.tmp"
+    try:
+        _copy_state(db, tmp, sid.encode(), new.encode(), cut)
+        os.replace(tmp, dest)
+        if brain.is_dir():
+            shutil.copytree(brain, new_brain, symlinks=True)
+            _cut_transcripts(_logs(new), sid, new, cut)
+        rewrite_workspace(new, cwd, target_cwd)
+        write_index(new, cwd=os.path.realpath(target_cwd), created_at=time.time(), title=title, forked_from=sid)
+    except BaseException:
+        for p in _save_dir().glob(f"{new}.db*"):
+            p.unlink(missing_ok=True)
+        tmp.unlink(missing_ok=True)
+        shutil.rmtree(new_brain, ignore_errors=True)
+        _index_path(new).unlink(missing_ok=True)
+        raise
+
+
+def _copy_state(db: Path, dest: Path, old: bytes, new: bytes, cut: int | None) -> None:
+    """Copy a conversation's state database (consistently, even while its runtime writes it), cut after step ``cut``,
+    under the new id."""
+    import sqlite3
+
+    dest.unlink(missing_ok=True)
+    src = sqlite3.connect(db)
+    out = sqlite3.connect(dest)
+    try:
+        src.backup(out)
+        src.close()
+        with out:
+            if cut is not None:
+                _cut_state(out, cut)
+            tables = {name for (name,) in out.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+            for table, key, cols in (("steps", "idx", ("metadata", "error_details", "permissions", "task_details", "render_info", "step_payload")),
+                                     ("gen_metadata", "idx", ("data",)), ("executor_metadata", "idx", ("data",)),
+                                     ("parent_references", "idx", ("data",)), ("battle_mode_infos", "idx", ("data",)),
+                                     ("trajectory_metadata_blob", "id", ("data",))):
+                if table not in tables:
+                    continue
+                for row in out.execute(f"SELECT {key}, {', '.join(cols)} FROM {table}").fetchall() if old != new else []:
+                    changed = {c: bytes(v).replace(old, new) for c, v in zip(cols, row[1:]) if isinstance(v, bytes) and old in v}
+                    if changed:
+                        out.execute(f"UPDATE {table} SET {', '.join(f'{c} = ?' for c in changed)} WHERE {key} = ?", (*changed.values(), row[0]))
+            if old != new:
+                out.execute("UPDATE trajectory_meta SET trajectory_id = ? WHERE trajectory_id = ?", (new.decode(), old.decode()))
+                out.execute("UPDATE trajectory_meta SET cascade_id = ? WHERE cascade_id = ?", (new.decode(), old.decode()))
+        out.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    except (sqlite3.Error, ValueError, IndexError) as e:
+        raise ValueError(f"Antigravity's state ({db.name}) has a format Atrium doesn't know ({e})") from e
+    finally:
+        src.close()
+        out.close()
+    for suffix in ("-wal", "-shm"):
+        Path(f"{dest}{suffix}").unlink(missing_ok=True)
+
+
+def _cut_state(con: Any, cut: int) -> None:
+    """Take every step after ``cut`` out of a state database, with the model calls that made them, and end the
+    execution the cut falls in there."""
+    con.execute("DELETE FROM steps WHERE idx > ?", (cut,))
+    kept: dict[bytes, int] = {}  # execution -> model calls kept
+    for idx, data in con.execute("SELECT idx, data FROM gen_metadata").fetchall():
+        steps, execution = _gen_steps(bytes(data or b""))
+        if steps and min(steps) > cut:
+            con.execute("DELETE FROM gen_metadata WHERE idx = ?", (idx,))
+        elif steps and max(steps) > cut:
+            raise ValueError(f"step {cut} is in the middle of a model call")
+        else:
+            kept[execution] = kept.get(execution, 0) + 1
+    for idx, data in con.execute("SELECT idx, data FROM executor_metadata").fetchall():
+        fields = _pb_fields(bytes(data or b""))
+        get = {num: value for num, _wt, value, _raw in fields}
+        if int(get.get(3) or 0) <= cut:
+            continue
+        calls = kept.get(get.get(9) or b"", 0)
+        if not calls:
+            con.execute("DELETE FROM executor_metadata WHERE idx = ?", (idx,))
+            continue
+        set_to = {1: _CANCELED, 2: calls, 3: cut}  # cut short, as a stop would have
+        out = b"".join(_put_varint(num << 3) + _put_varint(set_to[num]) if num in set_to and wt == 0 else raw for num, wt, _v, raw in fields)
+        out += b"".join(_put_varint(num << 3) + _put_varint(v) for num, v in set_to.items() if num not in get)
+        con.execute("UPDATE executor_metadata SET data = ? WHERE idx = ?", (out, idx))
+
+
+def _cut_transcripts(logs: Path, old: str, new: str, cut: int | None) -> None:
+    """Make a copied conversation's transcripts (and their chunks) hold the steps up to ``cut``, under the new id."""
+    for name in ("transcript_full", "transcript"):
+        path = logs / f"{name}.jsonl"
+        if not path.exists():
+            continue
+        lines = []
+        for line in path.read_bytes().splitlines(keepends=True):
+            try:
+                step = json.loads(line).get("step_index")
+            except (ValueError, AttributeError):
+                continue
+            if isinstance(step, int) and (cut is None or step <= cut):
+                lines.append(line.replace(old.encode(), new.encode()))
+        data = b"".join(lines)
+        tmp = path.with_name(f".{path.name}.tmp")
+        tmp.write_bytes(data)
+        os.replace(tmp, path)
+        chunks = logs / "chunks" / name
+        if chunks.is_dir():
+            shutil.rmtree(chunks)
+            chunks.mkdir(parents=True)
+            for n in range(0, len(data), _CHUNK):
+                (chunks / f"{n // _CHUNK:08d}.jsonl").write_bytes(data[n:n + _CHUNK])
+
+
+# --------------------------------------------------------------------------
 # Live session
 # --------------------------------------------------------------------------
 
@@ -985,6 +1275,7 @@ class AntigravityLiveSession(LiveSession):
         self._remembered: set[str] = set()  # approvals the user gave for the rest of the session
         self._shown: set[str] = set()  # finished text steps already emitted
         self._tool_seen: dict[str, str] = {}  # tool step -> what was last emitted for it (steps repeat)
+        self._atrium_steps: dict[str, list[str]] = {}  # one of Atrium's tools -> the steps of its calls the gate let through
         self._errored = False  # this turn already showed an error step
         self._closed = False
         self._atrium = {f"{ns}_{t.name}" for ns, specs in spec.toolsets.items() for t in specs}  # names here
@@ -1242,7 +1533,8 @@ class AntigravityLiveSession(LiveSession):
 
         async def call(**kwargs: Any) -> str:
             args = _int_args(_plain(kwargs), spec.input_schema)
-            tid = f"t-{uuid.uuid4().hex[:12]}"
+            queued = self._atrium_steps.get(f"{ns}_{spec.name}")
+            tid = queued.pop(0) if queued else f"t-{uuid.uuid4().hex[:12]}"  # its step, as the other tools' items have
             self.emit({"kind": "tool", "id": tid, "name": shown, "input": args})
             try:
                 out = await spec.handler(args)
@@ -1263,6 +1555,8 @@ class AntigravityLiveSession(LiveSession):
         mode, an allow rule (``mcp__<server>__<tool>``) or the user lets it run."""
         name, args = str(tc.name), dict(tc.args or {})
         mcp = f"mcp__{tc.server_name}__{name}" if tc.server_name else None
+        if not mcp and name in self._atrium and tc.step_id:
+            self._atrium_steps.setdefault(name, []).append(str(tc.step_id))  # the item its call shows as (see _python_tool)
         if self.mode == "always-proceed" or not mcp and (name in self._atrium or name in READ_TOOLS):
             return True, ""
         command = None if mcp or "CommandLine" not in args else str(args["CommandLine"])
@@ -1322,7 +1616,7 @@ class AntigravityHarness(Harness):
     review_agent_mode = "read-only"  # not offered in the picker: reads and the pre-approved commands, refuses the rest unasked
     models = [{"id": "", "label": "Default"}]
     efforts = EFFORTS
-    can_fork = False  # the runtime keeps a conversation's state in a database named by its id
+    can_edit = True
 
     def __init__(self) -> None:
         self._prompts: dict[str, str] = {}  # transcript -> its first message
@@ -1447,6 +1741,25 @@ class AntigravityHarness(Harness):
     async def rename_session(self, session_id: str, title: str, cwd: str) -> None:
         if _index_path(session_id).exists():
             await asyncio.to_thread(write_index, session_id, title=title)
+
+    # ---- forks: a copy of the runtime's state and data under a new id, cut after a step (see "Forks" above)
+    async def fork_point(self, session_id: str, cwd: str, anchor: str | None, user_index: int | None, *, after: bool = False) -> ForkPoint:
+        return await asyncio.to_thread(fork_cut, session_id, anchor, user_index, after)
+
+    async def fork_session(self, session_id: str, cwd: str, point: ForkPoint, *, target_cwd: str, title: str, note: str = "") -> str:
+        # ``note`` reaches the model through the system prompt, which a resumed runtime takes anew
+        new = new_conversation_id(session_id)
+        cut = int(point.cut) if point.cut is not None else None
+        await asyncio.to_thread(copy_conversation, session_id, new, cut, read_index(session_id).get("cwd") or cwd, target_cwd, title)
+        return new
+
+    # ---- edits: the conversation is cut in place just before the message (its old state kept in the backup)
+    async def edit_point(self, session_id: str, cwd: str, item: str | None, anchor: str | None, user_index: int) -> ForkPoint:
+        return await asyncio.to_thread(edit_cut, session_id, item, anchor, user_index)
+
+    async def rewind_session(self, session_id: str, cwd: str, point: ForkPoint, backup: Path) -> Rewind:
+        left = await asyncio.to_thread(cut_conversation, session_id, int(point.cut) if point.cut is not None else None, backup)
+        return Rewind(fresh=not left)
 
     async def move_session(self, session_id: str, cwd: str, target_cwd: str, note: str = "") -> None:
         # ``note`` reaches the model through the system prompt, which a resumed runtime takes anew

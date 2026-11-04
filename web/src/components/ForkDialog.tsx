@@ -1,5 +1,5 @@
-// Fork a conversation: a new agent that starts with this one's history — all of it, or up to a
-// message — working in a new worktree (with the files of that moment), an existing one, or the same directory.
+// Fork a conversation: a new agent that starts with this one's history — all of it, up to a message, or up to one of
+// the agent's steps — working in a new worktree (with the files of that moment), an existing one, or the same directory.
 import type { JSX, ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { Folder, FolderGit2, GitBranchPlus, GitFork } from "lucide-react";
@@ -19,7 +19,7 @@ function excerpt(s: string, n: number): string {
 
 export function ForkDialog() {
   const req = useApp((s) => s.forkRequest);
-  return req ? <ForkForm key={`${req.sid}:${req.at?.user_index ?? "latest"}`} req={req} /> : null;
+  return req ? <ForkForm key={`${req.sid}:${req.at?.after ? req.at.anchor : (req.at?.user_index ?? "latest")}`} req={req} /> : null;
 }
 
 function ForkForm({ req }: { req: ForkRequest }) {
@@ -83,6 +83,8 @@ function ForkForm({ req }: { req: ForkRequest }) {
       selectSession(res.id);
       if (res.error) toast(`Forked, but the first message failed: ${res.error}`, "error");
       else if (res.files === "current") toast("Forked. Atrium had no snapshot of that moment, so the worktree got the current files.", "info");
+      else if (res.files === "turn")
+        toast("Forked. The worktree has the files from when that turn began, with the agent's edits up to there made again (not what its commands changed).", "info");
       else toast(res.worktree ? `Forked into ⎇ ${res.worktree.branch}` : "Forked", "ok");
     } catch (e: any) {
       toast(e.message || String(e), "error");
@@ -127,7 +129,12 @@ function ForkForm({ req }: { req: ForkRequest }) {
       }
     >
       <div className="fork-from">
-        {req.at ? (
+        {req.at?.after ? (
+          <>
+            Forks after this step of the agent's work{req.step ? <> — <q>{excerpt(req.step, 80)}</q></> : null}: the new agent remembers
+            everything up to there, and does what you tell it next.
+          </>
+        ) : req.at ? (
           <>
             Forks before message {req.at.user_index + 1}
             {req.text ? <> — <q>{excerpt(req.text, 80)}</q></> : null}: the new agent remembers everything up to there.
@@ -151,7 +158,11 @@ function ForkForm({ req }: { req: ForkRequest }) {
                 <input className="input mono" value={branch} onChange={(e) => setBranchInput(e.target.value)} placeholder="branch name" />
                 <label className="check">
                   <input type="checkbox" checked={carry} onChange={(e) => setCarry(e.target.checked)} />
-                  {req.at ? "Restore the files as they were at that point (Atrium's turn snapshots)" : "Bring the current files, uncommitted changes included"}
+                  {req.at?.after
+                    ? "Restore the files as they were at that point, as far as Atrium recorded them"
+                    : req.at
+                      ? "Restore the files as they were at that point (Atrium's turn snapshots)"
+                      : "Bring the current files, uncommitted changes included"}
                 </label>
               </div>,
             )}
@@ -192,7 +203,7 @@ function ForkForm({ req }: { req: ForkRequest }) {
           rows={3}
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
-          placeholder="Optional — what this fork should try. Empty: the fork waits for you."
+          placeholder={req.at?.after ? "Optional — what it should do from here, or differently. Empty: the fork waits for you." : "Optional — what this fork should try. Empty: the fork waits for you."}
           onKeyDown={(e) => {
             if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
               e.preventDefault();

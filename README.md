@@ -130,23 +130,33 @@ A project-centric workbench for coding agents — Claude Code, Codex and Antigra
    Agent's too) keeps its own draft the same way, text and attachments, until it's sent; while you're
    elsewhere, its hover card and the agent list show a ✎.
 7. **Fork a conversation** to try several ideas in parallel — from the latest point (⑂ in the chat
-   header) or from before any of your messages (hover it; the message is offered again, to edit).
+   header), from before any of your messages (hover it; the message is offered again, to edit), or
+   from after any step of the agent's work: hover one of its replies or tool calls (a tap on a
+   reply, on a phone, or open the tool call) — say it took a wrong turn there, fork, and tell the
+   fork how to carry on. A step is the model's reply with what the tools it called returned, so the
+   fork keeps whole steps, in the middle of a turn too; the agent may still be working on later ones.
    The fork is a new agent that remembers the conversation up to there and works in a **new
    worktree** (a branch from the original's commit, with the files of that moment — taken from the
-   turn snapshots, uncommitted changes included), an existing worktree, or the same directory.
+   turn snapshots, uncommitted changes included; in the middle of a turn, the snapshot from when it
+   began with the agent's own file edits up to the fork point made again), an existing worktree, or
+   the same directory.
    This is also how a conversation changes worktree while it has one: an agent stays bound to its
    directory (its process, its transcript, the paths in its history, the uncommitted edits it made
    there), so it is copied rather than moved — tick *Archive the original* to move it. Forks are
    native to Claude Code (`fork_session`, the transcript moved under the new directory) and Codex
-   (`thread/fork`); the fork's Changes and the Tracker only count what happened after the fork.
-   Antigravity sessions can't be forked: its runtime keeps a conversation's state under its id.
+   (`thread/fork`, between turns; a turn kept in part is added to the fork's rollout, ended where
+   it was cut). An Antigravity fork is a copy of the conversation — its runtime's state database
+   and its transcript — under a new id, with the steps after the fork point taken out. The fork's
+   Changes and the Tracker only count what happened after the fork.
    To fix a message in place instead, **edit it** (✎, next to ⑂): the same agent goes back to just
    before it and carries on with what you send, the message and everything after it dropped from
    what it remembers (a turn in progress is stopped first). The files stay as they are. Claude Code
    resumes up to there (`resume_session_at`; the transcript keeps the replaced conversation as a
    branch, and editing the first message starts it over under the same id, the old transcript kept
-   in `.atrium/trash/sessions/`); Codex drops the turns (`thread/revert`). Hover any message — a tap,
-   on a phone — for when it was sent; the agent's replies too (Codex records a time per turn only).
+   in `.atrium/trash/sessions/`); Codex drops the turns (`thread/revert`); Antigravity's
+   conversation is cut there in place, what it held before kept in `.atrium/trash/sessions/`. Hover
+   any message — a tap, on a phone — for when it was sent; the agent's replies too (Codex records a
+   time per turn only).
 8. **Agents outlive their worktrees.** Remove a worktree — from the Git panel, or the agent does it
    after merging its branch — and its agents stay in the list with the worktree struck through
    (⎇ ~~feat/x~~). Their process stops, and their Changes show the files as they left them, read-only.
@@ -337,7 +347,8 @@ Implement `atrium.harness.base.Harness` and register it in `atrium/harness/__ini
 * `create_live(spec, emit)` → a `LiveSession` (send with attachments / interrupt / set mode, model,
   effort / resolve permission);
 * `fork_point` / `fork_session` (optional; set `can_fork = False` without them) — cut a conversation
-  before a user message and copy it into a new session working in another directory;
+  before a user message, or after a model step (`after`: the model's reply and its tools' results,
+  in the middle of a turn too), and copy it into a new session working in another directory;
 * `edit_point` / `rewind_session` (optional; set `can_edit = True` with them) — cut a session's own
   conversation before a user message, to carry on from there with that message changed;
 * `config_files(project_dir)` — the harness's own config files for the Settings editor;
