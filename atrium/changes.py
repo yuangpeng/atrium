@@ -30,7 +30,7 @@ from typing import Any
 from . import gitops, snapshots
 from .fs import read_text, sha_of
 from .harness import get_harness
-from .harness.base import FileEdit
+from .harness.base import FileEdit, Replacement
 from .harness.util import iso_to_epoch
 from .project import Project
 
@@ -110,6 +110,37 @@ def apply_patch(before: str, patch: str) -> str | None:
         else:
             inverse.append(line)
     return reverse_patch(before, "\n".join(inverse))
+
+
+def apply_replacements(text: str | None, reps: list[Replacement]) -> str | None:
+    """Make an edit's string replacements (``FileEdit.replacements``) on ``text`` (None: no such file), in order. None
+    if one doesn't apply: its ``old`` isn't there (in the lines it was searched in), or more than one occurrence is
+    where the edit changed only one."""
+    for r in reps:
+        if r.old == "":  # creates the file (Claude's Edit with no old_string)
+            if text:
+                return None
+            text = r.new
+            continue
+        if text is None:
+            return None
+        lo, hi = 0, len(text)
+        if r.lines:  # the text of those lines, without the newline that ends the last (as Antigravity searches them)
+            starts = [0] + [i + 1 for i, c in enumerate(text) if c == "\n"]
+            first, last = max(r.lines[0], 1), max(r.lines[1], r.lines[0], 1)
+            lo = starts[first - 1] if first - 1 < len(starts) else len(text)
+            hi = starts[last] - 1 if last < len(starts) else len(text)
+        found, i = [], text.find(r.old, lo)
+        while i != -1 and i + len(r.old) <= hi:
+            found.append(i)
+            i = text.find(r.old, i + len(r.old))
+        if not r.all and not found and r.lines:  # the lines moved (a command changed the file): the only occurrence anywhere
+            found = [i for i in [text.find(r.old)] if i != -1 and text.count(r.old) == 1]
+        if not found or not r.all and len(found) > 1:
+            return None
+        for i in reversed(found):
+            text = text[:i] + r.new + text[i + len(r.old):]
+    return text
 
 
 def _snapshots(project: Project, sid: str) -> list[dict[str, Any]]:

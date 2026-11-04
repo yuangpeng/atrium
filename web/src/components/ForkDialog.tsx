@@ -83,6 +83,12 @@ function ForkForm({ req }: { req: ForkRequest }) {
       selectSession(res.id);
       if (res.error) toast(`Forked, but the first message failed: ${res.error}`, "error");
       else if (res.files === "current") toast("Forked. Atrium had no snapshot of that moment, so the worktree got the current files.", "info");
+      else if (res.files === "turn" && res.missed?.length)
+        toast(
+          `Forked, but ${res.missed.length === 1 ? "an edit" : "edits"} to ${excerpt(res.missed.join(", "), 120)} couldn't be made again in the worktree: ` +
+            "check those files. The fork was told too.",
+          "error",
+        );
       else if (res.files === "turn")
         toast("Forked. The worktree has the files from when that turn began, with the agent's edits up to there made again (not what its commands changed).", "info");
       else toast(res.worktree ? `Forked into ⎇ ${res.worktree.branch}` : "Forked", "ok");

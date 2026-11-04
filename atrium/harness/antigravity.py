@@ -40,7 +40,7 @@ from typing import Any
 
 from .. import gitops
 from ..config import ATRIUM_HOME, atomic_write, config
-from .base import Attachment, Emit, FileEdit, ForkPoint, Harness, Item, LiveSession, LiveSpec, Rewind, SessionSummary, ToolSpec
+from .base import Attachment, Emit, FileEdit, ForkPoint, Harness, Item, LiveSession, LiveSpec, Replacement, Rewind, SessionSummary, ToolSpec
 from .util import attachment_note, clip, hhmm, iso_to_epoch, parse_json_loose, short, short_tail, split_attachment_note, upload_url
 
 log = logging.getLogger("atrium.antigravity")
@@ -740,7 +740,7 @@ def user_text(content: str) -> str:
 def _result_text(d: dict[str, Any]) -> tuple[str, bool]:
     """(content, is_error) of a tool's result step."""
     text = _STAMP_RE.sub("", d.get("content") or "").strip("\n")
-    err = d.get("status") == "ERROR"
+    err = d.get("status") == "ERROR" or d.get("type") == "ERROR_MESSAGE"  # (the runtime refused the call: invalid arguments…)
     if err:
         return clip(str(d.get("error") or text or "Failed.")), True
     if d.get("type") == "RUN_COMMAND":
@@ -880,26 +880,51 @@ def _patch(chunks: list[tuple[Any, str, str]]) -> str:
     return "\n".join(out)
 
 
+def _replacement(x: dict[str, Any]) -> Replacement:
+    """One replacement of the edit tools as the runtime makes it: the exact TargetContent, searched for in the lines
+    StartLine–EndLine; with AllowMultiple, every occurrence there."""
+    try:
+        lines: tuple[int, int] | None = (int(x["StartLine"]), int(x.get("EndLine") or x["StartLine"]))
+    except (KeyError, TypeError, ValueError):
+        lines = None
+    return Replacement(old=str(x.get("TargetContent") or ""), new=str(x.get("ReplacementContent") or ""), all=bool(x.get("AllowMultiple")),
+                       lines=lines)
+
+
 def file_edits_of(entries: list[dict[str, Any]]) -> list[FileEdit]:
     edits: list[FileEdit] = []
     for p, _n, c, res in _calls(entries):
         a = _targs(c.get("args"))
         path = a.get("TargetFile")
-        if not path or res is None or res.get("status") == "ERROR":
+        if not path or res is None or res.get("status") == "ERROR" or res.get("type") == "ERROR_MESSAGE":
             continue
         ts = p.get("created_at")
         if "CodeContent" in a:
             append = bool(a.get("Append"))
             edits.append(FileEdit(path=path, tool="Write", ts=ts, before=None, after=None if append else str(a["CodeContent"]),
-                                  kind="update" if append or a.get("Overwrite") else "create"))
+                                  kind="update" if append or a.get("Overwrite") else "create", append=str(a["CodeContent"]) if append else None))
         elif "ReplacementChunks" in a:
-            chunks = [(x.get("StartLine"), str(x.get("TargetContent") or ""), str(x.get("ReplacementContent") or ""))
-                      for x in a["ReplacementChunks"] or [] if isinstance(x, dict)]
-            edits.append(FileEdit(path=path, tool="MultiEdit", ts=ts, before=None, after=None, kind="update", patch=_patch(chunks)))
+            raw = [x for x in a["ReplacementChunks"] or [] if isinstance(x, dict)]
+            chunks = [(x.get("StartLine"), str(x.get("TargetContent") or ""), str(x.get("ReplacementContent") or "")) for x in raw]
+            reps = [_replacement(x) for x in raw]
+            if all(r.lines for r in reps):  # their lines are the file's before the edit: the bottom one first, the others' still hold
+                reps.sort(key=lambda r: -(r.lines or (0, 0))[0])
+            edits.append(FileEdit(path=path, tool="MultiEdit", ts=ts, before=None, after=None, kind="update", patch=_patch(chunks),
+                                  replacements=reps))
         elif "TargetContent" in a:
             chunk = (a.get("StartLine"), str(a.get("TargetContent") or ""), str(a.get("ReplacementContent") or ""))
-            edits.append(FileEdit(path=path, tool="Edit", ts=ts, before=None, after=None, kind="update", patch=_patch([chunk])))
+            edits.append(FileEdit(path=path, tool="Edit", ts=ts, before=None, after=None, kind="update", patch=_patch([chunk]),
+                                  replacements=[_replacement(a)]))
     return edits
+
+
+def turn_edits(sid: str, cut: int) -> list[FileEdit]:
+    """The file edits made in the turn that step ``cut`` is in, up to that step (``Harness.fork_edits``)."""
+    path = transcript_file(sid)
+    entries = _entries(path) if path else []
+    start = max((d["step_index"] for d in entries if d["step_index"] <= cut and d.get("type") == "USER_INPUT"
+                 and d.get("source") == "USER_EXPLICIT"), default=-1)
+    return file_edits_of([d for d in entries if start < d["step_index"] <= cut])
 
 
 def retry_item(iid: str, error: str) -> Item:
@@ -986,22 +1011,40 @@ def _gen_steps(data: bytes) -> tuple[list[int], bytes]:
     return steps, execution
 
 
-def _db_steps(sid: str) -> tuple[dict[int, int], list[list[int]]]:
-    """A conversation's steps in its state database ({idx: status}) and its model calls' steps."""
+def _db_steps(sid: str) -> tuple[dict[int, int], list[list[int]], dict[int, float]]:
+    """A conversation's steps in its state database ({idx: status}), its model calls' steps, and when each step was
+    made, to the microsecond (the transcript has whole seconds: a fast turn's steps would look simultaneous)."""
     import sqlite3
 
     db = _save_dir() / f"{sid}.db"
     if not db.exists():
         raise FileNotFoundError(f"Antigravity's state of {sid}")
     con = sqlite3.connect(db)
+    times: dict[int, float] = {}
     try:
-        status = dict(con.execute("SELECT idx, status FROM steps"))
+        status: dict[int, int] = {}
+        for idx, st, meta in con.execute("SELECT idx, status, metadata FROM steps"):
+            status[idx] = st
+            made = next((v for n, wt, v, _raw in _pb_fields(bytes(meta or b"")) if n == 1 and wt == 2), None)  # created_at
+            if made is not None:
+                ts = {n: v for n, wt, v, _raw in _pb_fields(made) if wt == 0}  # a Timestamp: seconds, nanos
+                times[idx] = ts.get(1, 0) + ts.get(2, 0) / 1e9
         gens = [_gen_steps(bytes(d or b""))[0] for (d,) in con.execute("SELECT data FROM gen_metadata ORDER BY idx")]
     except (sqlite3.Error, ValueError, IndexError) as e:
         raise ValueError(f"Antigravity's state of {sid} has a format Atrium doesn't know ({e})") from e
     finally:
         con.close()
-    return status, gens
+    return status, gens, times
+
+
+def _made_with(entries: list[dict[str, Any]], at: int) -> list[int]:
+    """The steps of the model call that made step ``at``, from the transcript: its response, and the steps that hold
+    what its tool calls returned (when the database doesn't list them)."""
+    for p, _n, _c, res in reversed(_calls(entries)):
+        if p["step_index"] == at or res is not None and res["step_index"] == at:
+            planner = p["step_index"]
+            return [planner] + [r["step_index"] for q, _n2, _c2, r in _calls(entries) if q["step_index"] == planner and r is not None]
+    return [at]
 
 
 def fork_cut(sid: str, anchor: str | None, user_index: int | None, after: bool) -> ForkPoint:
@@ -1014,15 +1057,19 @@ def fork_cut(sid: str, anchor: str | None, user_index: int | None, after: bool) 
     prompts = [d["step_index"] for d in entries if d.get("type") == "USER_INPUT" and d.get("source") == "USER_EXPLICIT"]
     m = _STEP_RE.match(anchor or "")
     at = int(m.group("step")) if m and m.group("conv") in (None, sid) else None  # (a subagent's steps are its own conversation's)
-    status, gens = _db_steps(sid)
+    status, gens, times = _db_steps(sid)
+    called = False  # the step called tools: its turn goes on after it, recorded yet or not (the agent may still be working)
     if after:
-        if at is None or at not in by_step:
-            raise ValueError("Couldn't find that point of the conversation in its transcript")
+        if at is None or at not in by_step:  # (a step is written to the transcript once it is done)
+            raise ValueError("That step is still running: wait for its tools to finish, or fork from an earlier one"
+                             if at is not None and at in status and status[at] not in _FINISHED
+                             else "Couldn't find that point of the conversation in its transcript")
         # the model call that made the step: its response and the results of the tools it called
-        made = next((g for g in gens if at in g), [at])
+        made = next((g for g in gens if at in g), None) or _made_with(entries, at)
         cut = max(made)
         if any(status.get(i) not in _FINISHED for i in made):
             raise ValueError("That step is still running: wait for its tools to finish, or fork from an earlier one")
+        called = any((by_step.get(i) or {}).get("tool_calls") for i in made)
     else:
         if at is None and user_index and user_index < len(prompts):  # an item shown live may not carry a step
             at = prompts[user_index] - 1
@@ -1032,12 +1079,13 @@ def fork_cut(sid: str, anchor: str | None, user_index: int | None, after: bool) 
         cut = nxt - 1 if nxt is not None else max(by_step)
     later = [i for i in by_step if i > cut]
     nxt_step = min(later) if later else None
-    turn = max((u for u in prompts if u <= cut), default=None) if nxt_step is not None and nxt_step not in prompts else None
-    return ForkPoint(
-        cut=str(cut), cut_ts=iso_to_epoch((by_step.get(cut) or {}).get("created_at")),
-        next_ts=iso_to_epoch(by_step[nxt_step].get("created_at")) if nxt_step is not None else None,
-        turn_ts=iso_to_epoch(by_step[turn].get("created_at")) if turn is not None else None,
-    )
+    mid_turn = nxt_step not in prompts if nxt_step is not None else called
+    turn = max((u for u in prompts if u <= cut), default=None) if mid_turn else None
+
+    def when(i: int | None) -> float | None:
+        return None if i is None else times.get(i) or iso_to_epoch((by_step.get(i) or {}).get("created_at"))
+
+    return ForkPoint(cut=str(cut), cut_ts=when(cut), next_ts=when(nxt_step), turn_ts=when(turn))
 
 
 def edit_cut(sid: str, item: str | None, anchor: str | None, user_index: int) -> ForkPoint:
@@ -1745,6 +1793,11 @@ class AntigravityHarness(Harness):
     # ---- forks: a copy of the runtime's state and data under a new id, cut after a step (see "Forks" above)
     async def fork_point(self, session_id: str, cwd: str, anchor: str | None, user_index: int | None, *, after: bool = False) -> ForkPoint:
         return await asyncio.to_thread(fork_cut, session_id, anchor, user_index, after)
+
+    async def fork_edits(self, session_id: str, cwd: str, point: ForkPoint) -> list[FileEdit] | None:
+        if point.cut is None or point.turn_ts is None:
+            return None
+        return await asyncio.to_thread(turn_edits, session_id, int(point.cut))
 
     async def fork_session(self, session_id: str, cwd: str, point: ForkPoint, *, target_cwd: str, title: str, note: str = "") -> str:
         # ``note`` reaches the model through the system prompt, which a resumed runtime takes anew

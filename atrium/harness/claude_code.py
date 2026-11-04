@@ -52,8 +52,8 @@ from .. import gitops
 from ..capture import CAPTURE_URL_ENV, FIRST_PARTY_ENV, UPSTREAM_ENV, loopback_env
 from ..config import UPLOADS_DIR
 from .base import (
-    Attachment, Compaction, Emit, FileEdit, ForkPoint, Harness, Item, LiveSession, LiveSpec, Rewind, SessionSummary, SlashCommand, SubagentSummary,
-    ToolSpec,
+    Attachment, Compaction, Emit, FileEdit, ForkPoint, Harness, Item, LiveSession, LiveSpec, Replacement, Rewind, SessionSummary, SlashCommand,
+    SubagentSummary, ToolSpec,
 )
 from .util import TailScan, attachment_note, hhmm, iso_to_epoch, parse_json_loose, short_tail, split_attachment_note, tail_scan
 
@@ -1014,6 +1014,12 @@ class ClaudeCodeHarness(Harness):
             raise FileNotFoundError(f"transcript of session {session_id}")
         return await asyncio.to_thread(_fork_point, path, anchor, user_index, after)
 
+    async def fork_edits(self, session_id: str, cwd: str, point: ForkPoint) -> list[FileEdit] | None:
+        path = self.transcript_path(session_id, cwd)
+        if not path or not point.cut or point.turn_ts is None:
+            return None
+        return await asyncio.to_thread(_turn_edits, path, session_id, point.cut)
+
     async def fork_session(self, session_id: str, cwd: str, point: ForkPoint, *, target_cwd: str, title: str, note: str = "") -> str:
         # ``note`` reaches the model through the system prompt, which Claude Code re-applies on resume
         def fork() -> str:
@@ -1295,18 +1301,20 @@ def _edit_from_result(tur: dict[str, Any], ts: str | None) -> FileEdit | None:
     if "oldString" in tur:  # Edit
         before = tur.get("originalFile")
         after = None
+        old, new = tur.get("oldString") or "", tur.get("newString") or ""
         if isinstance(before, str):
-            old, new = tur.get("oldString") or "", tur.get("newString") or ""
             after = before.replace(old, new) if tur.get("replaceAll") else before.replace(old, new, 1)
-        return FileEdit(path=fp, tool="Edit", ts=ts, before=before, after=after)
+        return FileEdit(path=fp, tool="Edit", ts=ts, before=before, after=after,
+                        replacements=[Replacement(old=old, new=new, all=bool(tur.get("replaceAll")))])
     if "edits" in tur:  # MultiEdit (older CLIs)
         before = tur.get("originalFile")
         after = before
+        reps = [Replacement(old=e.get("old_string", ""), new=e.get("new_string", ""), all=bool(e.get("replace_all")))
+                for e in tur.get("edits") or [] if isinstance(e, dict)]
         if isinstance(after, str):
-            for e in tur.get("edits") or []:
-                old, new = e.get("old_string", ""), e.get("new_string", "")
-                after = after.replace(old, new) if e.get("replace_all") else after.replace(old, new, 1)
-        return FileEdit(path=fp, tool="MultiEdit", ts=ts, before=before, after=after)
+            for r in reps:
+                after = after.replace(r.old, r.new) if r.all else after.replace(r.old, r.new, 1)
+        return FileEdit(path=fp, tool="MultiEdit", ts=ts, before=before, after=after, replacements=reps)
     if tur.get("type") in ("create", "update") and "content" in tur:  # Write
         kind = "create" if tur.get("type") == "create" else "update"
         return FileEdit(path=fp, tool="Write", ts=ts, before=tur.get("originalFile"), after=tur.get("content"), kind=kind)
@@ -1499,6 +1507,7 @@ def _branch(path: Path) -> tuple[list[dict[str, Any]], list[int], list[int]]:
 def _fork_point(path: Path, anchor: str | None, user_index: int | None, after: bool = False) -> ForkPoint:
     entries, chain, prompts = _branch(path)
     starts = set(prompts)
+    called = False  # the step called tools: its turn goes on after it, recorded yet or not (the agent may still be working)
     if after:
         # the model step holding the anchor: its response (one message id, an entry per block), then what its
         # tools returned, up to the next response or prompt
@@ -1508,6 +1517,12 @@ def _fork_point(path: Path, anchor: str | None, user_index: int | None, after: b
         mid = (entries[at].get("message") or {}).get("id")
         nxt = next((i for i in chain if i > at and (i in starts or entries[i].get("type") == "assistant"
                                                      and (entries[i].get("message") or {}).get("id") != mid)), None)
+        calls = {b["id"] for e in entries if e.get("type") == "assistant" and (e.get("message") or {}).get("id") == mid
+                 for b in _blocks(e) if b.get("type") == "tool_use" and b.get("id")}
+        answered = {b.get("tool_use_id") for e in entries[at + 1 : nxt] for b in _blocks(e) if b.get("type") == "tool_result"}
+        if calls - answered:
+            raise ValueError("That step is still running: wait for its tools to finish, or fork from an earlier one")
+        called = bool(calls)
     else:
         at = _find_entry(entries, anchor) if anchor else None
         if at is None and user_index and user_index < len(prompts):  # items shown live may not carry transcript ids
@@ -1519,14 +1534,99 @@ def _fork_point(path: Path, anchor: str | None, user_index: int | None, after: b
     # what the next prompt (or response) follows (the entry before it in the file may be on a branch an edit left)
     cut = (by_uuid.get(entries[nxt].get("parentUuid") or "") or entries[nxt - 1]) if nxt is not None else entries[-1]
     started = None
-    if nxt is not None and nxt not in starts:  # cut in the middle of a turn: the prompt that began it
-        started = next((entries[i] for i in reversed(prompts) if i < nxt), None)
+    if (nxt not in starts) if nxt is not None else called:  # cut in the middle of a turn: the prompt that began it
+        started = next((entries[i] for i in reversed(prompts) if i <= at), None)
     return ForkPoint(
         cut=cut["uuid"],
         cut_ts=iso_to_epoch(cut.get("timestamp")),
         next_ts=iso_to_epoch(entries[nxt].get("timestamp")) if nxt is not None else None,
         turn_ts=iso_to_epoch(started.get("timestamp")) if started else None,
     )
+
+
+def _turn_edits(path: Path, session_id: str, cut: str) -> list[FileEdit]:
+    """The file edits made in the turn that transcript entry ``cut`` is in, up to it: the results of the tool calls kept
+    (``Harness.fork_edits``), and of their subagents (<sid>/subagents/, nested ones too), in the order they were made."""
+    entries, chain, prompts = _branch(path)
+    at = next((i for i, e in enumerate(entries) if e["uuid"] == cut), None)
+    if at is None:
+        return []
+    start = max((i for i in prompts if i <= at), default=-1)
+    calls: set[str] = set()  # the tool calls kept: on the conversation it resumes, in the turn, up to the cut
+    for i in chain:
+        content = (entries[i].get("message") or {}).get("content")
+        if start < i <= at and entries[i].get("type") == "assistant" and isinstance(content, list):
+            calls |= {b["id"] for b in content if isinstance(b, dict) and b.get("type") in ("tool_use", "server_tool_use") and b.get("id")}
+    edits: list[FileEdit] = []
+    for e in entries[start + 1 : at + 1]:  # (the results of parallel calls aren't all on the parentUuid chain)
+        content = (e.get("message") or {}).get("content")
+        tur = e.get("toolUseResult")
+        if (isinstance(tur, dict) and tur.get("filePath") and isinstance(content, list)
+                and any(isinstance(b, dict) and b.get("tool_use_id") in calls for b in content)):
+            edit = _edit_from_result(tur, e.get("timestamp"))
+            if edit:
+                edits.append(edit)
+    base = path.parent / session_id / "subagents"
+    files = sorted(base.rglob("agent-*.jsonl")) if base.is_dir() else []
+    spawned = calls
+    while spawned:  # the subagents those calls started, then theirs
+        found = [f for f in files if _subagent_call(f) in spawned]
+        files = [f for f in files if f not in found]
+        spawned = set()
+        for f in found:
+            sub = _transcript_entries(f)
+            edits += _call_edits(sub)
+            spawned |= {b["id"] for d in sub if d.get("type") == "assistant" for b in _blocks(d) if b.get("type") == "tool_use" and b.get("id")}
+    edits.sort(key=lambda e: e.ts or "")
+    return edits
+
+
+def _call_edits(entries: list[dict[str, Any]]) -> list[FileEdit]:
+    """The file edits of a transcript's tool calls that succeeded: from their results' records, else (a subagent's
+    transcript doesn't keep them) from what the calls asked for."""
+    calls = {b["id"]: b for e in entries if e.get("type") == "assistant" for b in _blocks(e) if b.get("type") == "tool_use" and b.get("id")}
+    edits: list[FileEdit] = []
+    for e in entries:
+        tur = e.get("toolUseResult")
+        for b in _blocks(e):
+            call = calls.get(b.get("tool_use_id") or "") if b.get("type") == "tool_result" and not b.get("is_error") else None
+            if call is None:
+                continue
+            if isinstance(tur, dict) and tur.get("filePath"):
+                edit = _edit_from_result(tur, e.get("timestamp"))
+            else:
+                edit = _edit_from_call(call, e.get("timestamp"))
+            if edit:
+                edits.append(edit)
+    return edits
+
+
+def _edit_from_call(call: dict[str, Any], ts: str | None) -> FileEdit | None:
+    """The file edit a Write / Edit / MultiEdit call asked for."""
+    inp = call.get("input") or {}
+    fp, name = inp.get("file_path"), call.get("name")
+    if not isinstance(fp, str):
+        return None
+    if name == "Write" and isinstance(inp.get("content"), str):
+        return FileEdit(path=fp, tool="Write", ts=ts, before=None, after=inp["content"])
+    asked = [inp] if name == "Edit" else [e for e in inp.get("edits") or [] if isinstance(e, dict)] if name == "MultiEdit" else []
+    reps = [Replacement(old=str(e.get("old_string") or ""), new=str(e.get("new_string") or ""), all=bool(e.get("replace_all"))) for e in asked]
+    return FileEdit(path=fp, tool=str(name), ts=ts, before=None, after=None, replacements=reps) if reps else None
+
+
+def _subagent_call(path: Path) -> str | None:
+    """The tool call that started a subagent (its .meta.json's toolUseId)."""
+    try:
+        meta = json.loads(path.with_name(path.name[: -len(".jsonl")] + ".meta.json").read_text())
+    except (OSError, ValueError):
+        return None
+    return meta.get("toolUseId") if isinstance(meta, dict) else None
+
+
+def _blocks(entry: dict[str, Any]) -> list[dict[str, Any]]:
+    """A transcript entry's content blocks (none when its content is a plain string)."""
+    content = (entry.get("message") or {}).get("content")
+    return [b for b in content if isinstance(b, dict)] if isinstance(content, list) else []
 
 
 def _response_entry(entries: list[dict[str, Any]], anchor: str) -> int | None:

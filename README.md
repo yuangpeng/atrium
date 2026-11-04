@@ -138,7 +138,8 @@ A project-centric workbench for coding agents — Claude Code, Codex and Antigra
    The fork is a new agent that remembers the conversation up to there and works in a **new
    worktree** (a branch from the original's commit, with the files of that moment — taken from the
    turn snapshots, uncommitted changes included; in the middle of a turn, the snapshot from when it
-   began with the agent's own file edits up to the fork point made again), an existing worktree, or
+   began with the agent's own file edits up to the fork point made again, its subagents' too — an
+   edit that can't be made again is named, to you and to the fork), an existing worktree, or
    the same directory.
    This is also how a conversation changes worktree while it has one: an agent stays bound to its
    directory (its process, its transcript, the paths in its history, the uncommitted edits it made

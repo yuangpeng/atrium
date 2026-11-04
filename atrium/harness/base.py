@@ -139,8 +139,20 @@ class SessionSummary:
 
 
 @dataclass
+class Replacement:
+    """Part of an edit as the tool made it: ``old`` (an exact string) became ``new`` — every occurrence with ``all``,
+    else the only one — searched for in ``lines`` (first, last; 1-based) when the tool was told where."""
+
+    old: str
+    new: str
+    all: bool = False
+    lines: tuple[int, int] | None = None
+
+
+@dataclass
 class FileEdit:
-    """One file modification recorded in a transcript (for per-session diffs)."""
+    """One file modification recorded in a transcript (for per-session diffs, and to make it again in a fork's
+    worktree: ``after``, else ``replacements``, ``append`` or ``patch``)."""
 
     path: str
     tool: str
@@ -149,6 +161,9 @@ class FileEdit:
     after: str | None  # content after this edit (None = unknown / deleted)
     kind: str = "update"  # create | update | delete
     patch: str | None = None  # unified-diff hunks, when the transcript records a patch instead of contents
+    replacements: list[Replacement] | None = None  # the edit as string replacements, in order, when the tool made it so
+    append: str | None = None  # text added at the end of the file
+    moved_to: str | None = None  # the edit also moved the file there (its new path follows as an edit of its own)
 
 
 @dataclass
@@ -343,6 +358,12 @@ class Harness(ABC):
         model's response and the results of the tools it called — and all before it, in the middle of a
         turn too (``turn_ts`` then says when that turn started)."""
         raise NotImplementedError(f"{self.label} sessions can't be forked from an earlier message")
+
+    async def fork_edits(self, session_id: str, cwd: str, point: ForkPoint) -> list[FileEdit] | None:
+        """For a ``point`` in the middle of a turn: the file edits the agent made in that turn up to the point, in
+        order, its subagents' too (a fork's worktree gets the files the turn began with, then these again). None:
+        not known."""
+        return None
 
     async def fork_session(self, session_id: str, cwd: str, point: ForkPoint, *, target_cwd: str, title: str, note: str = "") -> str:
         """Copy the conversation up to ``point`` into a new session that works in ``target_cwd``.

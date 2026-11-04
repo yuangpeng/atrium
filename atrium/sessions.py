@@ -15,8 +15,8 @@ from typing import Any, Callable
 
 from . import gitops, snapshots
 from .board.prompts import (
-    FORK_FILES, FORK_MID_TURN, FORK_MOVED_APPEND, FORK_SAME_DIR_APPEND, GIT_AGENT_APPEND, MOVED_APPEND, REVIEW_AGENT_APPEND,
-    SESSION_AGENT_APPEND, WORKTREE_APPEND,
+    FORK_FILES, FORK_MID_TURN, FORK_MISSED, FORK_MOVED_APPEND, FORK_SAME_DIR_APPEND, GIT_AGENT_APPEND, MOVED_APPEND,
+    REVIEW_AGENT_APPEND, SESSION_AGENT_APPEND, WORKTREE_APPEND,
 )
 from .board.tools import BOARD_SERVER, board_toolset
 from .capture import CaptureContext, capture
@@ -24,10 +24,10 @@ from .config import UPLOADS_DIR, config
 from .events import hub
 from .gitagent import GIT_AGENT_ALLOWED_TOOLS, GIT_SERVER, git_toolset
 from .harness import all_harnesses, get_harness
-from .changes import apply_patch
+from .changes import apply_patch, apply_replacements
 from .fs import read_text
 from .harness.base import Attachment, Compaction, FileEdit, ForkPoint, Item, LiveSession, LiveSpec, Rewind, SessionSummary, SubagentSummary
-from .harness.util import iso_to_epoch, upload_url
+from .harness.util import upload_url
 from .mcp.web import WEB_SERVER, web_toolset
 from .notify import notifier
 from .project import Project
@@ -581,9 +581,9 @@ class SessionManager:
         if at:
             point = await harness.fork_point(sid, src_cwd, at.get("anchor") or None, int(at.get("user_index") or 0) or None,
                                              after=bool(at.get("after")))
-        if point.next_ts is None and h and h.state in ("starting", "running", "waiting"):  # the kept part ends with the turn in progress
+        mid_turn = point.turn_ts is not None  # (it may end with the step the agent is working on now: that isn't kept)
+        if point.next_ts is None and not mid_turn and h and h.state in ("starting", "running", "waiting"):  # it ends with the turn in progress
             raise ValueError("The agent is still working on that turn: wait for it to end (or stop it), or fork from an earlier point")
-        mid_turn = point.turn_ts is not None
         meta = project.session_meta(sid)
         summary = None if meta.get("name") else await self.find_summary(project, sid)
         src_name = meta.get("name") or (summary.title if summary else None) or "Agent"
@@ -611,17 +611,17 @@ class SessionManager:
                 root = os.path.realpath(str(ws.get("path") or ""))
             sub = os.path.join(root, os.path.relpath(src_cwd, src_root))  # the same subdirectory, if the agent works in one
             target = os.path.realpath(sub if os.path.isdir(sub) else root)
+        missed: list[str] = []
         try:
             project.resolve(".", root=target)  # must belong to the project
             history = _history_snapshots(meta, point)
-            if created:
-                files = await asyncio.to_thread(self._carry, history, point, src_cwd, created["path"]) if carry else "committed"
-            note = _fork_note({"name": src_name, "cwd": src_cwd, "files": files, "mid_turn": mid_turn}, target)
+            if created and carry:
+                edits = await harness.fork_edits(sid, src_cwd, point) if mid_turn else None
+                files, missed = await asyncio.to_thread(self._carry, history, point, src_cwd, created["path"], edits)
+            elif created:
+                files = "committed"
+            note = _fork_note({"name": src_name, "cwd": src_cwd, "files": files, "missed": missed, "mid_turn": mid_turn}, target)
             new_sid = await harness.fork_session(sid, src_cwd, point, target_cwd=target, title=title, note=note)
-            if created and files == "turn":  # the files when that turn began: the agent's own edits in it, up to the fork point, again
-                edits = await asyncio.to_thread(harness.file_edits, new_sid, target)
-                old_root = src_root if not gone else next((s["root"] for s in reversed(history) if s.get("root")), src_root)
-                await asyncio.to_thread(_replay_edits, edits, point.turn_ts, old_root or src_cwd, created["path"])
         except BaseException:
             if created:  # nothing refers to it yet
                 await gitops.run_git(project.path, "worktree", "remove", "--force", created["path"], check=False)
@@ -635,7 +635,7 @@ class SessionManager:
             model=(h.model if h else None) or meta.get("model") or None, effort=(h.effort if h else None) or meta.get("effort") or None,
             mode=(h.mode if h else None) or meta.get("mode") or None,
             forked_from={"session": sid, "name": src_name, "cwd": src_cwd, "files": files, "user_index": (at or {}).get("user_index"),
-                         "mid_turn": mid_turn or None},
+                         "mid_turn": mid_turn or None, "missed": missed or None},
             fork_snapshots=history or None,
         )
         branch = _branch_of(target)
@@ -655,7 +655,7 @@ class SessionManager:
             await self.close(sid)
         self.invalidate(project)
         hub.publish(f"project:{project.id}", {"type": "sessions_changed"})
-        out: dict[str, Any] = {"id": new_sid, "cwd": target, "files": files, "worktree": created}
+        out: dict[str, Any] = {"id": new_sid, "cwd": target, "files": files, "missed": missed, "worktree": created}
         if starting:
             try:
                 await self.send(project, new_sid, prompt or "", attachments)
@@ -665,26 +665,26 @@ class SessionManager:
         return out
 
     @staticmethod
-    def _carry(snaps: list[dict[str, Any]], point: ForkPoint, src_cwd: str, dest_root: str) -> str:
-        """Give a forked worktree its source's files at the fork point. Returns what it got:
-        "fork-point", "turn" (in the middle of a turn: the files when it began, the edits made in it
-        then to be made again), "current" (that moment has no snapshot) or "committed" (no snapshot at all)."""
+    def _carry(snaps: list[dict[str, Any]], point: ForkPoint, src_cwd: str, dest_root: str,
+               edits: list[FileEdit] | None) -> tuple[str, list[str]]:
+        """Give a forked worktree its source's files at the fork point. Returns what it got — "fork-point", "turn" (in
+        the middle of a turn: the files the turn began with, then the agent's ``edits`` in it up to the point made
+        again), "current" (that moment has no snapshot) or "committed" (no snapshot at all) — and the files (relative
+        paths) an edit couldn't be made again in."""
         snap, files = None, "fork-point"
-        if point.turn_ts is not None:  # turn snapshots are taken as turns start and end: the one that turn started with
-            t = point.turn_ts  # (± 1 s: Codex's and Antigravity's times are whole seconds)
-            near = [s for s in snaps if s.get("tree") and t - 5 < (s.get("ts") or 0) <= t + 1]
-            near = [s for s in near if s.get("phase") == "start"] or [s for s in near if s["ts"] <= t]  # else: the turn before's end
-            snap = min(near, key=lambda s: abs(s["ts"] - t)) if near else None
-            snap = snap if snap and snapshots.tree_exists(dest_root, snap["tree"]) else None
+        if point.turn_ts is not None:
+            snap = _turn_snapshot(snaps, point, dest_root) if edits is not None else None
             files = "turn" if snap else "current"
         elif point.next_ts is not None:  # forking before a later message: the files back then
             snap = _snapshot_at(snaps, point, dest_root)
             files = "fork-point" if snap else "current"
         snap = snap or snapshots.take(src_cwd, "fork")
         if not snap:
-            return "committed"
+            return "committed", []
         snapshots.restore(dest_root, snap["tree"])
-        return files
+        if files != "turn" or edits is None:
+            return files, []
+        return files, _replay_edits(edits, src_cwd, snap.get("root") or src_cwd, dest_root)
 
     async def move(self, project: Project, sid: str, workspace: dict[str, Any]) -> dict[str, Any]:
         """Carry on the same conversation in another directory — e.g. after its worktree was removed.
@@ -1083,6 +1083,18 @@ def _history_snapshots(meta: dict[str, Any], point: ForkPoint) -> list[dict[str,
     return sorted(snaps, key=lambda s: s.get("ts") or 0)[-MAX_SNAPSHOTS:]
 
 
+def _turn_snapshot(snaps: list[dict[str, Any]], point: ForkPoint, repo: str) -> dict[str, Any] | None:
+    """The turn snapshot with the files a turn began with (a fork point in the middle of it): the last one taken by then
+    — its own start snapshot, or, if it had none (its message came while the agent worked), the turn before's end.
+    ± 1 s: Codex's and Antigravity's times are whole seconds; never after the first step dropped."""
+    t = point.turn_ts or 0
+    hi = min(t + 1, point.next_ts) if point.next_ts is not None else t + 1
+    found = [s for s in snaps if s.get("tree") and t - 600 < (s.get("ts") or 0) <= hi]
+    if found and snapshots.tree_exists(repo, found[-1]["tree"]):  # (sorted by time: _history_snapshots)
+        return found[-1]
+    return None
+
+
 def _snapshot_at(snaps: list[dict[str, Any]], point: ForkPoint, repo: str) -> dict[str, Any] | None:
     """The turn snapshot with the files at a fork point: the last one taken after the kept part
     ended and before the first dropped message was sent (± 1 s: Codex times are whole seconds)."""
@@ -1101,35 +1113,62 @@ def _fork_note(fork: dict[str, Any], cwd: str) -> str:
         note = FORK_SAME_DIR_APPEND.format(source=source)
     else:
         note = FORK_MOVED_APPEND.format(source=source, old=old, cwd=cwd, files=FORK_FILES.get(fork.get("files") or "", FORK_FILES[""]))
+    if fork.get("missed"):
+        missed = fork["missed"]
+        note += " " + FORK_MISSED.format(files=", ".join(missed[:20]) + (f" and {len(missed) - 20} more" if len(missed) > 20 else ""))
     return f"{note} {FORK_MID_TURN}" if fork.get("mid_turn") else note
 
 
-def _replay_edits(edits: list[FileEdit], since: float | None, src_root: str, dest_root: str) -> None:
-    """Make again, in a forked worktree, the file edits the agent made from ``since`` on (the fork's own history:
-    up to the fork point). Paths are the source checkout's (``src_root``). An edit that no longer applies is skipped."""
+def _replay_edits(edits: list[FileEdit], src_cwd: str, src_root: str, dest_root: str) -> list[str]:
+    """Make the agent's file edits again, in order, in a forked worktree at ``dest_root``: their paths are the source
+    checkout's (``src_root``; relative ones its cwd's). Returns the files (relative paths) an edit couldn't be made
+    again in: its target text isn't there, it isn't text, it can't be written…"""
+    root = os.path.realpath(src_root)
+
+    def rel(p: str) -> str | None:
+        r = os.path.relpath(os.path.realpath(p if os.path.isabs(p) else os.path.join(src_cwd, p)), root)
+        return None if r == os.pardir or r.startswith(os.pardir + os.sep) else r
+
+    missed: list[str] = []
+    moved: tuple[str, str | None] | None = None  # a move's own record of the new path, made with the move
     for e in edits:
-        ts = iso_to_epoch(e.ts)
-        rel = os.path.relpath(os.path.realpath(e.path), os.path.realpath(src_root)) if os.path.isabs(e.path) else e.path
-        if since is None or ts is None or ts < since or rel.startswith(".."):  # (an earlier turn's are in the snapshot)
+        if moved == (e.path, e.ts):
+            moved = None
             continue
-        dest = os.path.join(dest_root, rel)
+        r = rel(e.path)
+        if r is None:  # outside the checkout
+            continue
+        dest = os.path.join(dest_root, r)
         try:
             if e.kind == "delete":
-                if os.path.isfile(dest):
+                if os.path.lexists(dest):
                     os.unlink(dest)
                 continue
+            current = read_text(Path(dest)) if os.path.isfile(dest) else None
             after = e.after
-            if after is None and e.patch:
-                current = read_text(Path(dest)) if os.path.isfile(dest) else ""
+            if after is None and e.replacements:
+                after = apply_replacements(current, e.replacements)
+            elif after is None and e.append is not None:
+                after = (current or "") + e.append
+            elif after is None and e.patch:
                 after = apply_patch(current or "", e.patch)
-            if after is None:
-                log.info("fork: couldn't make %s's edit to %s again", e.tool, rel)
+            to = rel(e.moved_to) if e.moved_to else r
+            if after is None or to is None:
+                log.info("fork: couldn't make %s's edit to %s again", e.tool, r)
+                missed.append(r)
                 continue
-            os.makedirs(os.path.dirname(dest), exist_ok=True)
-            with open(dest, "w", encoding="utf-8") as f:
+            out = os.path.join(dest_root, to)
+            os.makedirs(os.path.dirname(out), exist_ok=True)
+            with open(out, "w", encoding="utf-8") as f:
                 f.write(after)
+            if e.moved_to:
+                moved = (e.moved_to, e.ts)
+                if out != dest and os.path.lexists(dest):
+                    os.unlink(dest)
         except OSError as err:
-            log.info("fork: couldn't make the edit to %s again: %s", rel, err)
+            log.info("fork: couldn't make the edit to %s again: %s", r, err)
+            missed.append(r)
+    return sorted(set(missed))
 
 
 def _moved_note(move: dict[str, Any]) -> str:

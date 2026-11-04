@@ -725,7 +725,7 @@ export const api = {
     sid: string,
     body: { at: ForkAt | null; workspace: ForkWorkspace; carry: boolean; name: string; prompt: string; archive_source: boolean },
   ) =>
-    req<{ id: string; cwd: string; files: ForkFiles | null; worktree: { path: string; branch: string } | null; error?: string }>(
+    req<{ id: string; cwd: string; files: ForkFiles | null; missed?: string[]; worktree: { path: string; branch: string } | null; error?: string }>(
       "POST",
       `/api/p/${pid}/sessions/${sid}/fork`,
       body,

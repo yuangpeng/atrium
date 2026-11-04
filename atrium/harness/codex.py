@@ -13,6 +13,7 @@ directories); transcripts are the rollout files under ``~/.codex/sessions``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import mimetypes
@@ -82,6 +83,7 @@ SLASH_RE = re.compile(r"/([^\s/]+)(?:\s+(.*))?", re.S)
 SKILL_RE = re.compile(r"(?<![\w$])\$([A-Za-z0-9][\w.:-]*)")  # "$name" mentions a skill
 SKILLS_TTL = 60  # seconds a skills/list answer is reused
 STEER_EDIT = "That message steered a turn already running, and Codex can only go back to where a turn starts: edit the message that started it"
+FORKS_READ_IT = "Forks of this conversation still read its history: delete them first, or archive this one instead"
 # the prompt Codex records for a review of uncommitted changes (a turn of its own, beside the review's)
 REVIEW_UNCOMMITTED = "Review the current code changes (staged, unstaged, and untracked files) and provide prioritized findings."
 # What the TUI's /init sends (codex-cli 0.160)
@@ -1114,11 +1116,15 @@ class CodexHarness(Harness):
         return cwd
 
     async def delete_session(self, session_id: str, cwd: str) -> None:
+        # a fork reads the start of its history from this thread's rollout; Codex knows its own forks, not those Atrium
+        # wrote (a fork in the middle of a turn, see fork_session)
+        if await asyncio.to_thread(_history_readers, session_id):
+            raise ValueError(FORKS_READ_IT)
         try:
             await self.client.request("thread/delete", {"threadId": session_id}, timeout=30)
         except RpcError as e:
-            if "forked history" in str(e):  # a fork reads the start of its history from this thread's rollout
-                raise ValueError("Forks of this conversation still read its history: delete them first, or archive this one instead") from e
+            if "forked history" in str(e):
+                raise ValueError(FORKS_READ_IT) from e
             raise
         self._paths.pop(session_id, None)
 
@@ -1137,6 +1143,8 @@ class CodexHarness(Harness):
             starts = [i for i, t in enumerate(turns) if i not in reviews and any(it.get("type") == "userMessage" for it in t.get("items") or [])]
             if user_index < len(starts):
                 at = starts[user_index] - 1
+        if at is None and after and turns and turns[-1].get("status") == "inProgress":  # its items are listed once done
+            raise ValueError("That step is still running: wait for its tools to finish, or fork from an earlier one")
         if at is None or at < 0:
             raise ValueError("Couldn't find that point of the conversation in the thread")
         if after and anchor:
@@ -1155,15 +1163,17 @@ class CodexHarness(Harness):
         lines = self._turn_lines(session_id, turn["id"])
         if lines is None:
             raise ValueError("This Codex conversation can only be forked between turns (its history has no item records)")
-        end = _step_end(lines, anchor)
-        if end is None:
+        found = _step_end(lines, anchor)
+        if found is None:
             raise ValueError("That step is still running: wait for its tools to finish, or fork from an earlier one")
+        end, called = found
         if end < 0:  # one of the turn's own items (its plan, its end): after the turn
             return None
         rest = lines[end + 1:]
-        if not any(d.get("type") == "response_item" or (d.get("payload") or {}).get("type") == "item_completed" for d in rest):
+        # a step that called tools doesn't end its turn, whether what came next is recorded yet or not (it may still run)
+        if not called and not any(d.get("type") == "response_item" or (d.get("payload") or {}).get("type") == "item_completed" for d in rest):
             return None
-        return ForkPoint(cut_ts=iso_to_epoch(lines[end].get("timestamp")), next_ts=iso_to_epoch(rest[0].get("timestamp")),
+        return ForkPoint(cut_ts=iso_to_epoch(lines[end].get("timestamp")), next_ts=iso_to_epoch(rest[0].get("timestamp")) if rest else None,
                          turn_ts=_epoch(turn.get("startedAt")), part={"turn": turn["id"], "lines": lines[: end + 1]})
 
     def _turn_lines(self, session_id: str, turn_id: str, seen: frozenset[str] = frozenset()) -> list[dict[str, Any]] | None:
@@ -1190,6 +1200,9 @@ class CodexHarness(Harness):
             return self._turn_lines(base, turn_id, seen | {session_id})
         return None
 
+    async def fork_edits(self, session_id: str, cwd: str, point: ForkPoint) -> list[FileEdit] | None:
+        return _rollout_edits(json.dumps(d) for d in point.part["lines"]) if point.part else None
+
     async def fork_session(self, session_id: str, cwd: str, point: ForkPoint, *, target_cwd: str, title: str, note: str = "") -> str:
         params: dict[str, Any] = {"threadId": session_id, "cwd": target_cwd, "excludeTurns": True}
         if point.part:  # the turns before the one cut in the middle; what is kept of it is added to the fork's rollout
@@ -1205,19 +1218,30 @@ class CodexHarness(Harness):
             # Codex forks between turns only. What is kept of the turn cut in the middle goes into a copy of that
             # fork's rollout under a new id: the app-server keeps a thread it loaded (and its count of the lines
             # it wrote), so the thread it made can't be added to; it is deleted, and the copy loaded instead.
-            path = thread.get("path") or str(self.transcript_path(tid, target_cwd) or "")
-            if not path:
-                raise RuntimeError(f"the fork's rollout (thread {tid}) wasn't found")
-            await self.client.request("thread/unsubscribe", {"threadId": tid}, timeout=5)
-            await _settled(Path(path))
-            made, tid = tid, _uuid7()
-            self._paths[tid] = str(await asyncio.to_thread(_rollout_with_turn, Path(path), made, tid, point.part))
+            made, path, copy = tid, thread.get("path") or str(self.transcript_path(tid, target_cwd) or ""), None
             try:
-                await self.client.request("thread/delete", {"threadId": made}, timeout=30)
-            except Exception as e:
-                log.warning("couldn't delete thread %s, made for fork %s: %s", made, tid, e)
-            self._paths.pop(made, None)
-            await self.client.request("thread/resume", {"threadId": tid, "excludeTurns": True}, timeout=60)
+                if not path:
+                    raise RuntimeError(f"the fork's rollout (thread {made}) wasn't found")
+                await self.client.request("thread/unsubscribe", {"threadId": made}, timeout=5)
+                await _settled(Path(path))
+                tid = _uuid7()
+                copy = await asyncio.to_thread(_rollout_with_turn, Path(path), made, tid, point.part)
+                self._paths[tid] = str(copy)
+                # (its last turn ran in the original's directory: say where it works now, as a move does)
+                await self.client.request("thread/resume", {"threadId": tid, "cwd": target_cwd, "excludeTurns": True}, timeout=60)
+            except BaseException:
+                if copy:  # nothing is left of the fork
+                    with contextlib.suppress(Exception):
+                        await self.client.request("thread/unsubscribe", {"threadId": tid}, timeout=5)
+                    copy.unlink(missing_ok=True)
+                    self._paths.pop(tid, None)
+                raise
+            finally:
+                try:
+                    await self.client.request("thread/delete", {"threadId": made}, timeout=30)
+                except Exception as e:
+                    log.warning("couldn't delete thread %s, made for a fork: %s", made, e)
+                self._paths.pop(made, None)
         if note:  # thread/resume doesn't show the model changed developerInstructions, so the note goes into the history
             item = {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": note}]}
             try:
@@ -1432,6 +1456,27 @@ def _rollouts(thread_id: str) -> list[Path]:
     return sorted(found, key=lambda p: p.name)
 
 
+def _history_readers(thread_id: str) -> list[str]:
+    """Threads whose history starts with this thread's (``history_base`` in their rollout's first line): its forks."""
+    found: list[str] = []
+    key = thread_id.encode()
+    for base in (codex_home() / "sessions", codex_home() / "archived_sessions"):
+        for p in base.rglob("rollout-*.jsonl") if base.is_dir() else []:
+            if thread_id in p.name:  # its own
+                continue
+            try:
+                with p.open("rb") as fh:
+                    if key not in fh.read(1024):  # (forked_from_id comes first)
+                        continue
+                    fh.seek(0)
+                    meta = (_loads(fh.readline()) or {}).get("payload") or {}
+            except OSError:
+                continue
+            if isinstance(meta, dict) and (meta.get("history_base") or {}).get("thread_id") == thread_id:
+                found.append(str(meta.get("id") or p.name))
+    return found
+
+
 def _rollout_lines(path: Path):
     """A rollout's lines, parsed (unreadable ones skipped)."""
     try:
@@ -1452,10 +1497,10 @@ def _rollout_lines(path: Path):
 _CALL_ITEMS = ("function_call", "custom_tool_call", "local_shell_call", "tool_search_call")
 
 
-def _step_end(lines: list[dict[str, Any]], anchor: str) -> int | None:
-    """In a turn's rollout lines, the last line of the model step that holds chat item ``anchor``: the model's
-    response (it ends with Codex's token_usage_record) and the outputs of the tools it called. None if it isn't
-    complete yet; -1 if the anchor isn't in these lines."""
+def _step_end(lines: list[dict[str, Any]], anchor: str) -> tuple[int, bool] | None:
+    """In a turn's rollout lines, the last line of the model step that holds chat item ``anchor`` — the model's
+    response (it ends with Codex's token_usage_record) and the outputs of the tools it called — and whether it called
+    any. None if it isn't complete yet; (-1, False) if the anchor isn't in these lines."""
     def holds(d: dict[str, Any]) -> bool:
         p = d.get("payload") or {}
         if d.get("type") == "event_msg" and p.get("type") == "item_completed":
@@ -1464,7 +1509,7 @@ def _step_end(lines: list[dict[str, Any]], anchor: str) -> int | None:
 
     at = next((i for i, d in enumerate(lines) if holds(d)), None)
     if at is None:
-        return -1
+        return -1, False
     marks = [i for i, d in enumerate(lines) if d.get("type") == "token_usage_record"]
     start = max((i for i in marks if i < at), default=-1) + 1
     end = next((i for i in marks if i >= at), None)
@@ -1472,6 +1517,7 @@ def _step_end(lines: list[dict[str, Any]], anchor: str) -> int | None:
         return None
     pending = {p.get("call_id") for d in lines[start:end] if d.get("type") == "response_item"
                and (p := d.get("payload") or {}).get("type") in _CALL_ITEMS and p.get("call_id")}
+    called = bool(pending)
     last, i = end, end + 1
     while pending and i < len(lines):
         p = lines[i].get("payload") or {}
@@ -1482,7 +1528,7 @@ def _step_end(lines: list[dict[str, Any]], anchor: str) -> int | None:
         return None
     while i < len(lines) and lines[i].get("type") == "event_msg" and (lines[i].get("payload") or {}).get("type") == "token_count":
         last, i = i, i + 1
-    return last
+    return last, called
 
 
 def _rollout_with_turn(path: Path, made: str, thread_id: str, part: dict[str, Any]) -> Path:
@@ -1527,14 +1573,15 @@ def _uuid7() -> str:
 
 
 async def _settled(path: Path) -> None:
-    """Wait until a rollout stops growing (what Codex had to write about a thread it just made is written)."""
-    size = -1
-    for _ in range(30):
-        now = path.stat().st_size if path.exists() else -1
-        if now == size:
+    """Wait until a rollout is there and stops growing (what Codex had to write about a thread it just made is written)."""
+    size = None
+    for _ in range(50):
+        now = path.stat().st_size if path.exists() else None
+        if now is not None and now == size:
             return
         size = now
         await asyncio.sleep(0.1)
+    raise RuntimeError(f"Codex didn't finish writing {path.name}" if size is not None else f"Codex didn't write {path.name}")
 
 
 def _loads(line: bytes) -> dict[str, Any] | None:
@@ -1723,7 +1770,7 @@ def _edits_from_change(fp: str, c: dict[str, Any], ts: str | None) -> list[FileE
     if kind == "delete":
         return [FileEdit(path=fp, tool="Patch", ts=ts, before=c.get("content"), after=None, kind="delete")]
     move = c.get("move_path")
-    edits = [FileEdit(path=fp, tool="Patch", ts=ts, before=None, after=None, kind="update", patch=c.get("unified_diff") or "")]
+    edits = [FileEdit(path=fp, tool="Patch", ts=ts, before=None, after=None, kind="update", patch=c.get("unified_diff") or "", moved_to=move or None)]
     if move:
         edits.append(FileEdit(path=move, tool="Patch", ts=ts, before=None, after=None, kind="update", patch=c.get("unified_diff") or ""))
     return edits

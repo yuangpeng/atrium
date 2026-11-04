@@ -65,6 +65,9 @@ agent may still be changing the same files. Re-read a file before you edit it.
 FORK_MID_TURN = """The fork point was in the middle of one of your turns: what came after it in the original conversation is not
 part of this one.""".replace("\n", " ")
 
+FORK_MISSED = """An edit you made to these files in that turn couldn't be made again, so they may not be as you left them at the
+fork point: {files}. Re-read them before you go on.""".replace("\n", " ")
+
 FORK_FILES = {
     "fork-point": "Its files were restored to how they were at the fork point, uncommitted changes included.",
     "turn": ("Its files were restored to how they were when the turn the fork point is in began, then the file edits you made "
