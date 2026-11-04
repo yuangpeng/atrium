@@ -97,6 +97,15 @@ def _defaults() -> dict[str, Any]:
     return config.harness_defaults("grok")
 
 
+_tasks: set[asyncio.Task[Any]] = set()  # work that goes on after whoever started it returned (or gave up)
+
+
+def _background(coro: Any) -> None:
+    task = asyncio.ensure_future(coro)
+    _tasks.add(task)
+    task.add_done_callback(_tasks.discard)
+
+
 # --------------------------------------------------------------------------
 # The CLI
 # --------------------------------------------------------------------------
@@ -928,13 +937,16 @@ class GrokLiveSession(LiveSession):
                 assert self.client
                 pid = f"atrium-{uuid.uuid4().hex[:12]}"  # so that a turn Grok starts itself is told apart
                 self._mine.add(pid)
+                sent, noted = self._with_notes(prompt)
                 try:
-                    res = await self.client.request("session/prompt", {"sessionId": self.session_id, "prompt": self._with_notes(prompt),
+                    res = await self.client.request("session/prompt", {"sessionId": self.session_id, "prompt": sent,
                                                                        "_meta": {"promptId": pid}}, timeout=None)
                 except AcpError:
-                    self._told()  # the agent had the message: it failed on the model's side
+                    if noted:  # the agent had the message: it failed on the model's side
+                        self._told()
                     raise
-                self._told()
+                if noted:
+                    self._told()
                 reason = (res or {}).get("stopReason") or "end_turn"
                 subtype = STOP_SUBTYPE.get(reason, reason)
                 usage = ((res or {}).get("_meta") or {}).get("usage")
@@ -955,12 +967,15 @@ class GrokLiveSession(LiveSession):
         if subtype == "error" and not (self.client and self.client.alive):
             self._set_state("error")  # the agent is gone: the next message starts a new one
 
-    def _with_notes(self, prompt: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """The message with what Atrium has to tell the agent ahead of it (the chat shows the message alone)."""
-        if not self._notes or not prompt or prompt[0].get("type") != "text":
-            return prompt
+    def _with_notes(self, prompt: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
+        """The message with what Atrium has to tell the agent ahead of it (the chat shows the message alone), and
+        whether that went with it: not with one of the agent's commands, which Grok runs only when the text starts
+        with it — the notes wait for the next message then."""
+        text = prompt[0].get("text") if prompt and prompt[0].get("type") == "text" else None
+        if not self._notes or not isinstance(text, str) or SLASH_RE.fullmatch(text.strip()):
+            return prompt, False
         note = "\n\n".join(self._notes)
-        return [{**prompt[0], "text": f"<system-reminder>\n{note}\n</system-reminder>\n\n{prompt[0].get('text') or ''}"}, *prompt[1:]]
+        return [{**prompt[0], "text": f"<system-reminder>\n{note}\n</system-reminder>\n\n{text}"}, *prompt[1:]], True
 
     def _told(self) -> None:
         self._notes = []
@@ -1639,14 +1654,16 @@ class GrokHarness(Harness):
         started = time.time()
         os.makedirs(cwd, exist_ok=True)
         os.makedirs(RUNTIME_DIR, exist_ok=True)
+        sid = str(uuid.uuid4())  # the one-shot's session, named up front: it goes however the call ends
         # the prompt in a file of the user's alone, not on the command line: others can read that, and it holds
         # only so much (the Tracker's runs to 60 000 characters, 128 KiB on Linux)
         fd, prompt_file = tempfile.mkstemp(prefix="grok-prompt-", suffix=".txt", dir=RUNTIME_DIR)
+        proc: asyncio.subprocess.Process | None = None
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(prompt)
-            argv = [binary, "--no-auto-update", "--prompt-file", prompt_file, "--output-format", "json", "--json-schema", json.dumps(schema),
-                    "--system-prompt-override", system, "--max-turns", "4"]
+            argv = [binary, "--no-auto-update", "--prompt-file", prompt_file, "--session-id", sid, "--output-format", "json",
+                    "--json-schema", json.dumps(schema), "--system-prompt-override", system, "--max-turns", "4"]
             if model:
                 argv += ["-m", model]
             if effort:
@@ -1655,16 +1672,19 @@ class GrokHarness(Harness):
             try:
                 out, err = await asyncio.wait_for(proc.communicate(), timeout=600)
             except asyncio.TimeoutError:
-                proc.kill()
-                raise RuntimeError("Grok Build took too long to answer")
+                raise RuntimeError("Grok Build took too long to answer") from None
         finally:
+            if proc and proc.returncode is None:  # it took too long, or the caller gave up first (the Tracker's own timeout)
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
             os.unlink(prompt_file)
+            _background(self.delete_session(sid, cwd))  # a one-shot: nothing to keep in Grok's session list
         try:
             res = json.loads(out.decode(errors="replace") or "{}")
         except ValueError:
             res = {}
-        if res.get("sessionId"):  # a one-shot: nothing to keep in Grok's session list
-            await self.delete_session(res["sessionId"], cwd)
         data = res.get("structuredOutput")
         if not isinstance(data, dict):
             text = res.get("text") or ""
