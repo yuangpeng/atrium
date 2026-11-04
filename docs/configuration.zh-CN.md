@@ -117,7 +117,7 @@ Atrium 只有一个属于自己的配置文件：`~/.atrium/settings.json`。其
 | | `always-proceed` | Always proceed | 从不询问。默认值。 |
 | Grok Build | `ask` | Ask | 读取和 Grok 认为安全的命令直接运行；编辑和其他操作前询问。 |
 | | `auto` | Auto | 由 Grok 的分类器批准安全的操作，有风险的询问。 |
-| | `always-approve` | Always approve | 从不询问；`config.toml` 里的 deny 规则仍然有效。默认值。 |
+| | `always-approve` | Always approve | 只有 `ask` 规则覆盖的命令、hook 要求确认的操作才询问；deny 规则仍然有效。默认值。 |
 
 Git Agent 和 Code Review Agent 有自己的模式，不受这些设置影响：它们只读，Git Agent 做其他任何事之前都会询问。
 
@@ -564,8 +564,10 @@ Grok 自己的默认值。模型选择器里列出 *Default* 和 `grok models` �
 **Atrium 为每个 agent 设置的内容：**
 
 - **权限模式**（`ask`、`auto`、`always-approve`），只作用于这个 agent，可以在运行中切换：不使用 `config.toml`
-  里的 `[ui] permission_mode`，但它的 `[permission]` 规则有效。拒绝一个操作会结束 Grok 的这一轮；拒绝时
-  写下的说明会作为你的下一条消息发给 agent，仍算同一轮。
+  里的 `[ui] permission_mode`，但它的 `[permission]` 规则有效：在 `always-approve` 下，`ask` 规则覆盖的命令
+  （以及 hook 要求确认的操作）仍由你批准，只批准这一次（选 *Always allow* 则由 Grok 为这个项目记住）。拒绝一个
+  操作会结束 Grok 的这一轮；拒绝时写下的说明会作为你的下一条消息发给 agent，仍算
+  同一轮。*Deny & stop* 让这一轮就此结束，写下的说明随你的下一条消息交给 agent。
 - **系统提示词里 Atrium 的那一段**，在 agent 新建时加入：Grok 会保留会话的提示词，所以改动只影响之后新建的
   agent，不影响恢复的。
 - **Atrium 的工具**：以命名空间命名的进程内 MCP 服务器（`board`、`web`、`graph`、`review`），agent 通过它和
@@ -575,7 +577,12 @@ Grok 自己的默认值。模型选择器里列出 *Default* 和 `grok models` �
 - 不检查更新（`GROK_DISABLE_AUTOUPDATER`）。
 
 它的会话就是 CLI 自己的，保存在 `~/.grok/sessions/<目录>/<id>/`：`grok --resume` 能列出 Atrium 启动的 agent，
-Atrium 也能列出你在终端里开的会话。删除 agent 会同时删除它的会话。输入框提供 CLI 的命令（`/compact`、
+Atrium 也能列出你在终端里开的会话。删除 agent 会同时删除它的会话。agent 的 worktree 没了以后，可以在你选的
+地方继续：Atrium 把它的会话归到那个目录下，并随你的下一条消息告诉 agent（Grok 保留它开始时的系统提示词）。
+
+Grok 还会自己接着干：它转入后台的命令结束、monitor 报告、子 agent 或 `/loop` 任务完成时。聊天里把这算作
+普通的一轮，agent 先工作、再回答；这期间你发的消息会等这一轮结束再发。Grok 开启这种回合时给自己的提醒不会
+显示。输入框提供 CLI 的命令（`/compact`、
 `/session-info`、`/deep-research`、`/goal` 等）。Grok 默认还会读取 Claude Code 和 Cursor 的规则与 skills，并运行
 Claude Code 的 hooks；`config.toml` 里的 `[compat.claude]` 和 `[compat.cursor]` 可以关掉。暂不支持：fork agent、
 修改已发送的消息、在侧边栏列出它的子 agent、在 Requests 里看到它的调用。内置的 0.2.111 不接受图片（附加的图片

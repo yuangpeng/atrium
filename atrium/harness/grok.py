@@ -31,6 +31,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 import tomllib
 import urllib.parse
@@ -40,7 +41,7 @@ from typing import Any
 
 from ..capture import loopback_env
 from ..config import RUNTIME_DIR, atomic_write, config
-from .acp import AcpClient
+from .acp import AcpClient, AcpError
 from .base import Attachment, Emit, FileEdit, Harness, Item, LiveSession, LiveSpec, SessionSummary, SlashCommand, ToolSpec
 from .util import attachment_note, clip, iso_to_epoch, parse_json_loose, short, short_tail, split_attachment_note, upload_url
 
@@ -59,7 +60,13 @@ EFFORT_ORDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 DEFAULT_WINDOW = 200_000  # Grok's context window for a custom model that doesn't set one
 CLIENT_INFO = {"name": "atrium", "title": "Atrium", "version": "0.1.0"}
 STOP_SUBTYPE = {"end_turn": "success", "cancelled": "interrupted", "max_tokens": "error_max_tokens",
-                "max_turn_requests": "error_max_turns", "refusal": "refusal"}
+                "max_turn_requests": "error_max_turns", "refusal": "refusal", "error": "error", "rate_limit": "error"}
+# Grok's own turns (a command it moved to the background ended, a monitor saw something, /loop fired…) run prompts it
+# makes up itself; these are reminders for its model alone, kept out of the chat as Grok keeps them out of its own
+# (hideFromScrollback). The others (/loop's scheduled prompt…) show what they ask.
+HIDDEN_PROMPTS = ("task-completed-", "subagent-completed-", "workflow-completed-", "notifications-", "goal-summary-",
+                  "goal-classifier-nudge-")
+TURN_UPDATES = {"agent_message_chunk", "agent_thought_chunk", "tool_call", "tool_call_update", "plan"}
 READ_TOOLS = {"read_file", "list_dir", "grep", "search_tool", "get_command_or_subagent_output", "scheduler_list"}
 EDIT_TOOLS = {"search_replace", "write"}
 # not offered: the composer's permission picker sets the mode, and /context prints nothing over ACP (the terminal
@@ -71,6 +78,8 @@ _CMD_RULE_RE = re.compile(r"Bash\((.+?)(?::\*)?\)$")  # Claude-style allow rules
 # how Grok records a message sent while a turn ran (x.ai/interject, the terminal's mid-turn messages)
 _INTERJECTED_RE = re.compile(r"\AThe user sent a message while you were working:\n<user_query>\n(.*)\n</user_query>\s*\Z", re.S)
 _EXIT_RE = re.compile(r"\Aexit: (-?\d+)\n?")  # how Grok heads a command's output for the model
+# what Atrium tells the agent ahead of a message (it was moved, what the user said stopping it): not the user's words
+_NOTE_RE = re.compile(r"\A<system-reminder>\n.*?\n</system-reminder>\n\n", re.S)
 # Turning down a call ends Grok's turn: the read-only agent is then told why, as its next message, and carries on.
 READ_ONLY_NOTE = "That action isn't allowed: this agent only reads (it may run the read-only commands it was given). Carry on without it."
 
@@ -343,8 +352,14 @@ def _native(u: dict[str, Any]) -> str | None:
 
 def user_message_text(text: str) -> tuple[str, list[dict[str, Any]]]:
     m = _INTERJECTED_RE.match(text)
-    text, files = split_attachment_note(m.group(1) if m else text)
+    text, files = split_attachment_note(_NOTE_RE.sub("", m.group(1) if m else text, count=1))
     return text, [{**f, "url": upload_url(f["path"])} for f in files]
+
+
+def _hidden(u: dict[str, Any]) -> bool:
+    """A message Grok gave its model itself (a background command ended…): not the user's, not in the chat."""
+    meta = u.get("_meta")
+    return isinstance(meta, dict) and bool(meta.get("hideFromScrollback"))
 
 
 def plan_item(pid: str, entries: Any) -> list[Item]:
@@ -366,6 +381,7 @@ def history_items(entries: list[dict[str, Any]], cwd: str | None = None) -> list
     pos: dict[str, int] = {}  # item key -> index in items
     prompt, last = -1, None  # the prompt being read, and the kind of the update before
     command = False  # that prompt ran one of the agent's commands: what it printed is the command's
+    hidden = False  # that prompt is one Grok gave its model itself (not shown; it still counts for rewinds)
 
     def put(it: Item, key: str | None = None) -> None:
         key = key or f"{it['kind']}:{it['id']}"
@@ -382,21 +398,23 @@ def history_items(entries: list[dict[str, Any]], cwd: str | None = None) -> list
         ts = _ts(d)
         eid = _event_id(d, f"e{n}")
         if k == "user_message_chunk":
-            pi = (u.get("_meta") or {}).get("promptIndex")
+            pi = (u.get("_meta") or {}).get("promptIndex") if isinstance(u.get("_meta"), dict) else None
             text = ((u.get("content") or {}).get("text") or "") if isinstance(u.get("content"), dict) else ""
-            if last == k and items and items[-1]["kind"] == "user" and (pi is None or pi == prompt):
-                items[-1]["text"] += text  # more blocks of the same message
-            else:
+            if not (last == k and (pi is None or pi == prompt)):  # a new message (else more blocks of the one before)
                 prompt = pi if isinstance(pi, int) else prompt + 1
-                put({"kind": "user", "id": f"u{prompt}-{eid}", "text": text, "ts": ts})
-            body, files = user_message_text(items[-1]["text"])
-            items[-1]["text"] = body
-            if files:
-                items[-1]["attachments"] = files
-            cmd = SLASH_RE.fullmatch(body.strip())
-            command = bool(cmd and cmd.group(1) in LOCAL_COMMANDS)
-            if command:
-                items[-1]["command"] = True
+                hidden = _hidden(u)
+                if not hidden:
+                    put({"kind": "user", "id": f"u{prompt}-{eid}", "text": "", "ts": ts})
+            command = False
+            if not hidden and items and items[-1]["kind"] == "user":
+                body, files = user_message_text(items[-1]["text"] + text)
+                items[-1]["text"] = body
+                if files:
+                    items[-1]["attachments"] = files
+                cmd = SLASH_RE.fullmatch(body.strip())
+                command = bool(cmd and cmd.group(1) in LOCAL_COMMANDS)
+                if command:
+                    items[-1]["command"] = True
         elif k in ("agent_message_chunk", "agent_thought_chunk"):
             kind = ("command_output" if command else "text") if k == "agent_message_chunk" else "thinking"
             text = ((u.get("content") or {}).get("text") or "") if isinstance(u.get("content"), dict) else ""
@@ -456,7 +474,7 @@ def digest_update(d: dict[str, Any], tools: dict[str, str]) -> list[str]:
     pre = f"[{time.strftime('%H:%M', time.localtime(ts))}] " if ts else ""
     text = ((u.get("content") or {}).get("text") or "") if isinstance(u.get("content"), dict) else ""
     if k == "user_message_chunk" and text.strip():
-        return [f"{pre}USER: {short(split_attachment_note(text)[0], 600)}"]
+        return [] if _hidden(u) else [f"{pre}USER: {short(user_message_text(text)[0], 600)}"]
     if k == "agent_message_chunk" and text.strip():
         return [f"{pre}AGENT: {short(text, 700)}"]
     if k == "agent_thought_chunk" and text.strip():
@@ -584,6 +602,24 @@ def session_dir(sid: str, cwd: str | None = None) -> Path | None:
     return None
 
 
+def _bucket(cwd: str) -> Path:
+    """The ``sessions/<cwd>`` directory Grok keeps a directory's sessions in: the URL-encoded path, or for a path
+    too long to name a directory after, a hash Grok makes (blake3) — known only from one it made already."""
+    name = urllib.parse.quote(cwd, safe="")
+    if len(name.encode()) <= 255:
+        return sessions_root() / name
+    for d in sessions_root().iterdir():
+        if d.is_dir() and _cwd_of_dir(d) == cwd:
+            return d
+    raise ValueError(f"Grok Build files the sessions of {cwd} under a name only it can make (the path is long): start a new agent there")
+
+
+def _note_path(sid: str) -> Path:
+    """Where moving a session leaves the note its agent is told with the next message (Grok keeps a session's
+    system prompt as it started)."""
+    return RUNTIME_DIR / "grok" / "notes" / f"{sid}.txt"
+
+
 def _read_json(path: Path) -> dict[str, Any]:
     try:
         d = json.loads(path.read_text())
@@ -650,6 +686,11 @@ class GrokLiveSession(LiveSession):
         self._rejected = False  # a call was turned down in this turn (which ends Grok's)
         self._errored = False  # the agent reported this turn's error already
         self._followups: list[str] = []  # what to tell the agent once a turned-down call ended its turn
+        self._notes: list[str] = []  # what to tell it ahead of the next message (it was moved, why it was stopped)
+        self._note_file: Path | None = None  # the move's note, deleted once told
+        self._mine: set[str] = set()  # the prompts Atrium sent (their _meta.promptId); any other is a turn of Grok's own
+        self._own: dict[str, Any] | None = None  # the turn Grok runs of its own accord: its prompt id, when it started
+        self._own_done: set[str] = set()  # Grok's own turns that ended (an update about one may still come)
         self._loading = False  # session/load replays the conversation: nothing of it is new
         self._closed = False
 
@@ -662,12 +703,18 @@ class GrokLiveSession(LiveSession):
             self._set_state("error")
             raise RuntimeError(f"Grok Build could not start: {e}") from e
         self.harness.live[self.session_id] = self
+        note = _note_path(self.session_id)
+        try:  # it was moved: its system prompt still has the old directory
+            self._notes.append(note.read_text())
+            self._note_file = note
+        except OSError:
+            pass
         self._connected("Connected")
-        self._set_state("idle")
+        self._set_state("running" if self._own else "idle")  # Grok may carry on by itself as soon as it resumes
 
     async def send(self, text: str, attachments: list[Attachment] | None = None) -> None:
         prompt = self._prompt(text, attachments or [])
-        if self._turn and not self._turn.done():
+        if self._busy():
             self._queue.append(prompt)  # runs when the turn ends
             return
         self._turn = asyncio.create_task(self._turns_from(prompt), name=f"grok-{self.session_id[:8]}")
@@ -677,7 +724,7 @@ class GrokLiveSession(LiveSession):
         for fut in list(self._pending.values()):
             if not fut.done():  # ACP: a cancelled turn's open requests are answered "cancelled"
                 fut.set_result({"behavior": "deny", "cancelled": True})
-        if self.client and self.client.alive and self._turn and not self._turn.done():
+        if self.client and self.client.alive and self._busy():
             await self.client.notify("session/cancel", {"sessionId": self.session_id})
 
     async def set_permission_mode(self, mode: str) -> None:
@@ -722,12 +769,14 @@ class GrokLiveSession(LiveSession):
             return
         self._closed = True
         self.harness.live.pop(self.session_id, None)
-        if self._turn and not self._turn.done():
+        if self._busy():
             try:
                 await asyncio.wait_for(self.interrupt(), timeout=5)
-                await asyncio.wait_for(asyncio.shield(self._turn), timeout=10)
+                if self._turn and not self._turn.done():
+                    await asyncio.wait_for(asyncio.shield(self._turn), timeout=10)
             except BaseException:
-                self._turn.cancel()
+                if self._turn:
+                    self._turn.cancel()
         await self._shut()
         self._set_state("closed")
 
@@ -847,6 +896,10 @@ class GrokLiveSession(LiveSession):
         return blocks
 
     # ---- turns -------------------------------------------------------------
+    def _busy(self) -> bool:
+        """A turn runs: one of Atrium's (its ``session/prompt`` hasn't answered), or one Grok started itself."""
+        return bool(self._turn and not self._turn.done()) or self._own is not None
+
     async def _turns_from(self, prompt: list[dict[str, Any]] | None) -> None:
         while prompt is not None and not self._closed:
             await self._turn_once(prompt)
@@ -854,12 +907,13 @@ class GrokLiveSession(LiveSession):
                 return
             prompt = self._queue.pop(0) if self._queue else None
         if not self._closed:
-            self._set_state("waiting" if self._pending else "idle")
+            self._set_state("waiting" if self._pending else "running" if self._own else "idle")
 
     async def _turn_once(self, prompt: list[dict[str, Any]]) -> None:
         """One turn as Atrium sees it. Turning a call down ends Grok's own turn: when the user said what to do
         instead (or the read-only agent has to be told why), that goes on as their next message, in the same turn."""
         started = time.time()
+        self._flush()  # what Grok said in a turn of its own that this one cut short comes first
         self._set_state("running")
         self._turns += 1
         self._interrupting = self._rejected = self._errored = False
@@ -872,7 +926,15 @@ class GrokLiveSession(LiveSession):
                     await self._open()
                     self._connected("Reconnected")
                 assert self.client
-                res = await self.client.request("session/prompt", {"sessionId": self.session_id, "prompt": prompt}, timeout=None)
+                pid = f"atrium-{uuid.uuid4().hex[:12]}"  # so that a turn Grok starts itself is told apart
+                self._mine.add(pid)
+                try:
+                    res = await self.client.request("session/prompt", {"sessionId": self.session_id, "prompt": self._with_notes(prompt),
+                                                                       "_meta": {"promptId": pid}}, timeout=None)
+                except AcpError:
+                    self._told()  # the agent had the message: it failed on the model's side
+                    raise
+                self._told()
                 reason = (res or {}).get("stopReason") or "end_turn"
                 subtype = STOP_SUBTYPE.get(reason, reason)
                 usage = ((res or {}).get("_meta") or {}).get("usage")
@@ -889,6 +951,25 @@ class GrokLiveSession(LiveSession):
             text = "\n\n".join(dict.fromkeys(notes))
             self.emit({"kind": "user", "id": f"u-{uuid.uuid4().hex[:12]}", "text": text, "ts": time.time()})
             prompt = self._prompt(text, [])
+        self._finish(reason, subtype, error, turns=turns, duration_ms=int((time.time() - started) * 1000))
+        if subtype == "error" and not (self.client and self.client.alive):
+            self._set_state("error")  # the agent is gone: the next message starts a new one
+
+    def _with_notes(self, prompt: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """The message with what Atrium has to tell the agent ahead of it (the chat shows the message alone)."""
+        if not self._notes or not prompt or prompt[0].get("type") != "text":
+            return prompt
+        note = "\n\n".join(self._notes)
+        return [{**prompt[0], "text": f"<system-reminder>\n{note}\n</system-reminder>\n\n{prompt[0].get('text') or ''}"}, *prompt[1:]]
+
+    def _told(self) -> None:
+        self._notes = []
+        if self._note_file:
+            self._note_file.unlink(missing_ok=True)
+            self._note_file = None
+
+    def _finish(self, reason: str, subtype: str, error: str | None, *, turns: Any = None, duration_ms: int | None = None) -> None:
+        """How a turn ends in the chat: why it stopped, the context it fills, its result."""
         if reason == "cancelled":
             text = "Stopped: an action was turned down" if self._rejected and not self._interrupting else "Interrupted"
             self.emit({"kind": "system", "id": f"interrupted-{uuid.uuid4().hex[:8]}", "subtype": "interrupted", "text": text})
@@ -896,11 +977,64 @@ class GrokLiveSession(LiveSession):
             self.emit({"kind": "usage", "id": "usage", "used": self._used, "max": self._window()})
         self.emit({
             "kind": "result", "id": f"result-{uuid.uuid4().hex[:8]}", "subtype": subtype, "is_error": subtype == "error",
-            "duration_ms": int((time.time() - started) * 1000), "cost_usd": None, "turns": turns, "text": error,
+            "duration_ms": duration_ms, "cost_usd": None, "turns": turns, "text": error,
             "terminal_reason": "interrupted" if reason == "cancelled" else reason,
         })
-        if subtype == "error" and not (self.client and self.client.alive):
-            self._set_state("error")  # the agent is gone: the next message starts a new one
+
+    def _own_started(self, pid: str, text: Any) -> None:
+        """Grok started a turn of its own accord: a command it moved to the background ended, a monitor saw
+        something, /loop fired… It is a turn like any: running until its ``turn_completed``, with its result."""
+        if pid in self._own_done or (self._own and self._own["id"] == pid):
+            return
+        if self._own:  # the one before never said it ended
+            self._own_done.add(self._own["id"])
+            self._finish("end_turn", "success", None, duration_ms=int((time.time() - self._own["started"]) * 1000))
+        self._flush()
+        if not (self._turn and not self._turn.done()):  # else it runs while one of Atrium's ends, or ahead of one Grok queued
+            self._turns += 1
+            self._interrupting = self._rejected = self._errored = self._command = False
+        self._own = {"id": pid, "started": time.time()}
+        if isinstance(text, str) and text.strip() and not pid.startswith(HIDDEN_PROMPTS):
+            body, files = user_message_text(text)
+            item: Item = {"kind": "user", "id": f"u-{pid}", "text": body, "ts": time.time()}
+            if files:
+                item["attachments"] = files
+            self.emit(item)
+        if self.state != "waiting":
+            self._set_state("running")
+
+    def _turn_completed(self, u: dict[str, Any]) -> None:
+        """A turn ended (``turn_completed``; for one of Atrium's, ahead of ``session/prompt``'s answer, which ends it)."""
+        self._flush()  # its last message is whole: shown before whatever comes next
+        own = self._own
+        if not own or u.get("prompt_id") != own["id"]:
+            return
+        self._own = None
+        self._own_done.add(own["id"])
+        reason = str(u.get("stop_reason") or "end_turn")
+        subtype = STOP_SUBTYPE.get(reason, reason)
+        error = str(u.get("agent_result") or reason) if subtype == "error" else None
+        if error and not self._errored:
+            self.emit({"kind": "error", "id": f"err-{uuid.uuid4().hex[:8]}", "text": error})
+        elapsed = u.get("elapsed_ms")
+        self._finish(reason, subtype, error, duration_ms=elapsed if isinstance(elapsed, int) else int((time.time() - own["started"]) * 1000))
+        notes, self._followups = self._followups, []
+        if self._closed:
+            return
+        if reason == "cancelled" and notes and not self._interrupting:  # a call turned down with a word: it carries on from that
+            text = "\n\n".join(dict.fromkeys(notes))
+            self.emit({"kind": "user", "id": f"u-{uuid.uuid4().hex[:12]}", "text": text, "ts": time.time()})
+            self._queue.insert(0, self._prompt(text, []))
+        self._next()
+
+    def _next(self) -> None:
+        """Grok's own turn is over: the messages that waited for it go, else the agent is idle."""
+        if self._turn and not self._turn.done():
+            return  # one of Atrium's runs: it carries on with them
+        if self._queue:
+            self._turn = asyncio.create_task(self._turns_from(self._queue.pop(0)), name=f"grok-{self.session_id[:8]}")
+        else:
+            self._set_state("waiting" if self._pending else "idle")
 
     # ---- what the agent streams --------------------------------------------
     def _flush(self) -> None:
@@ -910,11 +1044,11 @@ class GrokLiveSession(LiveSession):
             kind = "command_output" if self._command and t["kind"] == "text" else t["kind"]
             self.emit({"kind": kind, "id": t["id"], "text": t["text"]})
 
-    def _stream(self, kind: str, text: str, eid: str | None) -> None:
-        if self._text and self._text["kind"] != kind:
-            self._flush()
+    def _stream(self, kind: str, text: str, eid: str | None, prompt: Any = None) -> None:
+        if self._text and (self._text["kind"] != kind or self._text["prompt"] != prompt):
+            self._flush()  # another kind, or another turn's (Grok's own after Atrium's): another message
         if self._text is None:
-            self._text = {"kind": kind, "id": f"{kind[0]}-{eid or uuid.uuid4().hex[:12]}", "text": ""}
+            self._text = {"kind": kind, "id": f"{kind[0]}-{eid or uuid.uuid4().hex[:12]}", "text": "", "prompt": prompt}
         self._text["text"] += text
         if kind == "text" and not self._command:
             self.emit({"kind": "delta", "text": text})
@@ -928,10 +1062,22 @@ class GrokLiveSession(LiveSession):
             if self.state not in ("closed", "error") and not (self._turn and not self._turn.done()):  # else the turn says it failed
                 tail = self.client.stderr_tail[-1] if self.client and self.client.stderr_tail else ""
                 self.emit({"kind": "error", "id": f"err-{uuid.uuid4().hex[:8]}", "text": "Grok Build exited." + (f" {tail}" if tail else "")})
+                own, self._own = self._own, None
+                if own:  # in a turn of its own
+                    self._flush()
+                    self._own_done.add(own["id"])
+                    self._finish("error", "error", "Grok Build exited", duration_ms=int((time.time() - own["started"]) * 1000))
                 self._set_state("error")
+                if own and self._queue:  # what waited for that turn starts the agent again
+                    self._next()
             return
         if self._loading or params.get("sessionId") not in (None, self.session_id):
             return  # the conversation replayed, or a subagent's own session
+        if method.endswith("queue/changed"):  # what Grok runs now: a prompt of Atrium's, or one of its own
+            running = params.get("runningPromptId")
+            if isinstance(running, str) and running and running not in self._mine:
+                self._own_started(running, params.get("runningText"))
+            return
         u = params.get("update")
         if not isinstance(u, dict):
             return
@@ -939,7 +1085,12 @@ class GrokLiveSession(LiveSession):
         if isinstance(meta.get("totalTokens"), int) and meta["totalTokens"] > 0:
             self._used = meta["totalTokens"]  # what the context holds after the agent's last call
         k = u.get("sessionUpdate")
-        if method == "session/update":
+        pid = meta.get("promptId")
+        if k in TURN_UPDATES and isinstance(pid, str) and pid and pid not in self._mine:
+            self._own_started(pid, None)  # (the queue tells first, when the CLI does)
+        if k == "turn_completed":
+            self._turn_completed(u)
+        elif method == "session/update":
             self._on_update(k, u, meta)
         elif k == "retry_state":
             if u.get("type") == "retrying":
@@ -960,9 +1111,9 @@ class GrokLiveSession(LiveSession):
 
     def _on_update(self, k: Any, u: dict[str, Any], meta: dict[str, Any]) -> None:
         if k == "agent_message_chunk":
-            self._stream("text", ((u.get("content") or {}).get("text") or ""), meta.get("eventId"))
+            self._stream("text", ((u.get("content") or {}).get("text") or ""), meta.get("eventId"), meta.get("promptId"))
         elif k == "agent_thought_chunk":
-            self._stream("thinking", ((u.get("content") or {}).get("text") or ""), meta.get("eventId"))
+            self._stream("thinking", ((u.get("content") or {}).get("text") or ""), meta.get("eventId"), meta.get("promptId"))
         elif k in ("tool_call", "tool_call_update"):
             tid = u.get("toolCallId")
             if not tid:
@@ -1058,14 +1209,16 @@ class GrokLiveSession(LiveSession):
             return {"outcome": {"outcome": "cancelled"}}
 
         command = str(raw.get("command") or "") if view[0] == "Bash" else None
-        if self._atrium_tool(native, raw) or self.mode == "always-approve":
-            return pick("allow_always", "allow_once")  # Atrium's own tools are always allowed
+        if self._atrium_tool(native, raw):
+            return pick("allow_once", "allow_always")  # Atrium's own tools run unasked, and leave no rule behind
         if command is not None and _command_allowed(command, self.spec.allowed_tools):
             return pick("allow_once", "allow_always")
         if self.mode == "read-only":
             self._rejected = True
             self._followups.append(READ_ONLY_NOTE)
             return pick("reject_once", "reject_always")
+        # the rest is the user's to decide, in always-approve too: Grok asks there only for what an `ask` rule or a
+        # hook keeps for a person
         rid = tid or f"perm-{uuid.uuid4().hex[:10]}"
         while rid in self._pending:
             rid += "+"
@@ -1083,16 +1236,22 @@ class GrokLiveSession(LiveSession):
         behavior = decision.get("behavior", "deny")
         self.emit({"kind": "permission_resolved", "id": rid, "decision": behavior})
         if self.state == "waiting" and not self._pending:
-            self._set_state("running" if self._turn and not self._turn.done() else "idle")
+            self._set_state("running" if self._busy() else "idle")
         if decision.get("cancelled"):
             return {"outcome": {"outcome": "cancelled"}}
         if behavior == "allow":
             return pick("allow_always", "allow_once") if decision.get("remember") else pick("allow_once", "allow_always")
         self._rejected = True
-        if decision.get("interrupt") and not self._closed:
-            asyncio.get_running_loop().call_later(0.1, lambda: asyncio.ensure_future(self.interrupt()))
-        elif decision.get("message"):  # the turn ends here: what to do instead is the user's next message
-            self._followups.append(str(decision["message"]))
+        message = str(decision.get("message") or "").strip()
+        if decision.get("interrupt"):  # turning it down ends Grok's turn already: Deny & stop has it stop there
+            self._interrupting = True
+            for other in list(self._pending.values()):
+                if not other.done():  # the turn's other questions go with it
+                    other.set_result({"behavior": "deny", "cancelled": True})
+            if message:  # and why reaches the agent with the next message
+                self._notes.append(f"The user stopped you, turning down {view[0]}: {message}")
+        elif message:  # the turn ends here: what to do instead is the user's next message
+            self._followups.append(message)
         return pick("reject_once", "reject_always")
 
     async def _question(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -1114,7 +1273,7 @@ class GrokLiveSession(LiveSession):
             self._pending.pop(rid, None)
         self.emit({"kind": "permission_resolved", "id": rid, "decision": decision.get("behavior", "deny")})
         if self.state == "waiting" and not self._pending:
-            self._set_state("running" if self._turn and not self._turn.done() else "idle")
+            self._set_state("running" if self._busy() else "idle")
         if decision.get("interrupt") or decision.get("cancelled"):
             return {"outcome": "cancelled"}
         answers = decision.get("answers") or {}
@@ -1349,8 +1508,8 @@ class GrokHarness(Harness):
                     except (ValueError, KeyError, TypeError):
                         continue
                     text = ((u.get("content") or {}).get("text") or "") if isinstance(u.get("content"), dict) else ""
-                    if text.strip():
-                        prompt = split_attachment_note(text)[0]
+                    if text.strip() and not _hidden(u):
+                        prompt = user_message_text(text)[0]
                         break
         except OSError:
             return ""
@@ -1407,6 +1566,40 @@ class GrokHarness(Harness):
         if d:
             await asyncio.to_thread(shutil.rmtree, d, True)
 
+    async def move_session(self, session_id: str, cwd: str, target_cwd: str, note: str = "") -> None:
+        # Grok opens a session by its id wherever it is filed; it lists it by the directory it is filed under, and
+        # works where its summary says. The system prompt stays the one it started with: ``note`` goes with the next
+        # message (GrokLiveSession.start).
+        target = os.path.realpath(target_cwd)
+
+        def move() -> None:
+            src = session_dir(session_id, cwd)
+            if not src:
+                raise FileNotFoundError(f"Grok Build session {session_id}")
+            bucket = _bucket(target)
+            dest = bucket / session_id
+            if src != dest:
+                if dest.exists():
+                    raise FileExistsError(f"{dest} exists already")
+                bucket.mkdir(mode=0o700, parents=True, exist_ok=True)
+                os.rename(src, dest)
+                try:
+                    src.parent.rmdir()  # the old directory's last session
+                except OSError:
+                    pass
+            s = _read_json(dest / "summary.json")
+            if s:
+                info = x if isinstance(x := s.get("info"), dict) else {}
+                atomic_write(dest / "summary.json", json.dumps({**s, "info": {**info, "cwd": target}}, indent=2, ensure_ascii=False))
+            path = _note_path(session_id)
+            if note:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                atomic_write(path, note)
+            else:
+                path.unlink(missing_ok=True)
+
+        await asyncio.to_thread(move)
+
     # ---- content -----------------------------------------------------------
     async def load_history(self, session_id: str, cwd: str) -> list[Item]:
         path = self.transcript_path(session_id, cwd)
@@ -1445,18 +1638,27 @@ class GrokHarness(Harness):
             raise RuntimeError(not_found(_defaults().get("binary") or ""))
         started = time.time()
         os.makedirs(cwd, exist_ok=True)
-        argv = [binary, "--no-auto-update", "-p", prompt, "--output-format", "json", "--json-schema", json.dumps(schema),
-                "--system-prompt-override", system, "--max-turns", "4"]
-        if model:
-            argv += ["-m", model]
-        if effort:
-            argv += ["--reasoning-effort", effort]
-        proc = await asyncio.create_subprocess_exec(*argv, cwd=cwd, env=agent_env(), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        os.makedirs(RUNTIME_DIR, exist_ok=True)
+        # the prompt in a file of the user's alone, not on the command line: others can read that, and it holds
+        # only so much (the Tracker's runs to 60 000 characters, 128 KiB on Linux)
+        fd, prompt_file = tempfile.mkstemp(prefix="grok-prompt-", suffix=".txt", dir=RUNTIME_DIR)
         try:
-            out, err = await asyncio.wait_for(proc.communicate(), timeout=600)
-        except asyncio.TimeoutError:
-            proc.kill()
-            raise RuntimeError("Grok Build took too long to answer")
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(prompt)
+            argv = [binary, "--no-auto-update", "--prompt-file", prompt_file, "--output-format", "json", "--json-schema", json.dumps(schema),
+                    "--system-prompt-override", system, "--max-turns", "4"]
+            if model:
+                argv += ["-m", model]
+            if effort:
+                argv += ["--reasoning-effort", effort]
+            proc = await asyncio.create_subprocess_exec(*argv, cwd=cwd, env=agent_env(), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            try:
+                out, err = await asyncio.wait_for(proc.communicate(), timeout=600)
+            except asyncio.TimeoutError:
+                proc.kill()
+                raise RuntimeError("Grok Build took too long to answer")
+        finally:
+            os.unlink(prompt_file)
         try:
             res = json.loads(out.decode(errors="replace") or "{}")
         except ValueError:

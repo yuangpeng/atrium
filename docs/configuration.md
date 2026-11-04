@@ -122,7 +122,7 @@ What the new-agent page starts with. The pickers there and in the chat change it
 | | `always-proceed` | Always proceed | Never asks. The default. |
 | Grok Build | `ask` | Ask | Reads and commands Grok knows to be safe run; asks before edits and the rest. |
 | | `auto` | Auto | Grok's classifier approves safe actions and asks before risky ones. |
-| | `always-approve` | Always approve | Never asks; deny rules in `config.toml` still apply. The default. |
+| | `always-approve` | Always approve | Asks only for a command an `ask` rule covers, or what a hook wants asked; deny rules still apply. The default. |
 
 The Git Agent and the Code Review Agent have modes of their own, whatever these say: they read, and the
 Git Agent asks before anything else.
@@ -607,9 +607,11 @@ ignores it.
 **What Atrium sets for each agent:**
 
 - the **permission mode** (`ask`, `auto`, `always-approve`), for the agent alone and changed live: `[ui]
-  permission_mode` in `config.toml` isn't used, its `[permission]` rules are. Turning an action down ends
-  Grok's turn; what you write when you turn it down reaches the agent as your next message, in the same
-  turn.
+  permission_mode` in `config.toml` isn't used, its `[permission]` rules are: in `always-approve`, a command
+  an `ask` rule covers (and what a hook wants asked) is still yours to approve, once (*Always allow* has
+  Grok remember it for the project). Turning an action down ends Grok's turn;
+  what you write when you turn it down reaches the agent as your next message, in the same turn. *Deny &
+  stop* ends the turn there, and what you write reaches the agent with your next message.
 - **its own section of the system prompt**, when the agent starts: Grok keeps a session's prompt, so a
   change reaches agents started afterwards, not resumed ones.
 - **Atrium's tools**, as in-process MCP servers named after their namespace (`board`, `web`, `graph`,
@@ -620,6 +622,13 @@ ignores it.
 
 Its sessions are the CLI's own, in `~/.grok/sessions/<directory>/<id>/`: `grok --resume` lists the agents
 Atrium started, and Atrium lists the sessions you start in a terminal. Deleting an agent deletes its session.
+An agent whose worktree is gone carries on where you pick: Atrium files its session under that directory,
+and tells the agent with your next message (Grok keeps the system prompt it started with).
+
+Grok also carries on by itself: when a command it moved to the background ends, a monitor reports, a
+subagent or a `/loop` task finishes. The chat shows that as a turn like any other — the agent works, then
+answers — and a message you send meanwhile waits for it. Grok's reminders to itself that start such a turn
+aren't shown.
 The composer offers the CLI's commands (`/compact`, `/session-info`, `/deep-research`, `/goal`…). By default
 Grok also reads Claude Code's and Cursor's rules and skills, and runs Claude Code's hooks; `[compat.claude]`
 and `[compat.cursor]` in `config.toml` turn that off. Not yet: forking an agent, editing a message already

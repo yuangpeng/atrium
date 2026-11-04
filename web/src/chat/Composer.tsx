@@ -706,11 +706,12 @@ const MODE_INFO: Record<string, Record<string, { icon: LucideIcon; desc: string;
     "request-review": { icon: Hand, desc: "Ask before editing files, running commands, or using the web and MCP tools" },
     "accept-edits": { icon: FilePen, desc: "Edit files in the workspace without asking; ask for the rest" },
     "always-proceed": { icon: ShieldAlert, desc: "Run every tool without asking", danger: true },
-  },  // Grok Build's own modes
+  },
+  // Grok Build's own modes
   grok: {
     ask: { icon: Hand, desc: "Ask before edits and commands not known to be safe" },
     auto: { icon: ShieldCheck, desc: "A classifier approves safe actions; ask for risky ones" },
-    "always-approve": { icon: ShieldAlert, desc: "Run every tool without asking", danger: true },
+    "always-approve": { icon: ShieldAlert, desc: "Ask only where an ask rule or a hook says to", danger: true },
   },
 };
 const MODE_DOCS: Record<string, string> = {
