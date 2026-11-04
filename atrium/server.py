@@ -17,6 +17,7 @@ from typing import Any
 from fastapi import Body, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.gzip import DEFAULT_EXCLUDED_CONTENT_TYPES, GZipMiddleware
 
 from . import __version__, changes, configfiles, fs, gitops, lsp, voice
 from .auth import AUTH_PATH, AuthMiddleware, auth
@@ -97,6 +98,10 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="Atrium", version=__version__, lifespan=lifespan)
 app.add_middleware(AuthMiddleware)
+# a phone away from this machine gets a conversation (megabytes of tool output), the UI's bundle, a diff, in a quarter
+# of the bytes. Level 4: most of level 9's gain for a third of its time (big bodies are compressed in a thread);
+# ranges, and media and PDFs (compressed already), go as they are
+app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=4, exclude_content_types=(*DEFAULT_EXCLUDED_CONTENT_TYPES, "application/pdf"))
 app.include_router(auth_router)  # before the SPA's catch-all
 
 
@@ -1153,8 +1158,18 @@ async def ws_terminal(socket: WebSocket, pid: str, tid: str):
 # ---------------------------------------------------------------------------
 # frontend
 # ---------------------------------------------------------------------------
+class _Assets(StaticFiles):
+    """The built UI's files, named after their content (Vite): a browser keeps them instead of asking again on every
+    load. Private: they are behind the login."""
+
+    def file_response(self, *args: Any, **kwargs: Any) -> Response:
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "private, max-age=31536000, immutable"
+        return response
+
+
 if (STATIC_DIR / "assets").exists():
-    app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
+    app.mount("/assets", _Assets(directory=STATIC_DIR / "assets"), name="assets")
 
 
 @app.get("/{path:path}", include_in_schema=False)

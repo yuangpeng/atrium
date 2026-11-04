@@ -4,13 +4,12 @@ import type { MouseEvent, ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 import ReactMarkdown, { defaultUrlTransform, type Components, type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import rehypeHighlight from "rehype-highlight";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import { api } from "../api";
 import { useApp } from "../store";
 import { basename, type PreviewKind } from "../util";
-import { Spinner } from "./ui";
+import { HIGHLIGHT, Spinner } from "./ui";
 
 export interface PreviewProps {
   kind: PreviewKind;
@@ -76,7 +75,6 @@ function rehypeSlugs() {
 }
 
 type Plugins = NonNullable<Options["rehypePlugins"]>;
-const HIGHLIGHT: Plugins = [[rehypeHighlight, { detect: false, ignoreMissing: true }]];
 const PLUGINS: Plugins = [rehypeRaw, [rehypeSanitize, schema], rehypeSlugs, ...HIGHLIGHT];
 const SAFE: Plugins = [rehypeRaw, [rehypeSanitize, schema]];
 const REMARK = [remarkGfm];

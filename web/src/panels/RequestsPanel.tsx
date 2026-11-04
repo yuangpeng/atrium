@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode, RefObject } from "react";
 import { ArrowDownLeft, ArrowLeft, ArrowUpRight, ChevronRight, Code, Copy, ListTree, Maximize2, Minimize2, Pin, RefreshCw, Trash2 } from "lucide-react";
 import { api, CaptureBody, CaptureDetail, CaptureRow, CaptureUsage } from "../api";
-import { useApp } from "../store";
+import { useApp, useAppState } from "../store";
 import { socket } from "../ws";
 import { clsx, displayName } from "../util";
 import { JsonTree, LongText } from "../components/JsonTree";
@@ -101,7 +101,7 @@ function useNarrow(ref: RefObject<HTMLElement | null>) {
 }
 
 export function RequestsPanel() {
-  const { project, sessionId, sessions, toast } = useApp();
+  const { project, sessionId, sessions, toast } = useAppState("project", "sessionId", "sessions", "toast");
   const pid = project?.id;
   const ref = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);

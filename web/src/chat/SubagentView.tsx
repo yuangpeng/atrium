@@ -6,7 +6,7 @@ import { socket } from "../ws";
 import { useApp } from "../store";
 import { displayName, throttle } from "../util";
 import { Spinner } from "../components/ui";
-import { Transcript, apply, empty, toBlocks } from "./ChatView";
+import { Transcript, applyAll, empty, toBlocks } from "./ChatView";
 
 export function SubagentView({ pid, sid, aid, cwd }: { pid: string; sid: string; aid: string; cwd: string }) {
   const parent = useApp((s) => s.sessions.find((x) => x.id === sid));
@@ -70,7 +70,7 @@ export function SubagentView({ pid, sid, aid, cwd }: { pid: string; sid: string;
     reload.current();
   }, [sig]);
 
-  const st = useMemo(() => (data ? data.items.reduce(apply, empty()) : empty()), [data]);
+  const st = useMemo(() => (data ? applyAll(empty(), data.items) : empty()), [data]);
   const blocks = useMemo(() => toBlocks(st.items), [st.items]);
   const first = blocks[0]?.type === "item" && blocks[0].item.kind === "user" ? blocks[0].item : null; // the task, from the parent
   const sub = row ?? data?.subagent;

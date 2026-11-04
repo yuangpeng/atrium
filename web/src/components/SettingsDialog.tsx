@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Check, Copy, FileCog, RotateCcw } from "lucide-react";
 import { api, ConfigFileData, ConfigFileInfo } from "../api";
-import { useApp } from "../store";
+import { useAppState } from "../store";
 import { clsx, shortPath } from "../util";
 import { Modal, Spinner } from "./ui";
 import { CodeEditor } from "./LazyEditors";
@@ -28,7 +28,7 @@ function localError(file: ConfigFileInfo, text: string): string | null {
 }
 
 export function SettingsDialog() {
-  const { setSettingsOpen, toast, project, refreshMeta } = useApp();
+  const { setSettingsOpen, toast, project, refreshMeta } = useAppState("setSettingsOpen", "toast", "project", "refreshMeta");
   const [files, setFiles] = useState<ConfigFileInfo[]>([]);
   const [active, setActive] = useState<string>("atrium");
   const [data, setData] = useState<ConfigFileData | null>(null);

@@ -37,7 +37,8 @@ export function MessageEditor({ pid, sid, text: sent, attachments, at, later, ru
   const att = useAttachments(held);
   const [busy, setBusy] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  // an image the transcript holds itself (Claude's history) is uploaded again; one too big to be in the chat can't be
+  // an image the transcript holds itself (Claude's history) comes as an upload (written out when the history is read);
+  // one still inline, which couldn't be written, is uploaded again; one with neither can't be sent again
   const [lost, setLost] = useState(0);
   useEffect(() => {
     const inline = attachments.filter((a) => a.url?.startsWith("data:"));

@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, ChevronDown, ExternalLink, FileCode2, History, LayoutDashboard, RefreshCw, RotateCw } from "lucide-react";
 import { api, BoardPage, ProjectInfo, TrackerStatus } from "../api";
-import { resolvedTheme, useApp } from "../store";
+import { resolvedTheme, useApp, useAppState } from "../store";
 import { basename, clsx, fmtDuration, timeAgo } from "../util";
-import { Popover, Spinner, useTick } from "../components/ui";
+import { Popover, Spinner, usePanelShown, useTick } from "../components/ui";
 
 /** One of the project's HTML files, shown in place of the board. */
 type Page = { root: string; path: string };
@@ -12,7 +12,7 @@ const dirOf = (path: string) => path.slice(0, Math.max(0, path.lastIndexOf("/"))
 
 export function BoardPanel() {
   useTick(15000);
-  const { project, boardVersion, trackerVersion, theme, selectSession, toast, fsVersion } = useApp();
+  const { project, boardVersion, trackerVersion, theme, selectSession, toast, fsVersion } = useAppState("project", "boardVersion", "trackerVersion", "theme", "selectSession", "toast", "fsVersion");
   const frame = useRef<HTMLIFrameElement>(null);
   const [loaded, setLoaded] = useState(false);
   const [tracker, setTracker] = useState<TrackerStatus | null>(null);
@@ -21,6 +21,7 @@ export function BoardPanel() {
   const [pageUrl, setPageUrl] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
   const pid = project?.id;
+  const shown = usePanelShown("board");
 
   useEffect(() => setPage(null), [pid]);
 
@@ -49,9 +50,10 @@ export function BoardPanel() {
     if (useApp.getState().fsPaths.some((p) => dirOf(p) === dir)) setReload((n) => n + 1);
   }, [fsVersion]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // push fresh board HTML into the iframe (it swaps content in place, keeping scroll)
+  // push fresh board HTML into the iframe (it swaps content in place, keeping scroll); behind another panel it waits
+  // to be shown, and gets the board as it is then
   useEffect(() => {
-    if (!pid || !loaded) return;
+    if (!pid || !loaded || !shown) return;
     let alive = true;
     fetch(api.boardHtmlUrl(pid), { cache: "no-store" })
       .then((r) => r.text())
@@ -59,16 +61,16 @@ export function BoardPanel() {
     return () => {
       alive = false;
     };
-  }, [pid, boardVersion, loaded, repush]);
+  }, [pid, boardVersion, loaded, repush, shown]);
 
   useEffect(() => {
     frame.current?.contentWindow?.postMessage({ type: "atrium:theme", theme: resolvedTheme() }, "*");
   }, [theme]);
 
   useEffect(() => {
-    if (!pid) return;
+    if (!pid || !shown) return;
     void api.tracker(pid).then(setTracker).catch(() => undefined);
-  }, [pid, trackerVersion]);
+  }, [pid, trackerVersion, shown]);
 
   useEffect(() => {
     // the board's TODO list asks for its changes: it can't call the API itself (its sandbox has no login)

@@ -5,7 +5,7 @@ import {
   RefreshCw, Sparkles, Square, SquareCheck, Trash2, Wand, X,
 } from "lucide-react";
 import { api, Branch, Commit, CommitDetail, CommitFile, GitSummary, GitView } from "../api";
-import { useApp } from "../store";
+import { useApp, useAppState } from "../store";
 import { clsx, displayName, languageFor, relTo, throttle, timeAgo } from "../util";
 import { Popover, Spinner, startRowResize, useFullscreen } from "../components/ui";
 import { DiffEditor } from "../components/LazyEditors";
@@ -214,7 +214,7 @@ function BranchPicker({ branches, shown, worktrees, custom, onToggle, onSave }: 
 
 // ---------------------------------------------------------------- panel
 export function GitPanel() {
-  const { project, gitVersion, toast, refreshProject } = useApp();
+  const { project, gitVersion, toast, refreshProject } = useAppState("project", "gitVersion", "toast", "refreshProject");
   const pid = project?.id ?? "";
   const [tab, setTab] = useState<"graph" | "worktrees">("graph");
   const [mode, setMode] = useState<Mode>("view");
@@ -460,7 +460,7 @@ const HEIGHT_KEY = "atrium.commitHeight";
 
 /** The selected commit under the graph: its files as a tree, one file's diff side by side. */
 function CommitView({ detail, onClose }: { detail: CommitDetail; onClose: () => void }) {
-  const { project, toast, openFile } = useApp();
+  const { project, toast, openFile } = useAppState("project", "toast", "openFile");
   const pid = project!.id;
   const ref = useRef<HTMLDivElement>(null);
   const [full, toggleFull] = useFullscreen(ref);
@@ -592,7 +592,7 @@ function CommitView({ detail, onClose }: { detail: CommitDetail; onClose: () => 
 const AGENTS_SHOWN = 6; // a worktree's agents before "+N": the main checkout can hold dozens
 
 function Worktrees({ summary, onChanged }: { summary: GitSummary | null; onChanged: () => void }) {
-  const { project, toast, sessions, selectSession, openFile } = useApp();
+  const { project, toast, sessions, selectSession, openFile } = useAppState("project", "toast", "sessions", "selectSession", "openFile");
   const pid = project!.id;
   const [branch, setBranch] = useState("");
   const [base, setBase] = useState("");

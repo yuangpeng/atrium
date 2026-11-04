@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowUp } from "lucide-react";
 import { api } from "../api";
-import { useApp } from "../store";
+import { useAppState } from "../store";
 import { EMPTY_DRAFT, NewAgentDraft, Workspace, useDrafts } from "../drafts";
 import { clsx } from "../util";
 import { Popover, Spinner } from "./ui";
@@ -13,7 +13,7 @@ import { mergeCommands, useSlashCommands, useSlashMenu } from "../chat/SlashMenu
 import { useVoiceInput } from "../chat/Voice";
 
 export function NewAgent() {
-  const { project, meta, selectSession, toast, refreshSessions, refreshProject } = useApp();
+  const { project, meta, selectSession, toast, refreshSessions, refreshProject } = useAppState("project", "meta", "selectSession", "toast", "refreshSessions", "refreshProject");
   // what's typed and picked here is the project's draft, kept outside this component (../drafts)
   const pid = project?.id ?? "";
   const draft = useDrafts((s) => s.byProject[pid]) ?? EMPTY_DRAFT;

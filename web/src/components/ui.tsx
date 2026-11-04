@@ -1,11 +1,11 @@
-import { ReactNode, RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { memo, ReactNode, RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import ReactMarkdown, { type Components, type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { X } from "lucide-react";
-import { realHover } from "../layout";
-import { useApp } from "../store";
+import { realHover, useLayout } from "../layout";
+import { Panel, useApp } from "../store";
 import { holdTouch, placeTip, tipLayer } from "../tips";
 import { clsx } from "../util";
 import { FILE_COMPONENTS, remarkFileRefs, useFileLinks } from "./FileLinks";
@@ -114,21 +114,80 @@ export function Popover({
   );
 }
 
-const REMARK = [remarkGfm];
-const LINKED = [remarkGfm, remarkFileRefs];
-const REHYPE: NonNullable<Options["rehypePlugins"]> = [[rehypeHighlight, { detect: false, ignoreMissing: true }]];
+// rehype-highlight builds its highlighter, every grammar it knows, each time a processor is made, and react-markdown
+// makes one on every render: this one is built once, and highlights every message and preview.
+const highlight = rehypeHighlight({ detect: false });
+export const HIGHLIGHT: NonNullable<Options["rehypePlugins"]> = [() => highlight];
+const REMARK: NonNullable<Options["remarkPlugins"]> = [remarkGfm];
+const LINKED: NonNullable<Options["remarkPlugins"]> = [remarkGfm, remarkFileRefs];
 const COMPONENTS: Components = { a: ({ node: _n, ...props }) => <a {...props} target="_blank" rel="noreferrer" /> };
+
+/** Parsed again only when its text changes, or whether its files are links: the chat renders again for every item,
+ *  delta and keystroke. A link follows what the server finds of its file by itself (FileLinks). */
+const MarkdownBody = memo(function MarkdownBody({ text, linked }: { text: string; linked: boolean }) {
+  return (
+    <ReactMarkdown remarkPlugins={linked ? LINKED : REMARK} rehypePlugins={HIGHLIGHT} components={linked ? FILE_COMPONENTS : COMPONENTS}>
+      {text}
+    </ReactMarkdown>
+  );
+});
 
 /** Markdown in Atrium's page; in an agent's conversation (FileLinks), the files it names are links. */
 export function Markdown({ text }: { text: string }) {
   const linked = useFileLinks();
   return (
     <div className="md">
-      <ReactMarkdown remarkPlugins={linked ? LINKED : REMARK} rehypePlugins={REHYPE} components={linked ? FILE_COMPONENTS : COMPONENTS}>
-        {text}
-      </ReactMarkdown>
+      <MarkdownBody text={text} linked={linked} />
     </div>
   );
+}
+
+/** Markdown still being written (a reply streaming in): the blocks it has finished are parsed once each, only the
+ *  last one again as it grows. They are siblings in one box, as a whole parse would make them. */
+export function StreamingMarkdown({ text }: { text: string }) {
+  const linked = useFileLinks();
+  return (
+    <div className="md">
+      {splitBlocks(text).map((part, i) => (
+        <MarkdownBody key={i} text={part} linked={linked} />
+      ))}
+    </div>
+  );
+}
+
+/** `text` cut where a block ends for good: after a blank line, outside a code fence, before a line that isn't
+ *  indented (an indented one may go on a list item, or be code) and doesn't start a list item (one may go on a list
+ *  whose items have blank lines between them). */
+export function splitBlocks(text: string): string[] {
+  const parts: string[] = [];
+  let start = 0, pos = 0, blank = false;
+  let fence: string | null = null; // the open fence's marker
+  while (pos < text.length) {
+    const nl = text.indexOf("\n", pos);
+    const end = nl < 0 ? text.length : nl + 1;
+    const line = text.slice(pos, end);
+    const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+    if (fence) {
+      if (marker && marker[0] === fence[0] && marker.length >= fence.length && !line.trim().slice(marker.length)) fence = null;
+    } else {
+      if (blank && pos > start && /^\S/.test(line) && !/^([-*+]|\d{1,9}[.)])(\s|$)/.test(line)) {
+        parts.push(text.slice(start, pos));
+        start = pos;
+      }
+      if (marker) fence = marker;
+    }
+    blank = !fence && !line.trim();
+    pos = end;
+  }
+  parts.push(text.slice(start));
+  return parts;
+}
+
+/** Whether the workspace shows `panel` now: its tab picked, and the workspace on screen (where the chat and the
+ *  workspace take turns). A panel kept mounted behind another one can leave its refreshes until it is shown. */
+export function usePanelShown(panel: Panel): boolean {
+  const single = useLayout() === "single";
+  return useApp((s) => (s.panel === "terminal" && !s.meta?.terminal ? "board" : s.panel) === panel && (!single || s.pane === "workspace"));
 }
 
 export function Spinner() {

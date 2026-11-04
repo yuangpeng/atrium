@@ -268,7 +268,7 @@ own login, so you log in once more there.
 | `~/.atrium/settings.json` | Atrium settings: defaults per harness (mode / model / effort), tracker, Git Agent, Code Review Agent (`review_agent`: auto, harness / model / effort, language), desktop notifications, web keys (`chmod 600`; env vars take precedence), extra MCP servers |
 | `~/.atrium/config.json` | the project list: pinned / archived, how often you opened each |
 | `~/.atrium/auth.json` | the login: the password's hash (and the made-up password, until you set yours), the secret that signs login cookies, the API token (`chmod 600`) |
-| `~/.atrium/uploads/` | composer attachments |
+| `~/.atrium/uploads/` | composer attachments, and the images in Claude conversations (their transcripts hold them as base64), written out once to be shown in the chat |
 | `~/.atrium/backups/` | the previous versions of config files saved from Settings (last 20 each) |
 | `~/.atrium/captures/captures.db` | the agents' model calls, requests and responses (credentials blanked; `capture.max_mb`, 1 GB by default, for all but compactions and the call before each; `chmod 600`) |
 | `~/.gemini/antigravity-cli/settings.json` | Antigravity's model, custom models (relays) and Gemini API key (`env`) — the Antigravity CLI's own file |

@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, Plus, SquareTerminal, X } from "lucide-react";
 import { api, ApiError, TerminalInfo } from "../api";
-import { useApp } from "../store";
+import { useAppState } from "../store";
 import { basename, clsx } from "../util";
 import { Popover, Spinner } from "../components/ui";
 
@@ -10,7 +10,7 @@ const TerminalView = lazy(() => import("../terminal/TerminalView")); // xterm.js
 /** Shells on the server, one per tab (atrium/terminal.py): they keep running while the page is away, and every
  *  page of the project sees the same ones. `visible`: the panel is the workspace's open one. */
 export function TerminalPanel({ visible }: { visible: boolean }) {
-  const { project, terminalVersion, toast } = useApp();
+  const { project, terminalVersion, toast } = useAppState("project", "terminalVersion", "toast");
   const pid = project?.id ?? "";
   const [list, setList] = useState<TerminalInfo[] | null>(null);
   const [active, setActive] = useState<string | null>(null);

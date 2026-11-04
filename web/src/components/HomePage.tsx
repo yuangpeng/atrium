@@ -1,11 +1,11 @@
 // The home page, when no project is open: what needs you across projects, then the pinned and the most opened
 // projects with what their agents are doing, and the archived ones; open a folder or make a new one.
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent } from "react";
 import { Archive, ArchiveRestore, ChevronRight, FolderOpen, FolderPlus, Pin, PinOff, Plus, Search, Trash2 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { AgentBrief, api, HomeProject } from "../api";
-import { useApp } from "../store";
+import { useAppState } from "../store";
 import { socket } from "../ws";
 import { clsx, displayName, isMac, shortPath, throttle, timeAgo } from "../util";
 import { AgentAvatar, RailToggle, glyphsFor, statusClass } from "./Rail";
@@ -35,8 +35,8 @@ const byAttention = (x: AgentBrief, y: AgentBrief) => rank(x) - rank(y) || y.upd
 const lastActive = (p: HomeProject) => Math.max(p.last_opened ?? 0, ...(p.agents ?? []).map((a) => a.updated_at));
 const stop = (f: () => void) => (e: MouseEvent) => (e.stopPropagation(), f());
 
-export function HomePage() {
-  const { openProject, selectSession, setChatOpen, setPickerOpen, homeFocus, toast } = useApp();
+export const HomePage = memo(function HomePage() {
+  const { openProject, selectSession, setChatOpen, setPickerOpen, homeFocus, toast } = useAppState("openProject", "selectSession", "setChatOpen", "setPickerOpen", "homeFocus", "toast");
   const [projects, setProjects] = useState<HomeProject[] | null>(null);
   const [query, setQuery] = useState("");
   const search = useRef<HTMLInputElement>(null);
@@ -234,7 +234,7 @@ export function HomePage() {
       </div>
     </main>
   );
-}
+});
 
 function ProjectCard({ p, onOpen, onAgent, onNewAgent, onPin, onArchive, onRemove }: {
   p: HomeProject;

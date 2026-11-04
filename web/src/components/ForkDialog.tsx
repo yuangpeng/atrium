@@ -1,10 +1,10 @@
 // Fork a conversation: a new agent that starts with this one's history — all of it, up to a message, or up to one of
 // the agent's steps — working in a new worktree (with the files of that moment), an existing one, or the same directory.
 import type { JSX, ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { Folder, FolderGit2, GitBranchPlus, GitFork } from "lucide-react";
 import { api, ForkWorkspace, SessionRow } from "../api";
-import { ForkRequest, useApp } from "../store";
+import { ForkRequest, useApp, useAppState } from "../store";
 import { clsx, displayName, relTo } from "../util";
 import { Modal, Spinner } from "./ui";
 
@@ -17,13 +17,13 @@ function excerpt(s: string, n: number): string {
   return s.length <= n ? s : s.slice(0, n - 1) + "…";
 }
 
-export function ForkDialog() {
+export const ForkDialog = memo(function ForkDialog() {
   const req = useApp((s) => s.forkRequest);
   return req ? <ForkForm key={`${req.sid}:${req.at?.after ? req.at.anchor : (req.at?.user_index ?? "latest")}`} req={req} /> : null;
-}
+});
 
 function ForkForm({ req }: { req: ForkRequest }) {
-  const { project, sessions, setForkRequest, refreshSessions, refreshProject, selectSession, toast } = useApp();
+  const { project, sessions, setForkRequest, refreshSessions, refreshProject, selectSession, toast } = useAppState("project", "sessions", "setForkRequest", "refreshSessions", "refreshProject", "selectSession", "toast");
   const listed = sessions.find((s) => s.id === req.sid);
   const [fetched, setFetched] = useState<SessionRow | null>(null);
   useEffect(() => {

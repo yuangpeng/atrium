@@ -1,5 +1,5 @@
 // Small shared helpers.
-import type { WorktreeTidy } from "./api";
+import type { EditAt, ForkAt, WorktreeTidy } from "./api";
 
 export function timeAgo(ts?: number | null): string {
   if (!ts) return "";
@@ -11,14 +11,18 @@ export function timeAgo(ts?: number | null): string {
   return new Date(ts * 1000).toLocaleDateString();
 }
 
+// made once: toLocaleTimeString and the like build a formatter on every call, and a long chat formats hundreds of times
+const CLOCK = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
+const DAY = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" });
+const DAY_YEAR = new Intl.DateTimeFormat(undefined, { year: "numeric", month: "short", day: "numeric" });
+
 /** When a message was sent: the time of day; the date before it on another day (and the year, in another year). */
 export function fmtClock(ts: number): string {
   const d = new Date(ts * 1000);
   const now = new Date();
-  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+  const time = CLOCK.format(d);
   if (d.toDateString() === now.toDateString()) return time;
-  const year = d.getFullYear() === now.getFullYear() ? undefined : "numeric";
-  return `${d.toLocaleDateString([], { year, month: "short", day: "numeric" })} ${time}`;
+  return `${(d.getFullYear() === now.getFullYear() ? DAY : DAY_YEAR).format(d)} ${time}`;
 }
 
 export function fmtDuration(ms?: number | null): string {
@@ -108,6 +112,13 @@ export function throttle<T extends (...a: any[]) => void>(fn: T, ms: number): T 
     if (now - last >= ms) run();
     else if (timer === null) timer = window.setTimeout(run, ms - (now - last));
   }) as T;
+}
+
+/** Whether two fork or edit points are the same point: they are worked out again for every change of the conversation. */
+export function samePoint(a?: ForkAt | EditAt | null, b?: ForkAt | EditAt | null): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.anchor !== b.anchor || a.user_index !== b.user_index) return false;
+  return ("after" in a && !!a.after) === ("after" in b && !!b.after) && ("item" in a ? a.item : null) === ("item" in b ? b.item : null);
 }
 
 /** What archiving an agent did to its worktree, for a toast (null: it had none). */

@@ -55,12 +55,12 @@ from .base import (
     Attachment, Compaction, Emit, FileEdit, ForkPoint, Harness, Item, LiveSession, LiveSpec, Replacement, Rewind, SessionSummary, SlashCommand,
     SubagentSummary, ToolSpec,
 )
-from .util import TailScan, attachment_note, hhmm, iso_to_epoch, parse_json_loose, short_tail, split_attachment_note, tail_scan
+from .util import TailScan, attachment_note, hhmm, inline_image_url, iso_to_epoch, parse_json_loose, short_tail, split_attachment_note, tail_scan
 
 log = logging.getLogger("atrium.claude")
 
 MAX_RESULT_CHARS = 20_000
-MAX_INLINE_IMAGE_B64 = 3_000_000  # history images above this are shown as a placeholder
+MAX_INLINE_IMAGE_B64 = 3_000_000  # a history image that isn't written out is shown as a placeholder above this
 EFFORTS = ["low", "medium", "high", "xhigh", "max"]
 EFFORT_ENV = "CLAUDE_CODE_EFFORT_LEVEL"
 CLI_DEFAULT_EFFORT = "medium"  # what Claude Code sends when nothing sets an effort (seen with 2.1.310 on Opus 5.5)
@@ -253,8 +253,13 @@ def _user_text_item(uid: str, text: str, ts: str | None = None) -> Item | None:
 def _image_attachment(block: dict[str, Any], idx: int) -> dict[str, Any]:
     src = block.get("source") or {}
     att: dict[str, Any] = {"name": f"image-{idx + 1}", "mime": src.get("media_type") or "image/png"}
-    if src.get("type") == "base64" and len(src.get("data") or "") <= MAX_INLINE_IMAGE_B64:
-        att["url"] = f"data:{att['mime']};base64,{src['data']}"
+    data = src.get("data") if src.get("type") == "base64" else None
+    if data:
+        url = inline_image_url(data, att["mime"], att["name"])
+        if url is None and len(data) <= MAX_INLINE_IMAGE_B64:  # not written out: in the conversation itself, if not too big
+            url = f"data:{att['mime']};base64,{data}"
+        if url:
+            att["url"] = url
     return att
 
 

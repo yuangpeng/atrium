@@ -1,9 +1,9 @@
 import type { JSX, ReactNode } from "react";
-import { useEffect, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { Archive, ArchiveRestore, ArrowLeft, ArrowLeftRight, ChevronRight, FileDiff, Files, GitBranch, GitFork, LayoutDashboard, MessageSquare, PanelLeftOpen, PanelRightClose, Plug, SquareTerminal, Unplug } from "lucide-react";
 import { api, loginUrl, SessionRow } from "./api";
-import { Panel, useApp } from "./store";
+import { Panel, useApp, useAppState } from "./store";
 import { clsx, displayName, isMac, tidyNote } from "./util";
 import { useLayout } from "./layout";
 import { Rail, RailToggle, liveLabel, statusClass } from "./components/Rail";
@@ -56,7 +56,7 @@ function CloseChat() {
 }
 
 function SessionHeader() {
-  const { project, sessions, sessionId, toast, refreshSessions, reviewChanges, selectSession, setForkRequest, meta } = useApp();
+  const { project, sessions, sessionId, toast, refreshSessions, reviewChanges, selectSession, setForkRequest, meta } = useAppState("project", "sessions", "sessionId", "toast", "refreshSessions", "reviewChanges", "selectSession", "setForkRequest", "meta");
   const s = sessions.find((x) => x.id === sessionId);
   const canFork = meta?.harnesses.find((h) => h.id === s?.harness)?.can_fork !== false;
   const [editing, setEditing] = useState(false);
@@ -215,8 +215,8 @@ function ProjectPath({ path, name }: { path: string; name: string }) {
 }
 
 /** Board / Files / Changes / Git / Terminal — the large area on the left. */
-function Workspace() {
-  const { panel: chosen, setPanel, project, chatOpen, setChatOpen, setPane, meta } = useApp();
+const Workspace = memo(function Workspace() {
+  const { panel: chosen, setPanel, project, chatOpen, setChatOpen, setPane, meta } = useAppState("panel", "setPanel", "project", "chatOpen", "setChatOpen", "setPane", "meta");
   const single = useLayout() === "single";
   const terminal = !!meta?.terminal; // terminal.enabled, on a Unix server
   const panel = chosen === "terminal" && !terminal ? "board" : chosen;
@@ -266,11 +266,11 @@ function Workspace() {
       </div>
     </main>
   );
-}
+});
 
 /** The selected agent's conversation, or the new-agent composer — right of the workspace. */
-function ChatColumn() {
-  const { project, sessionId, subagentId, compactionId, sessions, chatWidth, setChatWidth, chatFloor } = useApp();
+const ChatColumn = memo(function ChatColumn() {
+  const { project, sessionId, subagentId, compactionId, sessions, chatWidth, setChatWidth, chatFloor } = useAppState("project", "sessionId", "subagentId", "compactionId", "sessions", "chatWidth", "setChatWidth", "chatFloor");
   const wide = useLayout() === "wide"; // elsewhere the screen (and its fold) sets the width, a finger can't hold the splitter
   // never so narrow that the composer's bar breaks onto a second line, unless the workspace would get less than its
   // MIN_WORKSPACE for it: the workspace comes first, and in a window that has no room for both the chips wrap (styles.css)
@@ -346,9 +346,9 @@ function ChatColumn() {
       )}
     </section>
   );
-}
+});
 
-function Toasts() {
+const Toasts = memo(function Toasts() {
   const toasts = useApp((s) => s.toasts);
   const loggedOut = useApp((s) => s.loggedOut);
   const fullscreen = useFullscreenElement(); // only the fullscreen element is visible: show them in there
@@ -367,10 +367,10 @@ function Toasts() {
     </div>
   );
   return fullscreen ? createPortal(list, fullscreen) : list;
-}
+});
 
 export function App() {
-  const { init, project, pickerOpen, settingsOpen, chatOpen, chatWidth, setChatWidth, goHome, pane, railOpen, setRailOpen } = useApp();
+  const { init, project, pickerOpen, settingsOpen, chatOpen, chatWidth, setChatWidth, goHome, pane, railOpen, setRailOpen } = useAppState("init", "project", "pickerOpen", "settingsOpen", "chatOpen", "chatWidth", "setChatWidth", "goHome", "pane", "railOpen", "setRailOpen");
   const layout = useLayout();
   useEffect(() => {
     void init();

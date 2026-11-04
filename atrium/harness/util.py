@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
+import hashlib
 import json
 import mimetypes
 import os
 import re
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, TypeVar
@@ -138,6 +142,35 @@ def parse_json_loose(text: str) -> dict[str, Any]:
     if start >= 0 and end > start:
         return json.loads(text[start : end + 1])
     raise ValueError("model did not return JSON")
+
+
+# what is written out of a transcript to be served from Atrium's origin: plain pictures (an SVG could run script there)
+_SERVED_IMAGES = {"image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif", "image/webp": ".webp"}
+
+
+def inline_image_url(b64: str, mime: str, name: str) -> str | None:
+    """A transcript's inline image as a URL the UI loads it from, as a composer attachment's: written once to the
+    uploads folder, named after its content (the upload it was sent from, if there is one). As base64 in the
+    conversation, it would be megabytes in every load of it, kept by no cache. None: not a picture of those kinds,
+    or it can't be written."""
+    from ..config import UPLOADS_DIR
+
+    ext = _SERVED_IMAGES.get(mime)
+    if not ext:
+        return None
+    try:
+        data = base64.b64decode(b64, validate=True)
+        sha = hashlib.sha1(data).hexdigest()[:12]  # as /api/uploads names them
+        path = next(UPLOADS_DIR.glob(f"{sha}__*"), None)
+        if path is None:
+            path = UPLOADS_DIR / f"{sha}__{name}{ext}"
+            UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+            tmp = UPLOADS_DIR / f".{sha}.{uuid.uuid4().hex}.tmp"
+            tmp.write_bytes(data)
+            tmp.replace(path)
+        return f"/api/uploads/{path.name}"
+    except (binascii.Error, ValueError, OSError):
+        return None
 
 
 def upload_url(path: str | None) -> str | None:

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Bot, CheckCheck, CheckCircle2, Circle, ExternalLink, GitCommitHorizontal, Maximize2, Minimize2, Minus, Plus, RefreshCw, Undo2 } from "lucide-react";
 import { AgentChanges, api, ChangeDetail, ChangeFile, GitStatusFile, GitSummary, ReviewSummary } from "../api";
-import { useApp } from "../store";
+import { useAppState } from "../store";
 import { agentColor, basename, clsx, displayName, languageFor, shortPath, throttle } from "../util";
 import { DiffEditor } from "../components/LazyEditors";
 import { DiffOptions } from "../components/DiffOptions";
@@ -41,7 +41,7 @@ function useListWidth() {
 
 export function ChangesPanel() {
   const [mode, setMode] = useState<"agents" | "tree">("agents");
-  const { project } = useApp();
+  const { project } = useAppState("project");
   const ref = useRef<HTMLDivElement>(null);
   const [full, toggleFull] = useFullscreen(ref);
   if (!project) return null;
@@ -71,7 +71,7 @@ export function ChangesPanel() {
 
 // ---------------------------------------------------------------- per agent
 function AgentChangesView() {
-  const { project, sessions, sessionId, changesSession, fsVersion, reviewVersion, toast, openFile } = useApp();
+  const { project, sessions, sessionId, changesSession, fsVersion, reviewVersion, toast, openFile } = useAppState("project", "sessions", "sessionId", "changesSession", "fsVersion", "reviewVersion", "toast", "openFile");
   const pid = project!.id;
   const [agents, setAgents] = useState<AgentChanges[] | null>(null);
   const [reviews, setReviews] = useState<Record<string, ReviewSummary>>({});
@@ -373,7 +373,7 @@ function AgentChangesView() {
 
 // ---------------------------------------------------------------- git working tree
 function WorkingTreeView() {
-  const { project, gitVersion, toast, openFile } = useApp();
+  const { project, gitVersion, toast, openFile } = useAppState("project", "gitVersion", "toast", "openFile");
   const pid = project!.id;
   const [root, setRoot] = useState(project!.path);
   const [sum, setSum] = useState<GitSummary | null>(null);

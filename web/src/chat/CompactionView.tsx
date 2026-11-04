@@ -7,7 +7,7 @@ import { useApp } from "../store";
 import { displayName } from "../util";
 import { Spinner } from "../components/ui";
 import { compactionLabel } from "../components/Compactions";
-import { Transcript, apply, empty, toBlocks } from "./ChatView";
+import { Transcript, applyAll, empty, toBlocks } from "./ChatView";
 
 export function CompactionView({ pid, sid, cid, cwd }: { pid: string; sid: string; cid: string; cwd: string }) {
   const parent = useApp((s) => s.sessions.find((x) => x.id === sid));
@@ -31,7 +31,7 @@ export function CompactionView({ pid, sid, cid, cwd }: { pid: string; sid: strin
     };
   }, [pid, sid, cid]);
 
-  const st = useMemo(() => (data ? data.items.reduce(apply, empty()) : empty()), [data]);
+  const st = useMemo(() => (data ? applyAll(empty(), data.items) : empty()), [data]);
   const blocks = useMemo(() => toBlocks(st.items), [st.items]);
   // open at its end, as a chat does: where the compaction cut it
   useLayoutEffect(() => {

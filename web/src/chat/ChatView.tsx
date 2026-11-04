@@ -1,12 +1,12 @@
 import type { JSX, MouseEvent, ReactNode } from "react";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowUp, ArrowUpRight, Brain, ChevronRight, FoldVertical, GitFork, Info, Pencil, Sparkle, Square } from "lucide-react";
 import { api, EditAt, ForkAt, Item, LiveState, MoveWorkspace, SessionRow, SessionSettings } from "../api";
 import { socket } from "../ws";
 import { useApp } from "../store";
 import { EMPTY_REPLY, Workspace, useDrafts } from "../drafts";
-import { clsx, fmtClock, fmtDuration } from "../util";
-import { Markdown, Spinner } from "../components/ui";
+import { clsx, fmtClock, fmtDuration, samePoint } from "../util";
+import { Markdown, Spinner, StreamingMarkdown } from "../components/ui";
 import { useOpenCompaction } from "../components/Compactions";
 import { FileLinks } from "../components/FileLinks";
 import { BoardToolRow, PermissionCard, ToolRow, isBoardTool, useOpenSubagent } from "./ToolViews";
@@ -43,45 +43,63 @@ export const empty = (): ChatState => ({
   items: [], seen: new Set(), results: {}, pending: {}, resolved: new Set(), streaming: "", state: null, mode: null, model: null, effort: null, usage: null,
 });
 
-export function apply(st: ChatState, it: Item): ChatState {
-  switch (it.kind) {
-    case "delta":
-      return { ...st, streaming: st.streaming + it.text };
-    case "state":
-      return { ...st, state: it.state, streaming: it.state === "running" ? st.streaming : "" };
-    case "usage":
-      return { ...st, usage: { used: it.used, max: it.max } };
-    case "tool_result":
-      return { ...st, results: { ...st.results, [it.id]: it } };
-    case "permission": {
-      if (st.resolved.has(it.id)) return st;
-      return { ...st, pending: { ...st.pending, [it.id]: it } };
-    }
-    case "permission_resolved": {
-      const pending = { ...st.pending };
-      delete pending[it.id];
-      const resolved = new Set(st.resolved);
-      resolved.add(it.id);
-      return { ...st, pending, resolved };
-    }
-    default: {
-      if (st.seen.has(it.id)) {
-        // harnesses may re-send a tool call once its input is final (upsert)
-        if (it.kind === "tool") return { ...st, items: st.items.map((x) => (x.kind === "tool" && x.id === it.id ? it : x)) };
-        return st;
+/** The chat with `its` applied, in order. What they change is copied once, not once per item: a long conversation's
+ *  snapshot, a frame's worth of live items. */
+export function applyAll(st: ChatState, its: Item[]): ChatState {
+  const next: ChatState = { ...st };
+  let items: Item[] | null = null, seen: Set<string> | null = null, resolved: Set<string> | null = null;
+  let results: ChatState["results"] | null = null, pending: ChatState["pending"] | null = null;
+  let changed = false; // an item seen before changes nothing: the same state, and no render
+  for (const it of its) {
+    switch (it.kind) {
+      case "delta":
+        next.streaming += it.text;
+        break;
+      case "state":
+        next.state = it.state;
+        if (it.state !== "running") next.streaming = "";
+        break;
+      case "usage":
+        next.usage = { used: it.used, max: it.max };
+        break;
+      case "tool_result":
+        (results ??= { ...st.results })[it.id] = it;
+        break;
+      case "permission":
+        if ((resolved ?? st.resolved).has(it.id)) continue;
+        (pending ??= { ...st.pending })[it.id] = it;
+        break;
+      case "permission_resolved":
+        delete (pending ??= { ...st.pending })[it.id];
+        (resolved ??= new Set(st.resolved)).add(it.id);
+        break;
+      default: {
+        if ((seen ?? st.seen).has(it.id)) {
+          // harnesses may re-send a tool call once its input is final (upsert)
+          const i = it.kind === "tool" ? (items ?? st.items).findIndex((x) => x.kind === "tool" && x.id === it.id) : -1;
+          if (i < 0) continue;
+          (items ??= [...st.items])[i] = it;
+          break;
+        }
+        (seen ??= new Set(st.seen)).add(it.id);
+        (items ??= [...st.items]).push(it);
+        if (it.kind === "text") next.streaming = "";
+        if (it.kind === "system" && it.subtype === "init") {
+          next.mode = it.permission_mode ?? next.mode;
+          next.model = it.model ?? next.model;
+          next.effort = it.effort ?? next.effort;
+        }
       }
-      const seen = new Set(st.seen);
-      seen.add(it.id);
-      const next: ChatState = { ...st, items: [...st.items, it], seen };
-      if (it.kind === "text") next.streaming = "";
-      if (it.kind === "system" && it.subtype === "init") {
-        next.mode = it.permission_mode ?? next.mode;
-        next.model = it.model ?? next.model;
-        next.effort = it.effort ?? next.effort;
-      }
-      return next;
     }
+    changed = true;
   }
+  if (!changed) return st;
+  if (items) next.items = items;
+  if (seen) next.seen = seen;
+  if (results) next.results = results;
+  if (pending) next.pending = pending;
+  if (resolved) next.resolved = resolved;
+  return next;
 }
 
 export type Block =
@@ -217,118 +235,172 @@ export function Transcript({ blocks, results, running, cwd, forks, onFork, steps
 }) {
   // a finger has no hover: a tap on a message shows its time, until it taps it again or another one
   const [tapped, setTapped] = useState<string | null>(null);
-  const tap = useCallback((key: string) => (e: MouseEvent) => {
+  const onTap = useCallback((key: string, e: MouseEvent) => {
     if (!window.matchMedia("(hover: none)").matches || (e.target as Element).closest(TAPPABLE)) return;
     if (!window.getSelection()?.isCollapsed) return;
     setTapped((k) => (k === key ? null : key));
   }, []);
-  const timed = useCallback((key: string) => ({ onClick: tap(key), "data-time": tapped === key ? "shown" : undefined }), [tap, tapped]);
+  // the same elements while nothing here changes (a keystroke in the composer); else each block renders again only
+  // if what it shows changed (sameBlock): a new item renders itself, not the whole conversation
   const rendered = useMemo(
     () =>
-      blocks.map((b) => {
-        if (b.type === "tools")
-          return (
-            <div className="timed" key={b.key} {...timed(b.key)}>
-              <div className="tools">
-                {b.tools.map((t) => {
-                  const at = onForkStep && steps?.get(t.id);
-                  return (
-                    <ToolRow
-                      key={t.id} tool={t} result={results[t.id]} cwd={cwd} running={running}
-                      onFork={at ? (step: string) => onForkStep(at, step) : undefined}
-                    />
-                  );
-                })}
-              </div>
-              <MsgTime ts={b.tools[0].ts} />
-            </div>
-          );
-        if (b.type === "board") return <BoardToolRow key={b.key} tool={b.tool} />;
-        if (b.type === "review") return <ReviewToolBlock key={b.key} tool={b.tool} result={results[b.tool.id]} latest={b.latest} />;
-        const it = b.item;
-        switch (it.kind) {
-          case "user": {
-            const at = forks?.get(it.id);
-            const edit = onEdit ? edits?.get(it.id) : undefined;
-            if (edit && editing === it.id && editor) return <div key={b.key} className="msg-edit-row">{editor(it, edit)}</div>;
-            return (
-              <div className="msg-user-row timed" key={b.key} {...timed(b.key)}>
-                {(edit || (at && onFork)) && (
-                  <div className="msg-actions">
-                    {at && onFork && (
-                      <button className="icon-btn sm" aria-label="Fork from here" data-tip="Fork from here: a new agent that remembers everything before this message" onClick={() => onFork(at, it.text)}>
-                        <GitFork size={13} />
-                      </button>
-                    )}
-                    {edit && (
-                      <button className="icon-btn sm" aria-label="Edit" data-tip="Edit: the conversation goes back to here and carries on with what you send instead" onClick={() => onEdit?.(it.id)}>
-                        <Pencil size={13} />
-                      </button>
-                    )}
-                  </div>
-                )}
-                <div className={clsx("msg-user", it.command && "command")}>
-                  {it.attachments?.length ? <MessageAttachments items={it.attachments} /> : null}
-                  {it.command ? <CommandText text={it.text} /> : it.text}
-                </div>
-                <MsgTime ts={it.ts} />
-              </div>
-            );
-          }
-          case "text": {
-            const at = onForkStep && steps?.get(it.id);
-            return (
-              <div className="msg-text timed" key={b.key} {...timed(b.key)}>
-                <Markdown text={it.text} />
-                <MsgTime ts={it.ts} />
-                {at && <StepForkButton onClick={() => onForkStep(at, it.text)} />}
-              </div>
-            );
-          }
-          case "command_output":
-            return (
-              <div className="msg-output" key={b.key}>
-                <Markdown text={it.text} />
-              </div>
-            );
-          case "thinking":
-            return (
-              <details className="msg-thinking timed" key={b.key} {...timed(b.key)}>
-                <summary>
-                  <Brain size={13} /> Thinking <ChevronRight size={12} />
-                  <MsgTime ts={it.ts} />
-                </summary>
-                <div className="content">{it.text}</div>
-              </details>
-            );
-          case "system":
-            return <SystemLine key={b.key} item={it} />;
-          case "result":
-            return (
-              <div className="msg-result timed" key={b.key} {...timed(b.key)}>
-                <MsgTime ts={it.ts} />
-                {it.is_error ? <span className="pill err">{it.subtype}</span> : <span>Done</span>}
-                {it.turns ? <span>{it.turns} turns</span> : null}
-                {it.duration_ms ? <span>{fmtDuration(it.duration_ms)}</span> : null}
-                {it.cost_usd ? <span>${it.cost_usd.toFixed(3)}</span> : null}
-                {it.text && <span>{it.text}</span>}
-              </div>
-            );
-          case "error":
-            return (
-              <div className="msg-error timed" key={b.key} {...timed(b.key)}>
-                {it.text}
-                <MsgTime ts={it.ts} />
-              </div>
-            );
-          default:
-            return null;
-        }
-      }),
-    [blocks, results, running, cwd, forks, onFork, steps, onForkStep, edits, editing, onEdit, editor, timed],
+      blocks.map((b) => (
+        <BlockView
+          key={b.key} b={b} results={results} running={running} cwd={cwd} shown={tapped === b.key} onTap={onTap}
+          forks={forks} onFork={onFork} steps={steps} onForkStep={onForkStep}
+          edits={edits} onEdit={onEdit} editing={b.type === "item" && b.item.kind === "user" && editing === b.item.id} editor={editor}
+        />
+      )),
+    [blocks, results, running, cwd, tapped, onTap, forks, onFork, steps, onForkStep, edits, onEdit, editing, editor],
   );
   return <FileLinks cwd={cwd} running={running}>{rendered}</FileLinks>;
 }
+
+interface BlockProps {
+  b: Block;
+  results: Record<string, ResultItem>;
+  running: boolean;
+  cwd: string;
+  shown: boolean; // its time, tapped open
+  onTap: (key: string, e: MouseEvent) => void;
+  forks?: Map<string, ForkAt> | null;
+  onFork?: (at: ForkAt, text: string) => void;
+  steps?: Map<string, ForkAt> | null;
+  onForkStep?: (at: ForkAt, step: string) => void;
+  edits?: Map<string, EditAt> | null;
+  onEdit?: (id: string) => void;
+  editing: boolean;
+  editor?: (item: UserItem, at: EditAt) => ReactNode;
+}
+
+/** Whether a block shows the same as before: its items and their results are the same objects (blocks are made
+ *  again for every change, the items in them are kept), and so are the handlers of its buttons; where they fork or
+ *  edit is worked out again for every change too, so it is compared by what it is. */
+function sameBlock(p: BlockProps, n: BlockProps): boolean {
+  if (p.cwd !== n.cwd || p.shown !== n.shown || p.onTap !== n.onTap || p.b.type !== n.b.type) return false;
+  const a = p.b, b = n.b;
+  const step = (q: BlockProps, id: string) => (q.onForkStep ? q.steps?.get(id) : undefined);
+  const sameStep = (id: string) => p.onForkStep === n.onForkStep && samePoint(step(p, id), step(n, id));
+  switch (b.type) {
+    case "tools": {
+      const prev = (a as typeof b).tools;
+      if (prev.length !== b.tools.length) return false;
+      if (b.tools.some((t, i) => t !== prev[i] || p.results[t.id] !== n.results[t.id] || !sameStep(t.id))) return false;
+      return p.running === n.running || b.tools.every((t) => n.results[t.id]); // a call still waiting spins while the turn runs
+    }
+    case "board":
+      return (a as typeof b).tool === b.tool;
+    case "review":
+      return (a as typeof b).tool === b.tool && (a as typeof b).latest === b.latest && p.results[b.tool.id] === n.results[b.tool.id];
+    case "item": {
+      const it = b.item;
+      if ((a as typeof b).item !== it) return false;
+      if (it.kind === "text") return sameStep(it.id);
+      if (it.kind !== "user") return true;
+      return (
+        p.onFork === n.onFork && samePoint(p.forks?.get(it.id), n.forks?.get(it.id)) &&
+        p.onEdit === n.onEdit && samePoint(p.edits?.get(it.id), n.edits?.get(it.id)) &&
+        p.editing === n.editing && (!n.editing || p.editor === n.editor)
+      );
+    }
+  }
+}
+
+const BlockView = memo(function BlockView({ b, results, running, cwd, shown, onTap, forks, onFork, steps, onForkStep, edits, onEdit, editing, editor }: BlockProps) {
+  const timed = { onClick: (e: MouseEvent) => onTap(b.key, e), "data-time": shown ? "shown" : undefined };
+  if (b.type === "tools")
+    return (
+      <div className="timed" {...timed}>
+        <div className="tools">
+          {b.tools.map((t) => (
+            <ToolRow key={t.id} tool={t} result={results[t.id]} cwd={cwd} running={running} at={onForkStep ? steps?.get(t.id) : undefined} onForkStep={onForkStep} />
+          ))}
+        </div>
+        <MsgTime ts={b.tools[0].ts} />
+      </div>
+    );
+  if (b.type === "board") return <BoardToolRow tool={b.tool} />;
+  if (b.type === "review") return <ReviewToolBlock tool={b.tool} result={results[b.tool.id]} latest={b.latest} />;
+  const it = b.item;
+  switch (it.kind) {
+    case "user": {
+      const fork = forks?.get(it.id);
+      const edit = onEdit ? edits?.get(it.id) : undefined;
+      if (edit && editing && editor) return <div className="msg-edit-row">{editor(it, edit)}</div>;
+      return (
+        <div className="msg-user-row timed" {...timed}>
+          {(edit || (fork && onFork)) && (
+            <div className="msg-actions">
+              {fork && onFork && (
+                <button className="icon-btn sm" aria-label="Fork from here" data-tip="Fork from here: a new agent that remembers everything before this message" onClick={() => onFork(fork, it.text)}>
+                  <GitFork size={13} />
+                </button>
+              )}
+              {edit && (
+                <button className="icon-btn sm" aria-label="Edit" data-tip="Edit: the conversation goes back to here and carries on with what you send instead" onClick={() => onEdit?.(it.id)}>
+                  <Pencil size={13} />
+                </button>
+              )}
+            </div>
+          )}
+          <div className={clsx("msg-user", it.command && "command")}>
+            {it.attachments?.length ? <MessageAttachments items={it.attachments} /> : null}
+            {it.command ? <CommandText text={it.text} /> : it.text}
+          </div>
+          <MsgTime ts={it.ts} />
+        </div>
+      );
+    }
+    case "text": {
+      const at = onForkStep && steps?.get(it.id);
+      return (
+        <div className="msg-text timed" {...timed}>
+          <Markdown text={it.text} />
+          <MsgTime ts={it.ts} />
+          {at && <StepForkButton onClick={() => onForkStep(at, it.text)} />}
+        </div>
+      );
+    }
+    case "command_output":
+      return (
+        <div className="msg-output">
+          <Markdown text={it.text} />
+        </div>
+      );
+    case "thinking":
+      return (
+        <details className="msg-thinking timed" {...timed}>
+          <summary>
+            <Brain size={13} /> Thinking <ChevronRight size={12} />
+            <MsgTime ts={it.ts} />
+          </summary>
+          <div className="content">{it.text}</div>
+        </details>
+      );
+    case "system":
+      return <SystemLine item={it} />;
+    case "result":
+      return (
+        <div className="msg-result timed" {...timed}>
+          <MsgTime ts={it.ts} />
+          {it.is_error ? <span className="pill err">{it.subtype}</span> : <span>Done</span>}
+          {it.turns ? <span>{it.turns} turns</span> : null}
+          {it.duration_ms ? <span>{fmtDuration(it.duration_ms)}</span> : null}
+          {it.cost_usd ? <span>${it.cost_usd.toFixed(3)}</span> : null}
+          {it.text && <span>{it.text}</span>}
+        </div>
+      );
+    case "error":
+      return (
+        <div className="msg-error timed" {...timed}>
+          {it.text}
+          <MsgTime ts={it.ts} />
+        </div>
+      );
+    default:
+      return null;
+  }
+}, sameBlock);
 
 /** A slash command as sent: the command, then its arguments. */
 function CommandText({ text }: { text: string }) {
@@ -389,7 +461,7 @@ function SystemLine({ item }: { item: SystemItem }) {
   );
 }
 
-export function ChatView({ pid, sid, cwd, compact, forkable, editable, modeLocked, placeholder, emptyHint }: {
+export const ChatView = memo(function ChatView({ pid, sid, cwd, compact, forkable, editable, modeLocked, placeholder, emptyHint }: {
   pid: string;
   sid: string;
   cwd: string;
@@ -437,6 +509,21 @@ export function ChatView({ pid, sid, cwd, compact, forkable, editable, modeLocke
     let alive = true;
     let ready = false;
     const buffer: Item[] = [];
+    // live items go in once a frame, together: a burst of them, or a reply streamed token by token, renders once
+    let queued: Item[] = [];
+    let frame = 0;
+    const flush = () => {
+      cancelAnimationFrame(frame);
+      frame = 0;
+      const its = queued;
+      queued = [];
+      setSt((s) => applyAll(s, its));
+    };
+    const queue = (it: Item) => {
+      queued.push(it);
+      if (queued.length >= 1000) flush(); // a hidden page gets no frames until it is shown
+      else frame ||= requestAnimationFrame(flush);
+    };
     setSt(empty());
     setLoadedRow(null);
     setLoading(true);
@@ -450,16 +537,18 @@ export function ChatView({ pid, sid, cwd, compact, forkable, editable, modeLocke
       }
       if (msg.type !== "item") return;
       if (!ready) buffer.push(msg.item);
-      else setSt((s) => apply(s, msg.item));
+      else queue(msg.item);
     });
     const load = () =>
       api
         .session(pid, sid)
         .then((snap) => {
           if (!alive) return;
-          let s = empty();
-          for (const it of snap.items) s = apply(s, it);
-          for (const it of buffer) s = apply(s, it);
+          // what was still queued came before this was asked for: the snapshot has it
+          cancelAnimationFrame(frame);
+          frame = 0;
+          queued = [];
+          const s = applyAll(empty(), [...snap.items, ...buffer]);
           // drop permissions the server no longer considers pending
           const pend = new Set(snap.pending);
           s.pending = Object.fromEntries(Object.entries(s.pending).filter(([k]) => pend.has(k) || buffer.some((b) => b.kind === "permission" && b.id === k)));
@@ -480,6 +569,7 @@ export function ChatView({ pid, sid, cwd, compact, forkable, editable, modeLocke
     });
     return () => {
       alive = false;
+      cancelAnimationFrame(frame);
       unsub();
       offRe();
     };
@@ -641,7 +731,7 @@ export function ChatView({ pid, sid, cwd, compact, forkable, editable, modeLocke
           />
           {st.streaming && (
             <div className="msg-text stream-cursor">
-              <Markdown text={st.streaming} />
+              <StreamingMarkdown text={st.streaming} />
             </div>
           )}
           <FileLinks cwd={cwd}>
@@ -734,4 +824,4 @@ export function ChatView({ pid, sid, cwd, compact, forkable, editable, modeLocke
       </div>
     </div>
   );
-}
+});

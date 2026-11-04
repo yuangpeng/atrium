@@ -2,12 +2,12 @@ import type { JSX } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, CircleAlert, Code, ExternalLink, Eye, EyeOff, File, FilePlus, Folder, FolderOpen, FolderPlus, Lock, Maximize2, Minimize2, Pencil, RefreshCw, Save, Trash2, TriangleAlert, X } from "lucide-react";
 import { api, ApiError, DirEntry } from "../api";
-import { FileTarget, useApp } from "../store";
+import { FileTarget, useApp, useAppState } from "../store";
 import { basename, clsx, languageFor, MEDIA_KINDS, previewKind, shortPath, throttle } from "../util";
 import { CodeEditor, FilePreview } from "../components/LazyEditors";
 import type { Reveal } from "../components/Editors";
 import { LockToggle, useEditLock } from "../components/EditLock";
-import { useFullscreen } from "../components/ui";
+import { useFullscreen, usePanelShown } from "../components/ui";
 import { editorBridge, useEditorStatus } from "../editorStatus";
 
 interface OpenFile {
@@ -89,7 +89,7 @@ function EditorStatusLine({ path, language }: { path: string; language: string }
 }
 
 export function FilesPanel() {
-  const { project, fileRequest, fsVersion, fsPaths, toast } = useApp();
+  const { project, fileRequest, fsVersion, fsPaths, toast } = useAppState("project", "fileRequest", "fsVersion", "fsPaths", "toast");
   const roots = useMemo(() => project?.worktrees.length ? project.worktrees.map((w) => ({ path: w.path, label: w.main ? `${project.name} (${w.branch ?? "detached"})` : `⎇ ${w.branch ?? "detached"}` })) : project ? [{ path: project.path, label: project.name }] : [], [project]);
   const [root, setRoot] = useState<string>(project?.path ?? "");
   const [hidden, setHidden] = useState(false);
@@ -138,9 +138,18 @@ export function FilesPanel() {
   const expandedRef = useRef(expanded);
   expandedRef.current = expanded;
   const refreshTree = useMemo(() => throttle(() => expandedRef.current.forEach((d) => void loadDir(d)), 1200), [loadDir]);
+  // behind another panel, the tree is listed again once it is shown
+  const shown = usePanelShown("files");
+  const stale = useRef(false);
+  useEffect(() => {
+    if (!shown || !stale.current) return;
+    stale.current = false;
+    refreshTree();
+  }, [shown, refreshTree]);
   useEffect(() => {
     if (!fsVersion) return;
-    refreshTree();
+    if (shown) refreshTree();
+    else stale.current = true;
     const changed = new Set(fsPaths);
     setOpen((files) => {
       files.forEach((f) => {

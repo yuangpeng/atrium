@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { useShallow } from "zustand/react/shallow";
 import { api, ForkAt, Meta, onLoggedOut, Project, ProjectInfo, SessionRow } from "./api";
 import { socket } from "./ws";
 import { throttle } from "./util";
@@ -99,6 +100,23 @@ let unsubProject: (() => void) | null = null;
 let toastId = 0;
 let sessionsAsked = 0; // session-list requests sent
 let sessionsShown = 0; // the one whose answer is in the store
+
+/** These fields of the store, rendering again only when one of them changes (a bare useApp() renders on every change:
+ *  a session list refreshed, a file written, a toast). */
+export function useAppState<K extends keyof AppState>(...keys: K[]): Pick<AppState, K> {
+  return useApp(useShallow((s) => Object.fromEntries(keys.map((k) => [k, s[k]])) as Pick<AppState, K>));
+}
+
+/** The fresh session list, keeping the rows that didn't change (and the list, if none did): what shows one only
+ *  renders again when it changes. */
+function keepRows(prev: SessionRow[], next: SessionRow[]): SessionRow[] {
+  const old = new Map(prev.map((r) => [r.id, r]));
+  const rows = next.map((r) => {
+    const o = old.get(r.id);
+    return o && JSON.stringify(o) === JSON.stringify(r) ? o : r;
+  });
+  return rows.length === prev.length && rows.every((r, i) => r === prev[i]) ? prev : rows;
+}
 
 function syncUrl(pid: string | null, sid: string | null, aid: string | null = null, cid: string | null = null) {
   const u = new URL(location.href);
@@ -272,7 +290,8 @@ export const useApp = create<AppState>((set, get) => {
         // answers can overtake each other: never go back to an older list, nor show one from before Archived was toggled
         if (seq < sessionsShown || archived !== get().showArchived || get().project?.id !== p.id) return;
         sessionsShown = seq;
-        set({ sessions });
+        const kept = keepRows(get().sessions, sessions);
+        if (kept !== get().sessions) set({ sessions: kept });
       } catch {
         /* transient */
       }

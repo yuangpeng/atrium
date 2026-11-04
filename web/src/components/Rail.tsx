@@ -1,7 +1,7 @@
 // The rail on the far right: home, new agent, one avatar per agent (status at a glance,
 // details on hover), the full agent list as a flyout, the system agents, settings.
 import type { ReactNode } from "react";
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useShallow } from "zustand/react/shallow";
 import type { LucideIcon } from "lucide-react";
@@ -11,7 +11,7 @@ import {
   Snail, Snowflake, Sprout, SquarePen, Squirrel, Star, Sun, Telescope, Trash2, Turtle, Workflow, X,
 } from "lucide-react";
 import { api, SessionRow } from "../api";
-import { useApp } from "../store";
+import { useApp, useAppState } from "../store";
 import { EMPTY_REPLY, hasContent, hasReply, useDrafts } from "../drafts";
 import { clsx, displayName, tidyNote, timeAgo } from "../util";
 import { realHover, useCompact, useLayout } from "../layout";
@@ -181,7 +181,7 @@ function Tip({ title, sub, hint }: { title: ReactNode; sub?: ReactNode; hint?: s
 
 // ---------------------------------------------------------------- flyout with the full list
 function AgentsFlyout({ onClose }: { onClose: () => void }) {
-  const { project, meta, sessions, sessionId, subagentId, compactionId, selectSession, showArchived, setShowArchived, refreshSessions, toast } = useApp();
+  const { project, meta, sessions, sessionId, subagentId, compactionId, selectSession, showArchived, setShowArchived, refreshSessions, toast } = useAppState("project", "meta", "sessions", "sessionId", "subagentId", "compactionId", "selectSession", "showArchived", "setShowArchived", "refreshSessions", "toast");
   const glyphs = useGlyphs();
   // agents with an unsent reply, but not the one whose composer is on screen
   const drafted = useDrafts(useShallow((d) => Object.keys(d.bySession).filter((k) => hasReply(d.bySession[k]) && (k !== sessionId || !!subagentId || !!compactionId))));
@@ -304,12 +304,12 @@ function AgentsFlyout({ onClose }: { onClose: () => void }) {
 }
 
 // ---------------------------------------------------------------- rail
-export function Rail() {
+export const Rail = memo(function Rail() {
   useTick(30000);
   const {
     meta, project, sessions, sessionId, subagentId, compactionId, selectSession, selectSubagent, selectCompaction, refreshSessions, openProject, setSettingsOpen,
     theme, setTheme, setPanel, pane, chatOpen,
-  } = useApp();
+  } = useAppState("meta", "project", "sessions", "sessionId", "subagentId", "compactionId", "selectSession", "selectSubagent", "selectCompaction", "refreshSessions", "openProject", "setSettingsOpen", "theme", "setTheme", "setPanel", "pane", "chatOpen");
   const layout = useLayout();
   const draftWaiting = useDrafts((s) => hasContent(s.byProject[project?.id ?? ""]));
   const compact = useCompact();
@@ -443,4 +443,4 @@ export function Rail() {
       {flyout && project && <AgentsFlyout onClose={() => setFlyout(false)} />}
     </nav>
   );
-}
+});

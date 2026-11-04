@@ -1,12 +1,12 @@
 import type { JSX } from "react";
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import {
   ArrowUpRight, Bot, Check, ChevronDown, ChevronRight, ClipboardCheck, ExternalLink, FileDiff, FilePlus2, FileText, GitBranch, GitFork, Globe, Image,
   LayoutDashboard, Link2, ListTodo, Pencil, Plug, Search, ShieldAlert, Terminal, X,
 } from "lucide-react";
-import { Item } from "../api";
+import { ForkAt, Item } from "../api";
 import { useApp } from "../store";
-import { relTo } from "../util";
+import { relTo, samePoint } from "../util";
 import { Markdown, Spinner } from "../components/ui";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
@@ -297,16 +297,20 @@ export function useOpenSubagent(toolUseId: string | null, agentIds?: string[]): 
   return aid && sessionId ? () => selectSubagent(sessionId, aid) : null;
 }
 
-/** A tool call's row, opening on its details. With `onFork` (given what the call was, in a few words), "fork from
- *  here": in the row on hover, and in the details (for a finger, which opens them first). */
-export function ToolRow({ tool, result, cwd, running, onFork }: {
-  tool: ToolItem; result?: ResultItem; cwd: string; running: boolean; onFork?: (step: string) => void;
-}) {
+type ToolRowProps = {
+  tool: ToolItem; result?: ResultItem; cwd: string; running: boolean; at?: ForkAt; onForkStep?: (at: ForkAt, step: string) => void;
+};
+
+/** A tool call's row, opening on its details. With `at` and `onForkStep` (given what the call was, in a few words),
+ *  "fork from here": in the row on hover, and in the details (for a finger, which opens them first). It renders again
+ *  only when its call, its result or where it forks changes (or, while it waits for its result, the turn starts or
+ *  ends): an Edit's brief diffs its strings. */
+export const ToolRow = memo(function ToolRow({ tool, result, cwd, running, at, onForkStep }: ToolRowProps) {
   const [open, setOpen] = useState(tool.name === "TodoWrite");
-  const meta = toolMeta(tool.name, tool.input || {}, cwd);
+  const meta = useMemo(() => toolMeta(tool.name, tool.input || {}, cwd), [tool, cwd]);
   const spawns = tool.name === "Agent" || tool.name === "Task";
   const openSub = useOpenSubagent(spawns ? tool.id : null, spawns ? tool.input?.agent_ids : undefined);
-  const fork = onFork && (() => onFork(meta.brief ? `${meta.label}: ${meta.brief}` : meta.label));
+  const fork = at && onForkStep && (() => onForkStep(at, meta.brief ? `${meta.label}: ${meta.brief}` : meta.label));
   return (
     <div className="tool">
       <div className="tool-row" onClick={() => setOpen((o) => !o)}>
@@ -348,7 +352,10 @@ export function ToolRow({ tool, result, cwd, running, onFork }: {
       )}
     </div>
   );
-}
+}, (a: ToolRowProps, b: ToolRowProps) =>
+  a.tool === b.tool && a.result === b.result && a.cwd === b.cwd && (a.running === b.running || !!b.result) &&
+  a.onForkStep === b.onForkStep && samePoint(a.at, b.at),
+);
 
 export function BoardToolRow({ tool }: { tool: ToolItem }) {
   const setPanel = useApp((s) => s.setPanel);

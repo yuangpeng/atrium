@@ -1,13 +1,13 @@
 import { useEffect, useState } from "react";
 import { ArrowUp, Folder, FolderGit2 } from "lucide-react";
 import { api } from "../api";
-import { useApp } from "../store";
+import { useAppState } from "../store";
 import { shortPath } from "../util";
 import { Modal, Spinner } from "./ui";
 
 /** Open a folder as a project, or make a new one (in the folder being browsed), git-initialised by default. */
 export function ProjectPicker() {
-  const { pickerOpen, addProject, setPickerOpen, toast } = useApp();
+  const { pickerOpen, addProject, setPickerOpen, toast } = useAppState("pickerOpen", "addProject", "setPickerOpen", "toast");
   const creating = pickerOpen === "create";
   const [path, setPath] = useState("");
   const [dir, setDir] = useState<Awaited<ReturnType<typeof api.browse>> | null>(null);
