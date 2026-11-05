@@ -297,10 +297,13 @@ a { color: var(--accent-strong); }
 .chat-body { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; }
 /* never sideways: a finger then drags the whole chat. Code blocks and tables scroll inside themselves (.md) */
 .chat-scroll { flex: 1; overflow-y: auto; overflow-x: hidden; scroll-behavior: auto; }
-/* a word, path or inline code longer than the line breaks at its edge (agents write long ones); a table keeps its
-   words whole, and scrolls */
-.chat-inner { max-width: 780px; margin: 0 auto; padding: 18px 22px 36px; display: flex; flex-direction: column; gap: 14px; overflow-wrap: anywhere; }
-.chat-inner .md table { overflow-wrap: normal; }
+/* a word, path or inline code longer than the line breaks at its edge (agents write long ones). break-word, not
+   anywhere: anywhere also lowers every box's min-content to a letter, and a short label in a flex row (a permission's
+   tool name beside its ellipsized brief) then shrank to a column of letters. Inline code and links take anywhere
+   themselves, in text only: in a table it would squeeze their column to a letter too, where the table scrolls instead */
+.chat-inner { max-width: 780px; margin: 0 auto; padding: 18px 22px 36px; display: flex; flex-direction: column; gap: 14px; overflow-wrap: break-word; }
+.chat-inner .md :is(:not(pre) > code, a) { overflow-wrap: anywhere; }
+.chat-inner .md table :is(code, a) { overflow-wrap: normal; }
 /* back to the end, while scrolled well away from it */
 .to-end {
   position: absolute; left: 50%; bottom: 12px; z-index: 3; transform: translateX(-50%); width: 32px; height: 32px; padding: 0; border-radius: 50%;
@@ -309,7 +312,8 @@ a { color: var(--accent-strong); }
 }
 .to-end:hover { background: var(--surface-2); }
 /* a scrollbar a finger can drag: a touch screen's own can't be held (a mouse keeps the native one). A 30px strip to
-   grab, the bar drawn at its right; only there while the reader scrolls, so it takes no touch otherwise */
+   grab, the bar drawn at its right; shown while the reader scrolls, and grabbable only once the chat stops (.grab,
+   ScrollAids), so it takes no touch otherwise */
 .scroll-thumb { display: none; }
 @media (pointer: coarse) {
   .scroll-thumb {
@@ -320,7 +324,8 @@ a { color: var(--accent-strong); }
     content: ""; position: absolute; top: 0; bottom: 0; right: 3px; width: 5px; border-radius: 3px;
     background: color-mix(in srgb, var(--muted) 60%, transparent); transition: width 0.12s, background-color 0.12s;
   }
-  .scroll-thumb.on { opacity: 1; pointer-events: auto; transition: opacity 0.1s; }
+  .scroll-thumb.on { opacity: 1; transition: opacity 0.1s; }
+  .scroll-thumb.on.grab, .scroll-thumb.drag { pointer-events: auto; }
   .scroll-thumb.drag::before { width: 8px; background: var(--accent); }
 }
 .chat.compact .chat-inner { padding: 12px 14px 20px; gap: 10px; }
@@ -351,7 +356,8 @@ a { color: var(--accent-strong); }
 .msg-thinking summary { cursor: pointer; font-size: 12.5px; list-style: none; display: flex; align-items: center; gap: 6px; }
 .msg-thinking summary::-webkit-details-marker { display: none; }
 .msg-thinking .content { white-space: pre-wrap; margin-top: 6px; font-style: italic; }
-.msg-system { align-self: center; font-size: 12px; color: var(--faint); display: flex; align-items: center; gap: 6px; text-align: center; }
+.msg-system { align-self: center; max-width: 100%; font-size: 12px; color: var(--faint); display: flex; align-items: center; gap: 6px; text-align: center; }
+.msg-system > span { min-width: 0; } /* its one text: a long name or path breaks, inside the chat */
 /* the top of what is rendered of a long conversation (Transcript): more of it, as the reader also gets by scrolling up */
 .chat-earlier {
   align-self: center; display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 10px; border: 0; border-radius: 12px;
@@ -1088,8 +1094,9 @@ details.review-tool > summary::-webkit-details-marker { display: none; }
 .sub-link:hover { background: var(--accent-soft); }
 .sub-link.inline { height: 18px; padding: 0 4px; margin-left: 4px; vertical-align: baseline; font-size: inherit; }
 .sub-task { border: 1px solid var(--border); border-radius: 12px; background: var(--surface); overflow: hidden; }
-.sub-task-head { display: flex; align-items: center; gap: 6px; padding: 7px 12px; font-size: 12.5px; color: var(--muted); background: var(--surface-2); border-bottom: 1px solid var(--border); }
-.sub-task-head b { color: var(--text-2); font-weight: 600; }
+/* one line: the parent's name gives way (ellipsized), not "Task from" squeezed onto two */
+.sub-task-head { display: flex; align-items: center; gap: 6px; padding: 7px 12px; font-size: 12.5px; color: var(--muted); background: var(--surface-2); border-bottom: 1px solid var(--border); white-space: nowrap; }
+.sub-task-head b { color: var(--text-2); font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .sub-task-body { padding: 10px 12px; white-space: pre-wrap; word-wrap: break-word; font-size: 13.5px; color: var(--text-2); max-height: 240px; overflow: auto; }
 .sub-foot { flex: none; display: flex; align-items: center; gap: 8px; padding: 9px 12px 9px 16px; border-top: 1px solid var(--border); font-size: 12.5px; color: var(--muted); }
 .topbar .t-name .crumb { flex: 0 1 auto; min-width: 0; border: 0; background: transparent; padding: 2px 4px; margin: 0 -2px; border-radius: 6px; font: inherit; color: var(--muted); cursor: pointer; }
