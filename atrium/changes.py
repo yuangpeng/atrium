@@ -21,9 +21,11 @@ merged), its files are shown as the agent left them, read-only.
 
 from __future__ import annotations
 
+import dataclasses
 import difflib
 import os
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -35,28 +37,56 @@ from .harness.base import FileEdit, Replacement
 from .harness.util import iso_to_epoch
 from .project import Project
 
-_edit_cache: dict[tuple[str, str], tuple[int, list[FileEdit]]] = {}
-# (project, session) -> (what its change set was worked out from, the change set): the review inbox asks for every
-# agent's whenever a file changes, and one is tens of git calls (hundreds of agents: minutes)
-_changes_cache: dict[tuple[str, str], tuple[Any, dict[str, Any]]] = {}
+# (transcript, session) -> (what they were read from, the session's edits): the last few sessions', whose files are
+# looked at one after another. Not every session's: an edit tool's result can hold the whole file, so the edits of a
+# directory's sessions took as much memory as their transcripts (gigabytes), and kept it.
+_edit_cache: dict[tuple[str, str], tuple[Any, list[FileEdit]]] = {}
+_EDIT_CACHE_MAX = 8
+# (project, session) -> (what its change set was worked out from, the change set): the review inbox and the Tracker ask
+# for every agent's, again whenever a file changes, and one is tens of git calls and a read of its transcript
+_changes_cache: dict[tuple[str, str], tuple[Any, ...]] = {}
+_CHANGES_CACHE_MAX = 4096
+_cache_lock = threading.Lock()
 _roots: dict[str, tuple[float, str | None]] = {}  # directory -> (when, the checkout holding it)
 _UNKNOWN = object()  # baseline / agent-final content could not be determined
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 
-def _edits(sid: str, cwd: str, harness_id: str) -> list[FileEdit]:
+def _edits(project: Project, sid: str, cwd: str, harness_id: str) -> list[FileEdit]:
+    """The session's file edits, in order: a fork's own (not those its transcript copied from its source), holding only
+    what its changes are worked out from (``_slim``)."""
     harness = get_harness(harness_id)
     path = harness.transcript_path(sid, cwd)
     if not path:
         return []
-    size = path.stat().st_size
-    key = (str(path), sid)
-    hit = _edit_cache.get(key)
-    if hit and hit[0] == size:
-        return hit[1]
-    edits = harness.file_edits(sid, cwd)
-    _edit_cache[key] = (size, edits)
-    return edits
+    inherited = project.session_meta(sid).get("forked_at")
+    key, state = (str(path), sid), (_state(str(path)), inherited)
+    with _cache_lock:
+        hit = _edit_cache.pop(key, None)
+    if hit is None or hit[0] != state:
+        edits = [e for e in harness.file_edits(sid, cwd) if not inherited or ((ts := iso_to_epoch(e.ts)) is not None and ts > inherited)]
+        hit = (state, _slim(edits))
+    with _cache_lock:
+        _edit_cache[key] = hit  # the most recently used last
+        while len(_edit_cache) > _EDIT_CACHE_MAX:
+            del _edit_cache[next(iter(_edit_cache))]
+    return hit[1]
+
+
+def _slim(edits: list[FileEdit]) -> list[FileEdit]:
+    """``edits`` with only the contents a file's changes are worked out from: before its first edit (the baseline) and
+    after its last (what the agent left). Patches, replayed backwards, all stay."""
+    first: dict[str, int] = {}
+    last: dict[str, int] = {}
+    for i, e in enumerate(edits):
+        first.setdefault(e.path, i)
+        last[e.path] = i
+    out = []
+    for i, e in enumerate(edits):
+        before = e.before if first[e.path] == i else None
+        after = e.after if last[e.path] == i else None
+        out.append(e if (before, after) == (e.before, e.after) else dataclasses.replace(e, before=before, after=after))
+    return out
 
 
 def _stats(a: str | None, b: str | None) -> tuple[int, int]:
@@ -178,11 +208,8 @@ def _inside(path: str, root: str) -> bool:
 
 def _collect(project: Project, sid: str, cwd: str, harness_id: str) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
     files: dict[str, dict[str, Any]] = {}
-    inherited = project.session_meta(sid).get("forked_at")  # a fork's transcript opens with its source's edits
-    for e in _edits(sid, cwd, harness_id):
+    for e in _edits(project, sid, cwd, harness_id):
         ts = iso_to_epoch(e.ts)
-        if inherited and (ts is None or ts <= inherited):
-            continue
         f = files.get(e.path)
         if f is None:
             files[e.path] = f = {"path": e.path, "edits": [], "tools": set(), "first": ts, "last": ts, "detected": False}
@@ -290,56 +317,63 @@ def _state(path: str) -> tuple[int, int, int] | None:
 
 def session_changes(project: Project, sid: str, cwd: str, harness_id: str, heads: dict[str, str | None] | None = None) -> dict[str, Any]:
     """The files the session changed, each with how it stands now. Worked out again only when something it is worked
-    out from changed: the session's edits and snapshots, the files themselves, what was marked reviewed, and the HEAD
-    of a checkout a file's baseline was read from. ``heads``: those HEADs as already read (the same call for many
-    sessions reads each once). The result is shared: don't change it."""
-    files, snaps = _collect(project, sid, cwd, harness_id)
+    out from changed: its transcript, its snapshots, the files themselves, what was marked reviewed, and the HEAD of a
+    checkout a file's baseline was read from; else neither the transcript nor git is read. ``heads``: those HEADs as
+    already read (the same call for many sessions reads each once). The result is shared: don't change it."""
+    meta = project.session_meta(sid)
+    snaps = _snapshots(project, sid)
     gone_roots = _gone_roots(project, sid, cwd, snaps)
     reviews = project.reviews(sid)
-    sig = (cwd, tuple(gone_roots), tuple(sorted(reviews.items())), tuple((s["tree"], s["root"], s["phase"], s["ts"]) for s in snaps),
-           tuple((p, len(f["edits"]), f["edits"][-1].ts if f["edits"] else None, f["first"], f["last"], f["detected"], _state(p)) for p, f in files.items()))
+    transcript = get_harness(harness_id).transcript_path(sid, cwd)
+    base = (cwd, str(transcript), transcript and _state(str(transcript)), meta.get("forked_at"), tuple(gone_roots),
+            tuple(sorted(reviews.items())), tuple((s["tree"], s["root"], s["phase"], s["ts"]) for s in snaps))
     key = (project.id, sid)
     heads = {} if heads is None else heads
     hit = _changes_cache.get(key)
-    if hit and hit[0][0] == sig and all(_head(root, heads) == head for root, head in hit[0][1].items()):
-        return hit[1]
+    if hit and hit[0] == base and all(_state(p) == st for p, st in hit[1]) and all(_head(root, heads) == head for root, head in hit[2].items()):
+        return hit[3]
+    files, snaps = _collect(project, sid, cwd, harness_id)
+    states = [(p, _state(p)) for p in files]  # before their contents are read: a change meanwhile is seen next time
     used: dict[str, str | None] = {}  # the checkouts whose HEAD a baseline was read from
     out = []
-    with snapshots.batch():
-        resolved = {path: _resolve(f, snaps, gone_roots) for path, f in files.items()}
-    for path, f in files.items():
-        r = resolved[path]
-        if r["source"] == "head":
-            used[r["root"]] = _head(r["root"], heads)
-        baseline, current, exists = r["baseline"], r["current"], r["exists"]
-        if f["detected"] and baseline is not _UNKNOWN and baseline == current:
-            continue  # a shell-detected change that is gone again
-        known = baseline is not _UNKNOWN
-        if known and baseline is None:
-            status = "created" if exists else "created+deleted"
-        else:
-            status = "deleted" if not exists else "modified"
-        add, rem = _stats(baseline if known else None, current) if known else (0, 0)
-        cur_sha = sha_of(current) if exists else "deleted"
-        out.append({
-            "path": path,
-            "rel": os.path.relpath(path, cwd) if _inside(path, cwd) else path,
-            "status": status,
-            "edits": len(f["edits"]),
-            "tools": sorted(f["tools"]),
-            "added": add,
-            "removed": rem,
-            "unchanged": known and baseline == current and (baseline is not None or not exists),
-            "drift": not r["gone"] and r["final"] is not _UNKNOWN and r["final"] != current,
-            "gone": r["gone"],
-            "reviewed": reviews.get(path) == cur_sha,
-            "last_ts": f["last"],
-            "baseline_source": r["source"],
-            "detected": f["detected"],
-        })
+    with snapshots.batch():  # the git objects read through one process
+        for path, f in files.items():
+            r = _resolve(f, snaps, gone_roots)
+            if r["source"] == "head":
+                used[r["root"]] = _head(r["root"], heads)
+            baseline, current, exists = r["baseline"], r["current"], r["exists"]
+            if f["detected"] and baseline is not _UNKNOWN and baseline == current:
+                continue  # a shell-detected change that is gone again
+            known = baseline is not _UNKNOWN
+            if known and baseline is None:
+                status = "created" if exists else "created+deleted"
+            else:
+                status = "deleted" if not exists else "modified"
+            add, rem = _stats(baseline if known else None, current) if known else (0, 0)
+            cur_sha = sha_of(current) if exists else "deleted"
+            out.append({
+                "path": path,
+                "rel": os.path.relpath(path, cwd) if _inside(path, cwd) else path,
+                "status": status,
+                "edits": len(f["edits"]),
+                "tools": sorted(f["tools"]),
+                "added": add,
+                "removed": rem,
+                "unchanged": known and baseline == current and (baseline is not None or not exists),
+                "drift": not r["gone"] and r["final"] is not _UNKNOWN and r["final"] != current,
+                "gone": r["gone"],
+                "reviewed": reviews.get(path) == cur_sha,
+                "last_ts": f["last"],
+                "baseline_source": r["source"],
+                "detected": f["detected"],
+            })
     out.sort(key=lambda x: x["rel"])
     result = {"session_id": sid, "cwd": cwd, "files": out, "snapshots": len(snaps)}
-    _changes_cache[key] = ((sig, used), result)
+    with _cache_lock:
+        _changes_cache.pop(key, None)
+        _changes_cache[key] = (base, states, used, result)
+        while len(_changes_cache) > _CHANGES_CACHE_MAX:
+            del _changes_cache[next(iter(_changes_cache))]
     return result
 
 

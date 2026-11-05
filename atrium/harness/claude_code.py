@@ -13,7 +13,6 @@ import threading
 import time
 import urllib.parse
 import uuid
-from collections import OrderedDict
 from pathlib import Path
 from typing import Any, cast
 
@@ -86,7 +85,6 @@ HIDDEN_COMMANDS = {"workflow-launch-exec"}  # only for sessions a server launche
 TERMINAL_COMMANDS = {"doctor", "color", "focus", "reload-plugins"}
 COMMANDS_TTL = 300  # seconds a probed command list stays fresh
 COMPACT_SUMMARY = "This session is being continued from a previous conversation"  # how a compaction's summary starts
-HISTORY_CACHE_ITEMS = 40_000  # conversations kept as read (their items in all; the last one read always): a click on a long one doesn't read it again
 
 
 def _claude_home() -> Path:
@@ -819,17 +817,12 @@ class ClaudeCodeHarness(Harness):
         self._subagent_lock = threading.Lock()  # list_subagents runs in worker threads
         self._compaction_cache: dict[str, _CompactionScan] = {}  # transcript path -> what's read of it
         self._compaction_lock = threading.Lock()
-        self._edit_scans: dict[str, _EditScan] = {}  # transcript path -> the file edits read from it so far
-        self._edit_lock = threading.Lock()
         self._commands_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}  # cwd -> (when, probed commands)
         self._probe_locks: dict[str, asyncio.Lock] = {}
         # transcript directory -> {file name: (its inode, size, mtime and project path when read, what list_sessions makes of it)}
         self._listed: dict[str, dict[str, tuple[tuple[int, int, int, str], Any]]] = {}
         self._lite_read = _LITE_READ
         self._listed_lock = threading.Lock()
-        # transcript path -> (its inode, size and mtime when read, the conversation), the most recently read last
-        self._history: OrderedDict[str, tuple[tuple[int, int, int], list[Item]]] = OrderedDict()
-        self._history_lock = threading.Lock()
 
     async def catalog(self) -> dict[str, Any]:
         d = self.describe()
@@ -1151,25 +1144,7 @@ class ClaudeCodeHarness(Harness):
     async def load_history(self, session_id: str, cwd: str) -> list[Item]:
         def load() -> list[Item]:
             path = self.transcript_path(session_id, cwd)
-            try:
-                st = path.stat() if path else None
-            except OSError:
-                st = None
-            if not path or not st:
-                return []
-            key, sig = str(path), (st.st_ino, st.st_size, st.st_mtime_ns)
-            with self._history_lock:
-                hit = self._history.get(key)
-                if hit and hit[0] == sig:  # unchanged since it was read
-                    self._history.move_to_end(key)
-                    return list(hit[1])
-            items = _conversation_items(session_id, _transcript_entries(path))
-            with self._history_lock:
-                self._history[key] = (sig, items)
-                self._history.move_to_end(key)
-                while len(self._history) > 1 and sum(len(v[1]) for v in self._history.values()) > HISTORY_CACHE_ITEMS:
-                    self._history.popitem(last=False)
-            return list(items)
+            return _conversation_items(session_id, _transcript_entries(path)) if path else []
 
         return await asyncio.to_thread(load)
 
@@ -1232,11 +1207,13 @@ class ClaudeCodeHarness(Harness):
             return []
         files = [path] + sorted((path.parent / session_id / "subagents").rglob("agent-*.jsonl"))
         edits: list[FileEdit] = []
-        with self._edit_lock:  # each transcript read on from where it was last time
-            for f in files:
-                scan = tail_scan(self._edit_scans, f, _EditScan)
-                if scan:
-                    edits += scan.edits
+        for f in files:
+            scan = _EditScan(0)
+            try:
+                scan.update(f)
+            except OSError:
+                continue
+            edits += scan.edits
         edits.sort(key=lambda e: e.ts or "")
         return edits
 
@@ -1451,7 +1428,7 @@ class _CompactionScan(TailScan):
 
 
 class _EditScan(TailScan):
-    """The file edits a transcript records (the results of the tools that changed a file), as far as it was read."""
+    """The file edits a transcript records (the results of the tools that changed a file)."""
 
     def __init__(self, ino: int):
         super().__init__(ino)

@@ -19,7 +19,7 @@ import os
 import time
 from typing import TYPE_CHECKING, Any
 
-from . import changes
+from . import changes, snapshots
 from .board.prompts import TRACKER_SCHEMA, TRACKER_SYSTEM
 from .config import RUNTIME_DIR, config
 from .events import hub
@@ -213,6 +213,10 @@ class Tracker:
         self._edits_cache[key] = (version, n)
         return n
 
+    def _count_files(self, sessions: list[dict[str, Any]], transcripts: dict[str, str | None]) -> dict[str, int]:
+        with snapshots.batch():  # their git objects read through one process
+            return {s["id"]: self._files_changed(s, transcripts[s["id"]]) for s in sessions}
+
     async def run_once(self, reason: str, force: bool = False) -> dict[str, Any]:
         if self.running:
             return {"skipped": "already running"}
@@ -256,16 +260,25 @@ class Tracker:
         digests: dict[str, list[str]] = {}
         facts: list[str] = []
         harness_by_sid: dict[str, Any] = {}
+        transcripts: dict[str, str | None] = {}
+        for s in sessions:
+            transcript = s.get("transcript")
+            if not transcript:
+                path = get_harness(s["harness"]).transcript_path(s["id"], s["cwd"])
+                transcript = str(path) if path else None
+            transcripts[s["id"]] = transcript
+        agents = {s["id"]: board.agent(s["id"]) for s in sessions}
+        # what the board shows of an agent (it is on it, live, or was active lately), counted in one go: a directory's
+        # hundreds of older sessions aren't read, the first time it is opened
+        shown = [s for s in sessions if agents[s["id"]] is not None or s["live"] or time.time() - (s["updated_at"] or 0) < FIRST_RUN_MAX_AGE]
+        counts = await asyncio.to_thread(self._count_files, shown, transcripts)
         for s in sessions:
             harness = get_harness(s["harness"])
             harness_by_sid[s["id"]] = harness
-            transcript = s.get("transcript")
-            if not transcript:
-                path = harness.transcript_path(s["id"], s["cwd"])
-                transcript = str(path) if path else None
-            files_changed = await asyncio.to_thread(self._files_changed, s, transcript)
-            board_agent = board.agent(s["id"])
-            if board_agent is not None or s["live"] or (time.time() - (s["updated_at"] or 0) < FIRST_RUN_MAX_AGE):
+            transcript = transcripts[s["id"]]
+            files_changed = counts.get(s["id"])
+            board_agent = agents[s["id"]]
+            if files_changed is not None:
                 board.update_agent(
                     s["id"],
                     name=s["name"] or ((board_agent or {}).get("name") if (board_agent or {}).get("name") not in (None, "Agent") else None) or s["title"] or None,
@@ -279,6 +292,8 @@ class Tracker:
                 if events:
                     digests[s["id"]] = events
             if s["id"] in digests or (board_agent and board_agent.get("status") in ("working", "waiting", "blocked")):
+                if files_changed is None:
+                    files_changed = (await asyncio.to_thread(self._count_files, [s], transcripts))[s["id"]]
                 label = f'name="{s["name"]}"' if s["name"] else f'UNNAMED (title: "{(s["title"] or "")[:80]}")'
                 facts.append(
                     f'- [{s["id"]}] {label} | live={s["live"] or "detached"} | last activity {_ago(s["updated_at"])}'
