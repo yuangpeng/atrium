@@ -129,13 +129,13 @@ What to get right in a new component:
   `env(safe-area-inset-*)` (0 on a desktop). So do the panes: each runs its background out to the
   edges it meets, `--edge-top/right/bottom/left` (`responsive.css`; 0 on an edge it doesn't meet),
   and pads its content by the top and side insets. `.app` has no padding, or bare strips of page
-  show round the panes. The bottom one is left to what the pane ends on: a bar (a folded drawer, the
-  editor's status line) pads under its controls by `--edge-bottom`, and a list scrolls on under the
+  show round the panes. The bottom one is left to what the pane ends on: a bar (the editor's status
+  line, a subagent's footer) pads under its controls by `--edge-bottom`, and a list scrolls on under the
   home indicator with that much more room at its end. Padding the pane instead ends it on a blank
   strip, its lists cut off above it; a new component that can end a pane takes `--edge-bottom`
-  itself. The composer is the exception, by the human's choice: it keeps just its own gap, the one at
-  its sides, and sits on the inset's upper part (lifted clear of all of it, it floated over a blank
-  strip). Something whose background differs from its pane's (the dark terminal) runs out to the side
+  itself. The composer and a folded drawer (the review's, the Git agent's) are the exceptions, by the
+  human's choice: each keeps just its own gap and sits on the inset's upper part (lifted clear of all
+  of it, each floated over a blank strip). Something whose background differs from its pane's (the dark terminal) runs out to the side
   edges through the same variables.
 - **Fullscreen through `useFullscreen`** (`components/ui.tsx`, the element gets `fs-host`).
   iPhone's Safari has no fullscreen for page elements, so there the element fills the window, and
@@ -171,17 +171,18 @@ every character that is not a letter or a digit replaced by `-`; one user and on
 is enough to make a session, and a `toolUseResult` with `filePath` makes it show up in Changes.
 
 `web/scripts/duo-check.py` drives every pose above as a touch device — the home page, the chat,
-the rail's drawer where it is one, each workspace panel (the review also full screen), then back to
-the chat through the drawer —
+the rail's drawer where it is one, each workspace panel (the review also full screen, and a file, with
+its tree and without), then back to the chat through the drawer —
 and fails on a pose that resolves to the wrong layout or misses the phone sizes (`data-compact`), a
 drawer that doesn't lead back to the chat, boxes pushed past the viewport,
-panels that scroll sideways, text painted outside its own box, labels squeezed to nothing, buttons
+panels that scroll sideways (or cut off what is wider than them), text painted outside its own box, labels squeezed to nothing, buttons
 under 30px, buttons spilling out of their row, and bare page showing between the panes. It also
 drives the Home Screen poses with their insets (Playwright's WebKit reports none, so it writes them
 into the CSS), where a control under an inset is a finding too (in a list, scrolled to its end; the
-composer aside), and so is a pane that stops a blank strip short of the bottom. It only sees what is
+composer and a folded drawer aside), and so is a pane that stops a blank strip short of the bottom. It only sees what is
 on screen, so a control that needs a particular state (an attachment in the composer, a forked
-agent, a subagent's breadcrumb, an open menu, the editor or a commit in fullscreen) still wants a look of its own —
+agent, a subagent's breadcrumb, an open menu, a commit in fullscreen, the chat's scrollbar while it is dragged) still
+wants a look of its own —
 and no check of this kind can tell you something is unreadable. Read the screenshots.
 
 ## Keep this in sync

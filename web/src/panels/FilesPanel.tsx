@@ -1,6 +1,9 @@
 import type { JSX } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, ChevronRight, CircleAlert, Code, ExternalLink, Eye, EyeOff, File, FilePlus, Folder, FolderOpen, FolderPlus, Lock, Maximize2, Minimize2, Pencil, RefreshCw, Save, Trash2, TriangleAlert, X } from "lucide-react";
+import {
+  ChevronDown, ChevronRight, CircleAlert, Code, ExternalLink, Eye, EyeOff, File, FilePlus, Folder, FolderOpen, FolderPlus, Lock, Maximize2, Minimize2, PanelLeftClose,
+  PanelLeftOpen, PanelTopClose, PanelTopOpen, Pencil, RefreshCw, Save, Trash2, TriangleAlert, X,
+} from "lucide-react";
 import { api, ApiError, DirEntry } from "../api";
 import { FileTarget, useApp, useAppState } from "../store";
 import { basename, clsx, languageFor, MEDIA_KINDS, previewKind, shortPath, throttle } from "../util";
@@ -37,6 +40,10 @@ const views = (): Record<string, OpenFile["view"]> => {
     return {};
   }
 };
+// the tree beside (or over) the open files, or put away to give them the room: in full screen too, where it stays to
+// switch files from
+const TREE_KEY = "atrium.filesTree";
+
 function viewFor(path: string, target?: FileTarget): OpenFile["view"] {
   const kind = previewKind(path);
   if (!kind || MEDIA_KINDS.has(kind)) return undefined;
@@ -98,8 +105,15 @@ export function FilesPanel() {
   const [open, setOpen] = useState<OpenFile[]>([]);
   const [active, setActive] = useState<string | null>(null);
   const locked = useEditLock((s) => s.locked);
-  const editorRef = useRef<HTMLDivElement>(null);
-  const [full, toggleFull] = useFullscreen(editorRef);
+  // full screen takes the tree along, to switch files from
+  const panelRef = useRef<HTMLDivElement>(null);
+  const [full, toggleFull] = useFullscreen(panelRef);
+  const [treeShown, setTreeShown] = useState(() => localStorage.getItem(TREE_KEY) !== "0");
+  const toggleTree = () =>
+    setTreeShown((on) => {
+      localStorage.setItem(TREE_KEY, on ? "0" : "1");
+      return !on;
+    });
   const pid = project?.id ?? "";
 
   useEffect(() => {
@@ -345,8 +359,9 @@ export function FilesPanel() {
   if (!project) return null;
 
   return (
-    <div className="panel-body">
-      <div className="split stack-files">
+    <div ref={panelRef} className="panel-body fs-host">
+      {/* with no file open there is nothing to make room for, and no bar to bring the tree back from */}
+      <div className={clsx("split stack-files", open.length > 0 && !treeShown && "tree-off")}>
         <div className="side">
           <div className="toolbar" style={{ padding: "6px 8px", gap: 2, flexWrap: "nowrap" }}>
             {roots.length > 1 ? (
@@ -375,9 +390,16 @@ export function FilesPanel() {
           </div>
           <div className="tree">{renderDir(".", 0)}</div>
         </div>
-        <div ref={editorRef} className="content fs-host">
+        <div className="content">
           {open.length > 0 && (
             <div className="editor-bar">
+              {/* beside the open files the tree is on their left; over them, on a narrow panel, above (CSS) */}
+              <div className="editor-lead">
+                <button className="icon-btn sm tree-toggle" aria-label={treeShown ? "Hide the files" : "Show the files"} data-tip={treeShown ? "Hide the files" : "Show the files"} onClick={toggleTree}>
+                  {treeShown ? <PanelLeftClose size={14} className="beside" /> : <PanelLeftOpen size={14} className="beside" />}
+                  {treeShown ? <PanelTopClose size={14} className="above" /> : <PanelTopOpen size={14} className="above" />}
+                </button>
+              </div>
               <div className="editor-tabs">
                 {open.map((f) => (
                   <div key={f.key} className={clsx("editor-tab", f.key === active && "on", f.external && "external")} onClick={() => setActive(f.key)} title={f.abs}>

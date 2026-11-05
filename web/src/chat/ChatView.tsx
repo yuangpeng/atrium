@@ -18,6 +18,7 @@ import {
 import { mergeCommands, useAtriumCommands, useSlashCommands, useSlashMenu } from "./SlashMenu";
 import { useVoiceInput } from "./Voice";
 import { MessageEditor } from "./MessageEditor";
+import { ScrollAids } from "./ScrollAids";
 
 type UserItem = Extract<Item, { kind: "user" }>;
 type ToolItem = Extract<Item, { kind: "tool" }>;
@@ -779,37 +780,40 @@ export const ChatView = memo(function ChatView({ pid, sid, cwd, compact, forkabl
 
   return (
     <div className={clsx("chat", compact && "compact")}>
-      <div className="chat-scroll" ref={scrollRef} onScroll={onScroll}>
-        <div className="chat-inner">
-          {loading && (
-            <div className="msg-system">
-              <Spinner /> Loading conversation…
-            </div>
-          )}
-          {!loading && blocks.length === 0 && emptyHint}
-          <Transcript
-            blocks={blocks} results={st.results} running={running} cwd={cwd} forks={forks} onFork={onFork}
-            steps={steps} onForkStep={onForkStep} edits={edits} editing={editing} onEdit={setEditing} editor={editor}
-          />
-          {st.streaming && (
-            <div className="msg-text stream-cursor">
-              <StreamingMarkdown text={st.streaming} />
-            </div>
-          )}
-          <FileLinks cwd={cwd}>
-            {pendingList.map((p) => (
-              <PermissionCard key={p.id} perm={p} cwd={cwd} onDecide={(d) => decide(p, d)} />
-            ))}
-          </FileLinks>
-          {running && !st.streaming && pendingList.length === 0 && (
-            <div className="working-line">
-              <span className="spark">
-                <Sparkle size={15} fill="currentColor" />
-              </span>
-              Working…
-            </div>
-          )}
+      <div className="chat-body">
+        <div className="chat-scroll" ref={scrollRef} onScroll={onScroll}>
+          <div className="chat-inner">
+            {loading && (
+              <div className="msg-system">
+                <Spinner /> Loading conversation…
+              </div>
+            )}
+            {!loading && blocks.length === 0 && emptyHint}
+            <Transcript
+              blocks={blocks} results={st.results} running={running} cwd={cwd} forks={forks} onFork={onFork}
+              steps={steps} onForkStep={onForkStep} edits={edits} editing={editing} onEdit={setEditing} editor={editor}
+            />
+            {st.streaming && (
+              <div className="msg-text stream-cursor">
+                <StreamingMarkdown text={st.streaming} />
+              </div>
+            )}
+            <FileLinks cwd={cwd}>
+              {pendingList.map((p) => (
+                <PermissionCard key={p.id} perm={p} cwd={cwd} onDecide={(d) => decide(p, d)} />
+              ))}
+            </FileLinks>
+            {running && !st.streaming && pendingList.length === 0 && (
+              <div className="working-line">
+                <span className="spark">
+                  <Sparkle size={15} fill="currentColor" />
+                </span>
+                Working…
+              </div>
+            )}
+          </div>
         </div>
+        <ScrollAids target={scrollRef} onEnd={() => void (stick.current = true)} />
       </div>
 
       <div className="composer">

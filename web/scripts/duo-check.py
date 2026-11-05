@@ -4,8 +4,8 @@ on a phone, iPhone Duo included".
 
 It drives Safari's engine (Playwright's WebKit) at each pose, as a touch device — the home page,
 the chat, the rail's drawer where the screen is too narrow for a docked one, then each workspace
-panel (the review also full screen, a recorded model call laid out and as its stream), and back to the chat through the
-drawer — and walks the DOM for the mistakes that are easy to make and hard to see: boxes pushed
+panel (the review also full screen, a file open full screen with its tree and without, a recorded model call laid out and
+as its stream), and back to the chat through the drawer — and walks the DOM for the mistakes that are easy to make and hard to see: boxes pushed
 past the viewport, text painted outside its own box, boxes squeezed to nothing (a label with
 `flex: 1; min-width: 0` collapses and paints over its neighbour), and buttons too small for a
 fingertip. Every pose also has to get the phone sizes (<html data-compact>, layout.ts).
@@ -85,17 +85,19 @@ AUDIT = """([MIN_TAP, inset]) => {
       continue;
     }
     // a box that scrolls sideways hides content behind a gesture nobody makes on a phone. Code and
-    // tables are meant to scroll that way; a panel or a list is not.
-    if (el.scrollWidth > el.clientWidth + 1 && /auto|scroll/.test(cs.overflowX) && r.width > 120 &&
+    // tables are meant to scroll that way; a panel or a list is not. One kept from it (the chat: overflow-x hidden)
+    // cuts off what is wider than it instead.
+    const sideways = /auto|scroll/.test(cs.overflowX), cut = cs.overflowX === "hidden" && /auto|scroll/.test(cs.overflowY);
+    if (el.scrollWidth > el.clientWidth + 1 && (sideways || cut) && r.width > 120 &&
         !el.matches("pre, table, .code-block, .mini-diff, .editor-tabs, .md, .card-body, .msg-output"))
-      out.push({ kind: "panel scrolls sideways", el: name(el), by: el.scrollWidth - el.clientWidth, width: Math.round(r.width) });
+      out.push({ kind: sideways ? "panel scrolls sideways" : "panel cuts content off", el: name(el), by: el.scrollWidth - el.clientWidth, width: Math.round(r.width) });
     if (leaf && el.scrollWidth > el.clientWidth + 1 && cs.textOverflow !== "ellipsis" && cs.overflow === "visible")
       out.push({ kind: "text outside its box", el: name(el), by: el.scrollWidth - el.clientWidth, text: (el.textContent || "").trim().slice(0, 60) });
     if (!clipped(el) && (r.right > innerWidth + 1 || r.left < -1))
       out.push({ kind: "past the viewport", el: name(el), right: Math.round(r.right), width: innerWidth });
     // under an inset, a control sits beneath the clock, the camera or the home indicator. A list may scroll on under
     // the bottom one: what is in it only has to be able to come up clear of it, so it is checked scrolled to the end.
-    // The composer sits on that inset's upper part on purpose (AGENTS.md).
+    // The composer and a folded drawer's head sit on that inset's upper part on purpose (AGENTS.md).
     if (inset && el.matches("button, [role=button], input, textarea, select, a[href]")) {
       const v = shown(el, r);
       let sc = el.parentElement;
@@ -103,7 +105,7 @@ AUDIT = """([MIN_TAP, inset]) => {
       const d = sc && sc !== document.body ? sc.scrollHeight - sc.clientHeight - sc.scrollTop : 0;
       const end = shown(el, { left: r.left, right: r.right, top: r.top - d, bottom: r.bottom - d });
       if ((v && (v.top < it - 1 || v.right > innerWidth - ir + 1 || v.left < il - 1)) ||
-          (end && end.bottom > innerHeight - ib + 1 && !el.closest(".composer"))) {
+          (end && end.bottom > innerHeight - ib + 1 && !el.closest(".composer, .drawer-head"))) {
         const b = v || end;
         out.push({ kind: "control under an inset", el: name(el), box: [b.left, b.top, b.right, b.bottom].map(Math.round),
                    text: (el.textContent || el.getAttribute("aria-label") || el.title || "").trim().slice(0, 40) });
@@ -279,6 +281,20 @@ async def main() -> int:
                         sw, cw = await board.evaluate(WIDE_BOARD)
                         if sw > cw + 1:
                             findings.append(f"{pose:16} {'board':9} {'the board scrolls sideways':26} {sw}px of content in its {cw}px frame")
+                if tab == "Files":  # a file full screen: the tree comes along to switch files from, and folds away
+                    file = page.locator(".tree .tree-row").filter(has_not=page.locator(".chev svg"))
+                    if await file.count():
+                        await file.first.tap()
+                        await page.wait_for_timeout(1500)
+                        await page.locator('.editor-acts button[aria-label="Full screen"]').tap()
+                        await page.wait_for_timeout(800)
+                        await audit(page, pose, "files-fs", inset)
+                        await page.locator(".tree-toggle").tap()
+                        await page.wait_for_timeout(400)
+                        await audit(page, pose, "files-fs-notree", inset)
+                        await page.locator(".tree-toggle").tap()
+                        await page.locator('.editor-acts button[aria-label="Exit full screen"]').tap()
+                        await page.wait_for_timeout(400)
                 if tab == "Changes":  # the review full screen: on a phone it fills the window itself (ui.tsx)
                     await page.locator('.toolbar button[aria-label="Full-screen review"]').tap()
                     await page.wait_for_timeout(800)

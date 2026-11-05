@@ -7,6 +7,7 @@ import { useApp } from "../store";
 import { displayName, throttle } from "../util";
 import { Spinner } from "../components/ui";
 import { Transcript, applyAll, empty, toBlocks } from "./ChatView";
+import { ScrollAids } from "./ScrollAids";
 
 export function SubagentView({ pid, sid, aid, cwd }: { pid: string; sid: string; aid: string; cwd: string }) {
   const parent = useApp((s) => s.sessions.find((x) => x.id === sid));
@@ -88,33 +89,36 @@ export function SubagentView({ pid, sid, aid, cwd }: { pid: string; sid: string;
 
   return (
     <div className="chat">
-      <div className="chat-scroll" ref={scrollRef} onScroll={onScroll}>
-        <div className="chat-inner">
-          {!data && !error && (
-            <div className="msg-system">
-              <Spinner /> Loading subagent…
-            </div>
-          )}
-          {error && <div className="msg-error">{error}</div>}
-          {first?.kind === "user" && (
-            <div className="sub-task">
-              <div className="sub-task-head">
-                <CornerDownRight size={13} /> Task from <b>{parentName}</b>
+      <div className="chat-body">
+        <div className="chat-scroll" ref={scrollRef} onScroll={onScroll}>
+          <div className="chat-inner">
+            {!data && !error && (
+              <div className="msg-system">
+                <Spinner /> Loading subagent…
               </div>
-              <div className="sub-task-body">{first.text}</div>
-            </div>
-          )}
-          <Transcript blocks={first ? blocks.slice(1) : blocks} results={st.results} running={running} cwd={cwd} />
-          {data && blocks.length === 0 && !running && <div className="msg-system">No messages recorded.</div>}
-          {running && (
-            <div className="working-line">
-              <span className="spark">
-                <Sparkle size={15} fill="currentColor" />
-              </span>
-              Working…
-            </div>
-          )}
+            )}
+            {error && <div className="msg-error">{error}</div>}
+            {first?.kind === "user" && (
+              <div className="sub-task">
+                <div className="sub-task-head">
+                  <CornerDownRight size={13} /> Task from <b>{parentName}</b>
+                </div>
+                <div className="sub-task-body">{first.text}</div>
+              </div>
+            )}
+            <Transcript blocks={first ? blocks.slice(1) : blocks} results={st.results} running={running} cwd={cwd} />
+            {data && blocks.length === 0 && !running && <div className="msg-system">No messages recorded.</div>}
+            {running && (
+              <div className="working-line">
+                <span className="spark">
+                  <Sparkle size={15} fill="currentColor" />
+                </span>
+                Working…
+              </div>
+            )}
+          </div>
         </div>
+        <ScrollAids target={scrollRef} onEnd={() => void (stick.current = true)} />
       </div>
       <div className="sub-foot">
         <Info size={13} style={{ flex: "none" }} />

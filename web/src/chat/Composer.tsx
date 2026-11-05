@@ -305,14 +305,16 @@ function useRoomy(ref: RefObject<HTMLElement | null>, deps: DependencyList): boo
   useLayoutEffect(() => {
     const row = ref.current?.closest<HTMLElement>(".bar-chips");
     if (!row) return;
+    // fractional widths, and a pixel to spare: offsetWidth and clientWidth round, and on the phone chips that fitted
+    // by their rounded sum still wrapped onto a second line
     const full = (c: HTMLElement) => {
       const fold = c.matches("[data-fold]") ? c : c.querySelector<HTMLElement>(":scope > [data-fold]"); // a picker sits in its popover's box
-      return (fold?.querySelector<HTMLElement>(":scope > .measure") ?? c).offsetWidth;
+      return (fold?.querySelector<HTMLElement>(":scope > .measure") ?? c).getBoundingClientRect().width;
     };
     const fit = () => {
       const kids = [...row.children] as HTMLElement[];
       const gaps = (parseFloat(getComputedStyle(row).columnGap) || 0) * (kids.length - 1);
-      setRoomy(row.clientWidth >= kids.reduce((w, c) => w + full(c), 0) + gaps);
+      setRoomy(row.getBoundingClientRect().width >= kids.reduce((w, c) => w + full(c), 0) + gaps + 1);
     };
     fit();
     const ro = new ResizeObserver(fit);

@@ -8,6 +8,7 @@ import { displayName } from "../util";
 import { Spinner } from "../components/ui";
 import { compactionLabel } from "../components/Compactions";
 import { Transcript, applyAll, empty, toBlocks } from "./ChatView";
+import { ScrollAids } from "./ScrollAids";
 
 export function CompactionView({ pid, sid, cid, cwd }: { pid: string; sid: string; cid: string; cwd: string }) {
   const parent = useApp((s) => s.sessions.find((x) => x.id === sid));
@@ -46,28 +47,31 @@ export function CompactionView({ pid, sid, cid, cwd }: { pid: string; sid: strin
 
   return (
     <div className="chat">
-      <div className="chat-scroll" ref={scrollRef}>
-        <div className="chat-inner">
-          {!data && !error && (
-            <div className="msg-system">
-              <Spinner /> Loading the compacted history…
-            </div>
-          )}
-          {error && <div className="msg-error">{error}</div>}
-          <Transcript blocks={blocks} results={st.results} running={false} cwd={cwd} />
-          {data && blocks.length === 0 && <div className="msg-system">No messages recorded.</div>}
-          {data && (
-            <div className="msg-compact">
-              <FoldVertical size={12} style={{ flex: "none" }} />
-              <span>
-                Compacted here
-                <button className="sub-link inline" onClick={() => (next ? selectCompaction(sid, next.id) : selectSession(sid))}>
-                  {next ? compactionLabel(at + 2) : "Current chat"} <ArrowUpRight size={12} />
-                </button>
-              </span>
-            </div>
-          )}
+      <div className="chat-body">
+        <div className="chat-scroll" ref={scrollRef}>
+          <div className="chat-inner">
+            {!data && !error && (
+              <div className="msg-system">
+                <Spinner /> Loading the compacted history…
+              </div>
+            )}
+            {error && <div className="msg-error">{error}</div>}
+            <Transcript blocks={blocks} results={st.results} running={false} cwd={cwd} />
+            {data && blocks.length === 0 && <div className="msg-system">No messages recorded.</div>}
+            {data && (
+              <div className="msg-compact">
+                <FoldVertical size={12} style={{ flex: "none" }} />
+                <span>
+                  Compacted here
+                  <button className="sub-link inline" onClick={() => (next ? selectCompaction(sid, next.id) : selectSession(sid))}>
+                    {next ? compactionLabel(at + 2) : "Current chat"} <ArrowUpRight size={12} />
+                  </button>
+                </span>
+              </div>
+            )}
+          </div>
         </div>
+        <ScrollAids target={scrollRef} />
       </div>
       <div className="sub-foot">
         <Info size={13} style={{ flex: "none" }} />

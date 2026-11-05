@@ -293,8 +293,36 @@ a { color: var(--accent-strong); }
 
 /* ---------------------------------------------------------------- chat */
 .chat { flex: 1; display: flex; flex-direction: column; min-height: 0; }
-.chat-scroll { flex: 1; overflow-y: auto; scroll-behavior: auto; }
-.chat-inner { max-width: 780px; margin: 0 auto; padding: 18px 22px 36px; display: flex; flex-direction: column; gap: 14px; }
+/* the scroll box and what is laid over it (chat/ScrollAids.tsx) */
+.chat-body { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; }
+/* never sideways: a finger then drags the whole chat. Code blocks and tables scroll inside themselves (.md) */
+.chat-scroll { flex: 1; overflow-y: auto; overflow-x: hidden; scroll-behavior: auto; }
+/* a word, path or inline code longer than the line breaks at its edge (agents write long ones); a table keeps its
+   words whole, and scrolls */
+.chat-inner { max-width: 780px; margin: 0 auto; padding: 18px 22px 36px; display: flex; flex-direction: column; gap: 14px; overflow-wrap: anywhere; }
+.chat-inner .md table { overflow-wrap: normal; }
+/* back to the end, while scrolled well away from it */
+.to-end {
+  position: absolute; left: 50%; bottom: 12px; z-index: 3; transform: translateX(-50%); width: 32px; height: 32px; padding: 0; border-radius: 50%;
+  border: 1px solid var(--border-strong); background: var(--surface); color: var(--text-2); box-shadow: var(--shadow); display: grid; place-items: center;
+  cursor: pointer; animation: fade 0.12s;
+}
+.to-end:hover { background: var(--surface-2); }
+/* a scrollbar a finger can drag: a touch screen's own can't be held (a mouse keeps the native one). A 30px strip to
+   grab, the bar drawn at its right; only there while the reader scrolls, so it takes no touch otherwise */
+.scroll-thumb { display: none; }
+@media (pointer: coarse) {
+  .scroll-thumb {
+    display: block; position: absolute; right: 0; width: 30px; z-index: 3; touch-action: none; opacity: 0; pointer-events: none;
+    transition: opacity 0.3s;
+  }
+  .scroll-thumb::before {
+    content: ""; position: absolute; top: 0; bottom: 0; right: 3px; width: 5px; border-radius: 3px;
+    background: color-mix(in srgb, var(--muted) 60%, transparent); transition: width 0.12s, background-color 0.12s;
+  }
+  .scroll-thumb.on { opacity: 1; pointer-events: auto; transition: opacity 0.1s; }
+  .scroll-thumb.drag::before { width: 8px; background: var(--accent); }
+}
 .chat.compact .chat-inner { padding: 12px 14px 20px; gap: 10px; }
 .msg-user { align-self: flex-end; max-width: 85%; background: var(--surface-2); border-radius: 16px 16px 4px 16px; padding: 10px 14px; white-space: pre-wrap; word-wrap: break-word; font-size: 14.5px; }
 .msg-user-row { align-self: flex-end; max-width: 85%; display: flex; align-items: flex-start; gap: 4px; }
@@ -597,6 +625,8 @@ body.col-resizing iframe { pointer-events: none; } /* the board's would take the
 @container (max-width: 640px) {
   .split.stack-files { flex-direction: column; }
   .split.stack-files > .side { width: auto; max-height: 32%; border-right: 0; border-bottom: 1px solid var(--border); flex: none; padding-bottom: 0; }
+  .stack-files .tree-toggle .beside { display: none; }
+  .stack-files .tree-toggle .above { display: inline; }
 }
 .diff-head { display: flex; flex-direction: column; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
 .diff-head .r1 { display: flex; align-items: center; gap: 8px; min-width: 0; }
@@ -638,6 +668,10 @@ a.icon-btn.disabled { opacity: 0.4; pointer-events: none; }
 .editor-bar { display: flex; flex: none; border-bottom: 1px solid var(--border); background: var(--sidebar); }
 .editor-bar > .editor-tabs { flex: 1; min-width: 0; border-bottom: 0; }
 .editor-acts { flex: none; display: flex; align-items: center; gap: 2px; padding: 0 6px; border-left: 1px solid var(--border); }
+/* before the open files: the tree's toggle (FilesPanel). Its icon shows where the tree is: beside them, or above */
+.editor-lead { flex: none; display: flex; align-items: center; padding: 0 4px; border-right: 1px solid var(--border); }
+.tree-toggle .above { display: none; }
+.split.tree-off > .side { display: none; }
 .lock-toggle.active { color: var(--accent-strong); }
 .editor-tab { display: flex; align-items: center; gap: 6px; padding: 0 6px 0 12px; height: 35px; border-right: 1px solid var(--border); cursor: pointer; font-size: 12.5px; color: var(--muted); white-space: nowrap; }
 .editor-tab.on { background: var(--bg); color: var(--text); box-shadow: inset 0 2px 0 var(--accent); }
