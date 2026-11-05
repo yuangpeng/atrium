@@ -13,6 +13,7 @@ import threading
 import time
 import urllib.parse
 import uuid
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, cast
 
@@ -48,6 +49,13 @@ from claude_agent_sdk import (
     tool,
 )
 
+try:  # how list_sessions reads one transcript (its head and tail): to read again only those that changed since
+    from claude_agent_sdk._internal import sessions as _sdk_sessions
+except ImportError:  # moved in another version of the SDK: list_sessions reads every transcript at every listing
+    _sdk_sessions = None
+_LITE_READ = _sdk_sessions is not None and all(hasattr(_sdk_sessions, f) for f in (
+    "_canonicalize_path", "_find_project_dir", "_validate_uuid", "_read_session_lite", "_parse_session_info_from_lite"))
+
 from .. import gitops
 from ..capture import CAPTURE_URL_ENV, FIRST_PARTY_ENV, UPSTREAM_ENV, loopback_env
 from ..config import UPLOADS_DIR
@@ -78,6 +86,7 @@ HIDDEN_COMMANDS = {"workflow-launch-exec"}  # only for sessions a server launche
 TERMINAL_COMMANDS = {"doctor", "color", "focus", "reload-plugins"}
 COMMANDS_TTL = 300  # seconds a probed command list stays fresh
 COMPACT_SUMMARY = "This session is being continued from a previous conversation"  # how a compaction's summary starts
+HISTORY_CACHE_ITEMS = 40_000  # conversations kept as read (their items in all; the last one read always): a click on a long one doesn't read it again
 
 
 def _claude_home() -> Path:
@@ -810,8 +819,17 @@ class ClaudeCodeHarness(Harness):
         self._subagent_lock = threading.Lock()  # list_subagents runs in worker threads
         self._compaction_cache: dict[str, _CompactionScan] = {}  # transcript path -> what's read of it
         self._compaction_lock = threading.Lock()
+        self._edit_scans: dict[str, _EditScan] = {}  # transcript path -> the file edits read from it so far
+        self._edit_lock = threading.Lock()
         self._commands_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}  # cwd -> (when, probed commands)
         self._probe_locks: dict[str, asyncio.Lock] = {}
+        # transcript directory -> {file name: (its inode, size, mtime and project path when read, what list_sessions makes of it)}
+        self._listed: dict[str, dict[str, tuple[tuple[int, int, int, str], Any]]] = {}
+        self._lite_read = _LITE_READ
+        self._listed_lock = threading.Lock()
+        # transcript path -> (its inode, size and mtime when read, the conversation), the most recently read last
+        self._history: OrderedDict[str, tuple[tuple[int, int, int], list[Item]]] = OrderedDict()
+        self._history_lock = threading.Lock()
 
     async def catalog(self) -> dict[str, Any]:
         d = self.describe()
@@ -857,20 +875,28 @@ class ClaudeCodeHarness(Harness):
 
     def _list_sessions(self, project_dir: str, roots: list[str]) -> list[SessionSummary]:
         out: list[SessionSummary] = []
-        try:
-            infos = list_sessions(directory=project_dir, include_worktrees=True)
-            # gone directories (removed worktrees) aren't in `git worktree list`; their transcripts stay
-            ids = {s.session_id for s in infos}
-            for root in roots:
-                if not os.path.isdir(root):
-                    infos += [s for s in list_sessions(directory=root, include_worktrees=False) if s.session_id not in ids]
-                    ids = {s.session_id for s in infos}
-        except Exception:
-            log.exception("list_sessions failed")
-            return out
-        for s in infos:
+        found: list[tuple[Any, Path | None]] | None = None
+        if self._lite_read:
+            try:
+                found = self._read_listed(roots)
+            except Exception:  # the SDK reads them some other way now
+                self._lite_read = False
+                log.exception("reading transcripts as list_sessions does failed: list_sessions reads them all from now on")
+        if found is None:
+            try:
+                infos = list_sessions(directory=project_dir, include_worktrees=True)
+                # gone directories (removed worktrees) aren't in `git worktree list`; their transcripts stay
+                ids = {s.session_id for s in infos}
+                for root in roots:
+                    if not os.path.isdir(root):
+                        infos += [s for s in list_sessions(directory=root, include_worktrees=False) if s.session_id not in ids]
+                        ids = {s.session_id for s in infos}
+            except Exception:
+                log.exception("list_sessions failed")
+                return out
+            found = [(s, self.transcript_path(s.session_id, s.cwd or project_dir)) for s in infos]
+        for s, path in found:
             cwd = s.cwd or project_dir
-            path = self.transcript_path(s.session_id, cwd)
             out.append(
                 SessionSummary(
                     id=s.session_id,
@@ -886,6 +912,46 @@ class ClaudeCodeHarness(Harness):
                 )
             )
         return out
+
+    def _read_listed(self, roots: list[str]) -> list[tuple[Any, Path | None]]:
+        """What ``list_sessions`` gives for the transcript directories of ``roots`` (the project and its worktrees,
+        removed ones too), with each transcript's path; one is read again only if it changed since the last listing: a
+        directory can hold hundreds of them, and the list is asked for whenever one of them grows."""
+        sdk: Any = _sdk_sessions
+        newest: dict[str, tuple[Any, Path | None]] = {}
+        for root in dict.fromkeys(roots):
+            canonical = sdk._canonicalize_path(root)
+            d = sdk._find_project_dir(canonical)
+            if d is None:
+                continue
+            try:
+                entries = [e for e in os.scandir(d) if e.name.endswith(".jsonl")]
+            except OSError:
+                continue
+            with self._listed_lock:
+                before = self._listed.get(str(d), {})
+            now: dict[str, tuple[tuple[int, int, int, str], Any]] = {}
+            for e in entries:
+                sid = sdk._validate_uuid(e.name[: -len(".jsonl")])
+                if not sid:
+                    continue
+                try:
+                    st = e.stat()
+                except OSError:
+                    continue
+                sig = (st.st_ino, st.st_size, st.st_mtime_ns, canonical)
+                hit = before.get(e.name)
+                if hit and hit[0] == sig:
+                    info = hit[1]
+                else:
+                    lite = sdk._read_session_lite(Path(e.path))
+                    info = sdk._parse_session_info_from_lite(sid, lite, canonical) if lite else None  # None: a sidechain, or no prompt yet
+                now[e.name] = (sig, info)
+                if info and (sid not in newest or info.last_modified > newest[sid][0].last_modified):
+                    newest[sid] = (info, Path(e.path))
+            with self._listed_lock:
+                self._listed[str(d)] = now
+        return sorted(newest.values(), key=lambda x: -x[0].last_modified)
 
     def transcript_path(self, session_id: str, cwd: str) -> Path | None:
         p = _claude_projects_dir() / project_key_for_directory(cwd) / f"{session_id}.jsonl"
@@ -1085,7 +1151,25 @@ class ClaudeCodeHarness(Harness):
     async def load_history(self, session_id: str, cwd: str) -> list[Item]:
         def load() -> list[Item]:
             path = self.transcript_path(session_id, cwd)
-            return _conversation_items(session_id, _transcript_entries(path)) if path else []
+            try:
+                st = path.stat() if path else None
+            except OSError:
+                st = None
+            if not path or not st:
+                return []
+            key, sig = str(path), (st.st_ino, st.st_size, st.st_mtime_ns)
+            with self._history_lock:
+                hit = self._history.get(key)
+                if hit and hit[0] == sig:  # unchanged since it was read
+                    self._history.move_to_end(key)
+                    return list(hit[1])
+            items = _conversation_items(session_id, _transcript_entries(path))
+            with self._history_lock:
+                self._history[key] = (sig, items)
+                self._history.move_to_end(key)
+                while len(self._history) > 1 and sum(len(v[1]) for v in self._history.values()) > HISTORY_CACHE_ITEMS:
+                    self._history.popitem(last=False)
+            return list(items)
 
         return await asyncio.to_thread(load)
 
@@ -1148,25 +1232,11 @@ class ClaudeCodeHarness(Harness):
             return []
         files = [path] + sorted((path.parent / session_id / "subagents").rglob("agent-*.jsonl"))
         edits: list[FileEdit] = []
-        for f in files:
-            try:
-                fh = f.open(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            with fh:
-                for line in fh:
-                    if '"toolUseResult"' not in line or '"filePath"' not in line:
-                        continue
-                    try:
-                        d = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    tur = d.get("toolUseResult")
-                    if not isinstance(tur, dict) or not tur.get("filePath"):
-                        continue
-                    edit = _edit_from_result(tur, d.get("timestamp"))
-                    if edit:
-                        edits.append(edit)
+        with self._edit_lock:  # each transcript read on from where it was last time
+            for f in files:
+                scan = tail_scan(self._edit_scans, f, _EditScan)
+                if scan:
+                    edits += scan.edits
         edits.sort(key=lambda e: e.ts or "")
         return edits
 
@@ -1354,6 +1424,10 @@ class _CompactionScan(TailScan):
         self.prompt: str | None = None  # its first prompt, once read
         self.found: list[Compaction] = []
 
+    def needle(self) -> bytes | None:
+        # the part being read has its start and its first prompt: only the next compaction matters
+        return b'"compact_boundary"' if self.started is not None and self.prompt is not None else None
+
     def line(self, raw: bytes) -> None:
         if b'"compact_boundary"' not in raw and self.started is not None and (self.prompt is not None or b'"user"' not in raw):
             return
@@ -1374,6 +1448,31 @@ class _CompactionScan(TailScan):
             self.started, self.prompt = ts, None
         elif self.prompt is None and (text := _prompt_text(d)) is not None:
             self.prompt = _short(split_attachment_note(text)[0], 300) or "(image)"
+
+
+class _EditScan(TailScan):
+    """The file edits a transcript records (the results of the tools that changed a file), as far as it was read."""
+
+    def __init__(self, ino: int):
+        super().__init__(ino)
+        self.edits: list[FileEdit] = []
+
+    def needle(self) -> bytes | None:
+        return b'"toolUseResult"'
+
+    def line(self, raw: bytes) -> None:
+        if b'"filePath"' not in raw:
+            return
+        try:
+            d = json.loads(raw.decode("utf-8", errors="replace"))
+        except ValueError:
+            return
+        tur = d.get("toolUseResult") if isinstance(d, dict) else None
+        if not isinstance(tur, dict) or not tur.get("filePath"):
+            return
+        edit = _edit_from_result(tur, d.get("timestamp"))
+        if edit:
+            self.edits.append(edit)
 
 
 def _is_boundary(entry: dict[str, Any]) -> bool:

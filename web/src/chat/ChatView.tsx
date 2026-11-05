@@ -1,6 +1,6 @@
 import type { JSX, MouseEvent, ReactNode } from "react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, ArrowUpRight, Brain, ChevronRight, FoldVertical, GitFork, Info, Pencil, Sparkle, Square } from "lucide-react";
+import { ArrowUp, ArrowUpRight, Brain, ChevronRight, ChevronUp, FoldVertical, GitFork, Info, Pencil, Sparkle, Square } from "lucide-react";
 import { api, EditAt, ForkAt, Item, LiveState, MoveWorkspace, SessionRow, SessionSettings } from "../api";
 import { socket } from "../ws";
 import { useApp } from "../store";
@@ -216,9 +216,24 @@ function MsgTime({ ts }: { ts?: number }) {
 /** What a tap on a message is not for: its own controls, and text being selected. */
 const TAPPABLE = "a, button, summary, input, textarea, select, label, img, video, .tool-row, [role='button']";
 
+/** How much of a conversation is rendered at first: its end, this many steps of it (a message, a tool call), and as
+ *  much again each time the reader nears the top of what is rendered. A session thousands of steps long would
+ *  otherwise build hundreds of thousands of elements on every click on it, and keep them for every keystroke. */
+const WINDOW = 200;
+
+const weight = (b: Block) => (b.type === "tools" ? b.tools.length : 1);
+
+/** Where rendering starts for the `n` steps before block `end` (or as many as there are). */
+function windowStart(blocks: Block[], n: number, end = blocks.length): number {
+  let i = Math.min(end, blocks.length);
+  for (let w = 0; i > 0 && w < n; ) w += weight(blocks[--i]);
+  return i;
+}
+
 /** The conversation; with `forks` and `onFork`, user messages get a "fork from here" button, and the agent's replies
  *  and tool calls one too (`steps`, `onForkStep`); with `edits` and `onEdit` one that changes the message, `editor`
- *  standing in for the one being changed (`editing`). */
+ *  standing in for the one being changed (`editing`). Only its end is rendered at first (WINDOW): what is above comes
+ *  in as the reader scrolls up to it, inside a `.chat-scroll`. */
 export function Transcript({ blocks, results, running, cwd, forks, onFork, steps, onForkStep, edits, editing, onEdit, editor }: {
   blocks: Block[];
   results: Record<string, ResultItem>;
@@ -241,20 +256,62 @@ export function Transcript({ blocks, results, running, cwd, forks, onFork, steps
     setTapped((k) => (k === key ? null : key));
   }, []);
   const day = useDay();
+  // Where rendering starts: set once the conversation is there, then kept while it grows (what is on screen never
+  // moves); earlier when the reader scrolls up to it. A conversation cut short (a message changed) shows its end.
+  const [start, setStart] = useState<number | null>(null);
+  const end = windowStart(blocks, WINDOW);
+  const from = start === null ? end : Math.min(start, end);
+  useEffect(() => {
+    if (start === null && blocks.length) setStart(end);
+  }, [start, blocks.length, end]);
+  const moreRef = useRef<HTMLButtonElement>(null);
+  const keep = useRef<{ box: HTMLElement; below: number } | null>(null); // the scroll box, and how much of it was below the view
+  const more = useCallback(() => {
+    const box = moreRef.current?.closest<HTMLElement>(".chat-scroll");
+    if (box) keep.current = { box, below: box.scrollHeight - box.scrollTop };
+    setStart(windowStart(blocks, WINDOW, from));
+  }, [blocks, from]);
+  // what came in above leaves the view where it was (this runs before the chat's own scrolling to its end)
+  useLayoutEffect(() => {
+    const k = keep.current;
+    keep.current = null;
+    if (k) k.box.scrollTop = k.box.scrollHeight - k.below;
+  }, [from]);
+  // near the top of what is rendered: more of it (observed again after each step, in case it is still in view)
+  useEffect(() => {
+    const el = moreRef.current;
+    if (!el || typeof IntersectionObserver === "undefined") return;
+    const io = new IntersectionObserver((es) => void (es.some((e) => e.isIntersecting) && more()), {
+      root: el.closest(".chat-scroll"),
+      rootMargin: "600px 0px 0px 0px",
+    });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [more]);
+  const hidden = useMemo(() => blocks.slice(0, from).reduce((n, b) => n + weight(b), 0), [blocks, from]);
   // the same elements while nothing here changes (a keystroke in the composer); else each block renders again only
   // if what it shows changed (sameBlock): a new item renders itself, not the whole conversation
   const rendered = useMemo(
     () =>
-      blocks.map((b) => (
+      blocks.slice(from).map((b) => (
         <BlockView
           key={b.key} b={b} results={results} running={running} cwd={cwd} day={day} shown={tapped === b.key} onTap={onTap}
           forks={forks} onFork={onFork} steps={steps} onForkStep={onForkStep}
           edits={edits} onEdit={onEdit} editing={b.type === "item" && b.item.kind === "user" && editing === b.item.id} editor={editor}
         />
       )),
-    [blocks, results, running, cwd, day, tapped, onTap, forks, onFork, steps, onForkStep, edits, onEdit, editing, editor],
+    [blocks, from, results, running, cwd, day, tapped, onTap, forks, onFork, steps, onForkStep, edits, onEdit, editing, editor],
   );
-  return <FileLinks cwd={cwd} running={running}>{rendered}</FileLinks>;
+  return (
+    <FileLinks cwd={cwd} running={running}>
+      {from > 0 && (
+        <button ref={moreRef} className="chat-earlier" onClick={more}>
+          <ChevronUp size={13} /> Earlier messages <span className="n">{hidden.toLocaleString()} more</span>
+        </button>
+      )}
+      {rendered}
+    </FileLinks>
+  );
 }
 
 interface BlockProps {

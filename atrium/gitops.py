@@ -53,6 +53,11 @@ def repo_root(path: str) -> str | None:
     return out.strip() if out else None
 
 
+def head_sha(path: str) -> str | None:
+    out = _run_sync(path, "rev-parse", "--verify", "-q", "HEAD")
+    return out.strip() if out else None
+
+
 def _parse_worktrees(text: str) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     cur: dict[str, Any] = {}

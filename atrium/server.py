@@ -15,11 +15,12 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Body, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.gzip import DEFAULT_EXCLUDED_CONTENT_TYPES, GZipMiddleware
 
-from . import __version__, changes, configfiles, fs, gitops, lsp, voice
+from . import __version__, changes, configfiles, fs, gitops, lsp, snapshots, voice
 from .auth import AUTH_PATH, AuthMiddleware, auth
 from .auth import router as auth_router
 from .board import pages as board_pages
@@ -405,7 +406,8 @@ async def list_sessions(pid: str, archived: bool = False):
     # sessions gone from their harness's store: their kept calls stop being kept (capture.release_gone)
     known = {s.id for s in await sessions.summaries(p)} | set(sessions.live)
     asyncio.get_running_loop().create_task(capture.release_gone(pid, known))
-    return rows
+    # written out in a thread: hundreds of rows, asked for again whenever a transcript grows
+    return Response(await asyncio.to_thread(_json_bytes, {"rows": rows}, only="rows"), media_type="application/json")
 
 
 @app.post("/api/p/{pid}/sessions")
@@ -430,10 +432,28 @@ async def create_session(pid: str, body: dict[str, Any] = Body(...)):
 async def get_session(pid: str, sid: str):
     p = P(pid)
     snap = await sessions.snapshot(p, sid)
-    rows = [r for r in await sessions.list_sessions(p, True) if r["id"] == sid]
+    rows = await sessions.list_sessions(p, True, only=sid)
     snap["session"] = rows[0] if rows else None
     snap["board"] = p.board.agent(sid)
-    return snap
+    # written out in a thread: a long conversation is tens of megabytes of JSON, which would hold every other request
+    return Response(await asyncio.to_thread(_json_bytes, snap), media_type="application/json")
+
+
+def _json_bytes(obj: dict[str, Any], part: int = 1000, only: str | None = None) -> bytes:
+    """``obj`` as JSON (``only``: its value under that key), a long list in it ``part`` entries at a time: json.dumps
+    holds the GIL while it writes, and over tens of megabytes, every request waits for it, in a thread too."""
+
+    def dumps(v: Any) -> str:
+        return json.dumps(v, ensure_ascii=False, separators=(",", ":"), default=jsonable_encoder)  # (anything not JSON as FastAPI writes it)
+
+    def value(v: Any) -> str:
+        if not isinstance(v, list) or len(v) <= part:
+            return dumps(v)
+        return "[" + ",".join(dumps(v[i : i + part])[1:-1] for i in range(0, len(v), part)) + "]"
+
+    if only is not None:
+        return value(obj[only]).encode()
+    return ("{" + ",".join(f"{dumps(k)}:{value(v)}" for k, v in obj.items()) + "}").encode()
 
 
 @app.get("/api/p/{pid}/sessions/{sid}/subagents/{aid}")
@@ -641,19 +661,27 @@ async def session_change_review(pid: str, sid: str, body: dict[str, Any] = Body(
     return {"ok": True}
 
 
+_changes_locks: dict[str, asyncio.Lock] = {}
+
+
 @app.get("/api/p/{pid}/changes")
 async def project_changes(pid: str):
-    """Change counts per agent, for the review inbox."""
+    """Change counts per agent, for the review inbox. One run at a time per project (asked for at every file change,
+    they would pile up); each agent's worked out again only if something it depends on changed (session_changes)."""
     p = P(pid)
+    async with _changes_locks.setdefault(pid, asyncio.Lock()):
+        return await _project_changes(p)
 
+
+async def _project_changes(p: Project) -> list[dict[str, Any]]:
     rows = await sessions.list_sessions(p)
 
     def compute() -> list[dict[str, Any]]:
         out = []
-        for s in rows:
-            if s["role"] != "worker":
-                continue
-            cs = changes.session_changes(p, s["id"], s["cwd"], s["harness"])
+        heads: dict[str, str | None] = {}  # each checkout's HEAD, read once
+        with snapshots.batch():  # and its files through one git process
+            found = [(s, changes.session_changes(p, s["id"], s["cwd"], s["harness"], heads)) for s in rows if s["role"] == "worker"]
+        for s, cs in found:
             if cs["files"]:
                 out.append(
                     {

@@ -56,7 +56,11 @@ def iso_to_epoch(ts: str | None) -> float | None:
 
 class TailScan:
     """What has been gathered from a file that only grows (a transcript), as far as it was read:
-    ``update`` hands the whole lines appended since to ``line``."""
+    ``update`` hands the whole lines appended since to ``line``; only those that hold what ``needle`` gives,
+    while it gives something. The file is searched for that, not split into lines: hundreds of transcripts of
+    megabytes each are read through when a project's sessions are first listed."""
+
+    CHUNK = 8 << 20  # read at a time (a line longer than this is read on until it ends)
 
     def __init__(self, ino: int):
         self.ino = ino
@@ -65,14 +69,34 @@ class TailScan:
     def line(self, raw: bytes) -> None:
         raise NotImplementedError
 
+    def needle(self) -> bytes | None:
+        """What the lines ``line`` needs now hold (None: it takes every line)."""
+        return None
+
     def update(self, path: Path) -> None:
         with path.open("rb") as f:
             f.seek(self.offset)
-            for raw in f:
-                if not raw.endswith(b"\n"):
-                    break  # still being written
-                self.offset += len(raw)
-                self.line(raw)
+            rest = b""
+            while chunk := f.read(self.CHUNK):
+                buf = rest + chunk
+                end = buf.rfind(b"\n") + 1  # the whole lines in it (the last one may still be being written)
+                self._lines(buf, end)
+                rest = buf[end:]
+
+    def _lines(self, buf: bytes, end: int) -> None:
+        """The lines in ``buf[:end]``, which starts at ``offset``."""
+        start, pos = self.offset, 0
+        while pos < end:
+            if (needle := self.needle()) is not None:  # on to the next line that holds it
+                at = buf.find(needle, pos, end)
+                if at < 0:
+                    break
+                pos = buf.rfind(b"\n", pos, at) + 1 or pos
+            nl = buf.index(b"\n", pos, end) + 1
+            raw, pos = buf[pos:nl], nl
+            self.offset = start + pos
+            self.line(raw)
+        self.offset = start + end
 
 
 S = TypeVar("S", bound=TailScan)

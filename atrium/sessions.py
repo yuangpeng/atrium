@@ -349,10 +349,12 @@ class SessionManager:
         s = await self.find_summary(project, sid)
         return meta.get("cwd") or (s.cwd if s else None) or project.path, meta.get("harness") or (s.harness if s else "claude-code")
 
-    async def list_sessions(self, project: Project, include_archived: bool = False, details: bool = True) -> list[dict[str, Any]]:
+    async def list_sessions(self, project: Project, include_archived: bool = False, details: bool = True,
+                            only: str | None = None) -> list[dict[str, Any]]:
         """``details=False`` (the home page, for every project): the rows' status fields are what counts. No
         ``git worktree list`` (directories and branches come from the worktrees seen before), no subagents or
-        compactions, and the harnesses' session lists may be 10 s old."""
+        compactions, and the harnesses' session lists may be 10 s old. ``only``: that session's row alone (a chat
+        opening it), not hundreds made to keep one."""
         summaries = await self.summaries(project, max_age=3.0 if details else 10.0)
         wts = await asyncio.to_thread(project.worktrees_sync) if details else []
         known = project.note_worktrees(wts)  # without wts: only reads what was seen
@@ -363,6 +365,7 @@ class SessionManager:
         atrium_wts = os.path.join(project.path, ".atrium", "worktrees") + os.sep
         out: list[dict[str, Any]] = []
         seen: set[str] = set()
+        reals: dict[str, str] = {}  # cwd -> its realpath: hundreds of sessions in a few directories
 
         def worktree_of(real: str) -> str | None:
             """The linked worktree, existing or removed, that holds ``real``."""
@@ -380,7 +383,7 @@ class SessionManager:
                 updated = max(updated, h.last_activity)
             if m.get("moves") and m.get("cwd"):  # moved by Atrium: its record wins over what the harness lists
                 cwd = m["cwd"]
-            real = os.path.realpath(cwd) if cwd else ""
+            real = (reals.get(cwd) or reals.setdefault(cwd, os.path.realpath(cwd))) if cwd else ""
             wt = worktree_of(real) if real else None
             if wt:  # a removed worktree's branch is the one it last had
                 branch = wt_branch.get(wt) or known.get(wt, {}).get("branch") or branch
@@ -416,21 +419,25 @@ class SessionManager:
 
         for s in summaries:
             seen.add(s.id)
-            out.append(row(s.id, s.harness, s.title, s.cwd or project.path, s.updated_at, s.created_at, s.git_branch, s.first_prompt, s.transcript))
+            if only in (None, s.id):
+                out.append(row(s.id, s.harness, s.title, s.cwd or project.path, s.updated_at, s.created_at, s.git_branch, s.first_prompt, s.transcript))
         for sid, h in self.live.items():
             if h.project.id == project.id and sid not in seen:
                 seen.add(sid)
-                out.append(row(sid, h.harness_id, h.name, h.cwd, h.last_activity, h.started_at, None, None, None))
+                if only in (None, sid):
+                    out.append(row(sid, h.harness_id, h.name, h.cwd, h.last_activity, h.started_at, None, None, None))
         for sid, m in meta.items():  # forks the harness doesn't list yet (Codex: until their first turn)
             fork = m.get("forked_from")
             if fork and sid not in seen and m.get("cwd"):
-                title = m.get("name") or f"{fork.get('name') or 'Agent'} (fork)"
-                out.append(row(sid, m.get("harness") or "claude-code", title, m["cwd"], m.get("forked_at") or 0, m.get("created_at"), None, None, None))
+                seen.add(sid)
+                if only in (None, sid):
+                    title = m.get("name") or f"{fork.get('name') or 'Agent'} (fork)"
+                    out.append(row(sid, m.get("harness") or "claude-code", title, m["cwd"], m.get("forked_at") or 0, m.get("created_at"), None, None, None))
         if not details:
             out = [r for r in out if include_archived or not r["archived"]]
             out.sort(key=lambda r: -(r["updated_at"] or 0))
             return out
-        ids = {r["id"] for r in out}
+        ids = seen  # every session's, the rows not made included
         synced = False
         for r in out:
             if r["forked_from"]:
@@ -993,8 +1000,8 @@ class SessionManager:
     async def snapshot(self, project: Project, sid: str) -> dict[str, Any]:
         meta = project.session_meta(sid)
         h = self.live.get(sid)
-        if h and h.alive:
-            return {"live": True, "state": h.state, "items": h.items, "pending": list(h.pending), "settings": h.settings()}
+        if h and h.alive:  # (a copy: it is written out in a thread, while the session goes on)
+            return {"live": True, "state": h.state, "items": list(h.items), "pending": list(h.pending), "settings": h.settings()}
         settings = {"model": meta.get("model") or "", "effort": meta.get("effort") or "", "mode": meta.get("mode") or ""}
         summary = await self.find_summary(project, sid)
         if not summary and not meta.get("forked_from"):  # never reached the transcript (e.g. failed to start): show what we have

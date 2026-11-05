@@ -24,6 +24,7 @@ from __future__ import annotations
 import difflib
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,10 @@ from .harness.util import iso_to_epoch
 from .project import Project
 
 _edit_cache: dict[tuple[str, str], tuple[int, list[FileEdit]]] = {}
+# (project, session) -> (what its change set was worked out from, the change set): the review inbox asks for every
+# agent's whenever a file changes, and one is tens of git calls (hundreds of agents: minutes)
+_changes_cache: dict[tuple[str, str], tuple[Any, dict[str, Any]]] = {}
+_roots: dict[str, tuple[float, str | None]] = {}  # directory -> (when, the checkout holding it)
 _UNKNOWN = object()  # baseline / agent-final content could not be determined
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
@@ -200,7 +205,8 @@ def _collect(project: Project, sid: str, cwd: str, harness_id: str) -> tuple[dic
     return files, snaps
 
 
-def _baseline(f: dict[str, Any], snaps: list[dict[str, Any]], current: str | None) -> tuple[Any, str]:
+def _baseline(f: dict[str, Any], snaps: list[dict[str, Any]], current: str | None) -> tuple[Any, ...]:
+    """(content before the session, where it was found[, the checkout whose HEAD it is])"""
     path, first = f["path"], f["first"]
     starts = [s for s in snaps if s["phase"] == "start" and _inside(path, s["root"]) and (first is None or s["ts"] <= first + 1)]
     if starts:
@@ -228,11 +234,21 @@ def _baseline(f: dict[str, Any], snaps: list[dict[str, Any]], current: str | Non
                 content = reverse_patch(content, e.patch)
             if content is not None:
                 return content, "transcript"
-    root = gitops.repo_root(os.path.dirname(path)) if os.path.isdir(os.path.dirname(path)) else None
+    root = _repo_root(os.path.dirname(path)) if os.path.isdir(os.path.dirname(path)) else None
     if root:
         present, content = snapshots.head_blob(root, os.path.relpath(path, root))
-        return (content if present else None), "head"
+        return (content if present else None), "head", root
     return _UNKNOWN, "unknown"
+
+
+def _repo_root(d: str) -> str | None:
+    """The checkout holding directory ``d``, as git said in the last minute: an agent's files are in a few directories."""
+    hit = _roots.get(d)
+    if hit and time.monotonic() - hit[0] < 60:
+        return hit[1]
+    root = gitops.repo_root(d)
+    _roots[d] = (time.monotonic(), root)
+    return root
 
 
 def _agent_final(f: dict[str, Any], snaps: list[dict[str, Any]]) -> Any:
@@ -259,17 +275,42 @@ def _resolve(f: dict[str, Any], snaps: list[dict[str, Any]], gone_roots: list[st
     gone = not exists and any(_inside(path, r) for r in gone_roots)
     if gone and final is not _UNKNOWN:  # its checkout was removed: as the agent left it
         current, exists = final, final is not None
-    baseline, source = _baseline(f, snaps, current)
-    return {"exists": exists, "current": current, "baseline": baseline, "source": source, "final": final, "gone": gone}
+    baseline, source, *root = _baseline(f, snaps, current)
+    return {"exists": exists, "current": current, "baseline": baseline, "source": source, "final": final, "gone": gone, "root": root[0] if root else None}
 
 
-def session_changes(project: Project, sid: str, cwd: str, harness_id: str) -> dict[str, Any]:
+def _state(path: str) -> tuple[int, int, int] | None:
+    """What says the file is as it was: its inode, size and mtime (None: not there)."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return st.st_ino, st.st_size, st.st_mtime_ns
+
+
+def session_changes(project: Project, sid: str, cwd: str, harness_id: str, heads: dict[str, str | None] | None = None) -> dict[str, Any]:
+    """The files the session changed, each with how it stands now. Worked out again only when something it is worked
+    out from changed: the session's edits and snapshots, the files themselves, what was marked reviewed, and the HEAD
+    of a checkout a file's baseline was read from. ``heads``: those HEADs as already read (the same call for many
+    sessions reads each once). The result is shared: don't change it."""
     files, snaps = _collect(project, sid, cwd, harness_id)
     gone_roots = _gone_roots(project, sid, cwd, snaps)
     reviews = project.reviews(sid)
+    sig = (cwd, tuple(gone_roots), tuple(sorted(reviews.items())), tuple((s["tree"], s["root"], s["phase"], s["ts"]) for s in snaps),
+           tuple((p, len(f["edits"]), f["edits"][-1].ts if f["edits"] else None, f["first"], f["last"], f["detected"], _state(p)) for p, f in files.items()))
+    key = (project.id, sid)
+    heads = {} if heads is None else heads
+    hit = _changes_cache.get(key)
+    if hit and hit[0][0] == sig and all(_head(root, heads) == head for root, head in hit[0][1].items()):
+        return hit[1]
+    used: dict[str, str | None] = {}  # the checkouts whose HEAD a baseline was read from
     out = []
+    with snapshots.batch():
+        resolved = {path: _resolve(f, snaps, gone_roots) for path, f in files.items()}
     for path, f in files.items():
-        r = _resolve(f, snaps, gone_roots)
+        r = resolved[path]
+        if r["source"] == "head":
+            used[r["root"]] = _head(r["root"], heads)
         baseline, current, exists = r["baseline"], r["current"], r["exists"]
         if f["detected"] and baseline is not _UNKNOWN and baseline == current:
             continue  # a shell-detected change that is gone again
@@ -297,7 +338,15 @@ def session_changes(project: Project, sid: str, cwd: str, harness_id: str) -> di
             "detected": f["detected"],
         })
     out.sort(key=lambda x: x["rel"])
-    return {"session_id": sid, "cwd": cwd, "files": out, "snapshots": len(snaps)}
+    result = {"session_id": sid, "cwd": cwd, "files": out, "snapshots": len(snaps)}
+    _changes_cache[key] = ((sig, used), result)
+    return result
+
+
+def _head(root: str, heads: dict[str, str | None]) -> str | None:
+    if root not in heads:
+        heads[root] = gitops.head_sha(root)
+    return heads[root]
 
 
 def _file(project: Project, sid: str, cwd: str, harness_id: str, path: str) -> tuple[dict[str, Any], dict[str, Any]]:
