@@ -1717,7 +1717,7 @@ class GrokHarness(Harness):
                 out += digest_update(d, tools)
         return out
 
-    def file_edits(self, session_id: str, cwd: str) -> list[FileEdit]:
+    def file_edits(self, session_id: str, cwd: str, since: float | None = None) -> list[FileEdit]:
         d = session_dir(session_id, cwd)
         if not d:
             return []

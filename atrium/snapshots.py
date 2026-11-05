@@ -48,30 +48,46 @@ def _git(cwd: str, *args: str, env: dict[str, str] | None = None, timeout: float
 
 class _Batch:
     """One ``git cat-file --batch`` in a checkout, read object after object: a git process each takes milliseconds,
-    and the files of hundreds of agents make that many seconds."""
+    and the files of hundreds of agents make that many seconds. A read that takes longer than a git call may (``_git``)
+    kills it: the read fails, and the caller runs git itself (a git that hangs, e.g. fetching a missing object from a
+    promisor remote, would otherwise hold the Changes inbox and the Tracker for good)."""
+
+    TIMEOUT = 10
 
     def __init__(self, root: str):
         self.proc = subprocess.Popen(
             ["git", "cat-file", "--batch"], cwd=root, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             env={**os.environ, "GIT_OPTIONAL_LOCKS": "0", "LC_ALL": "C"},
         )
+        self.deadline: float | None = None  # when the read under way is given up
+        threading.Thread(target=self._watch, name="git-batch-watch", daemon=True).start()
+
+    def _watch(self) -> None:
+        while self.proc.poll() is None:
+            time.sleep(0.5)
+            if self.deadline is not None and time.monotonic() > self.deadline:
+                self.proc.kill()
 
     def read(self, spec: str) -> tuple[str, bytes] | None:
         """(type, content) of the object ``spec`` names (``<tree>:<path>``…); None: there is none."""
         stdin, stdout = self.proc.stdin, self.proc.stdout
         assert stdin and stdout
-        stdin.write(spec.encode() + b"\n")
-        stdin.flush()
-        head = stdout.readline()
-        if not head:
-            raise OSError("git cat-file --batch stopped")
-        if not head.endswith(b"\n") or len(fields := head.split()) != 3 or not fields[2].isdigit():
-            return None  # "<spec> missing", "ambiguous"…
-        size = int(fields[2])
-        data = stdout.read(size + 1)  # and the newline after it
-        if len(data) != size + 1:
-            raise OSError("git cat-file --batch stopped")
-        return fields[1].decode(), data[:-1]
+        self.deadline = time.monotonic() + self.TIMEOUT
+        try:
+            stdin.write(spec.encode() + b"\n")
+            stdin.flush()
+            head = stdout.readline()
+            if not head:
+                raise OSError("git cat-file --batch stopped")
+            if not head.endswith(b"\n") or len(fields := head.split()) != 3 or not fields[2].isdigit():
+                return None  # "<spec> missing", "ambiguous"…
+            size = int(fields[2])
+            data = stdout.read(size + 1)  # and the newline after it
+            if len(data) != size + 1:
+                raise OSError("git cat-file --batch stopped")
+            return fields[1].decode(), data[:-1]
+        finally:
+            self.deadline = None
 
     def close(self) -> None:
         with contextlib.suppress(Exception):
@@ -98,7 +114,8 @@ def batch() -> Iterator[None]:
     finally:
         batches, _local.batches = _local.batches, None
         for b in batches.values():
-            b.close()
+            if b is not None:
+                b.close()
 
 
 _NOT_BATCHED = object()
@@ -107,8 +124,10 @@ _NOT_BATCHED = object()
 def _batched(root: str, spec: str) -> Any:
     """The object ``spec`` names, read through the batch round this call (see ``read``); _NOT_BATCHED: there is no
     batch to read it with (or it failed), so the caller runs git itself."""
-    batches: dict[str, _Batch] | None = getattr(_local, "batches", None)
+    batches: dict[str, _Batch | None] | None = getattr(_local, "batches", None)
     if batches is None or "\n" in spec or "\r" in spec:  # (one per line, a line's \r dropped)
+        return _NOT_BATCHED
+    if root in batches and batches[root] is None:  # it failed there: git itself, from then on
         return _NOT_BATCHED
     b = batches.get(root)
     try:
@@ -116,7 +135,7 @@ def _batched(root: str, spec: str) -> Any:
             b = batches[root] = _Batch(root)
         return b.read(spec)
     except (OSError, ValueError):
-        batches.pop(root, None)
+        batches[root] = None
         if b is not None:
             b.close()
         return _NOT_BATCHED

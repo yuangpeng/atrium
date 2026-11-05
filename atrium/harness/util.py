@@ -60,7 +60,7 @@ class TailScan:
     while it gives something. The file is searched for that, not split into lines: hundreds of transcripts of
     megabytes each are read through when a project's sessions are first listed."""
 
-    CHUNK = 8 << 20  # read at a time (a line longer than this is read on until it ends)
+    CHUNK = 1 << 20  # read at a time (a line longer than this is read on until it ends)
 
     def __init__(self, ino: int):
         self.ino = ino

@@ -333,7 +333,9 @@ class Harness(ABC):
         ``THINKING:``, ``TOOL …``, ``→ …`` (the end of a command's output), edits and errors."""
 
     @abstractmethod
-    def file_edits(self, session_id: str, cwd: str) -> list[FileEdit]: ...
+    def file_edits(self, session_id: str, cwd: str, since: float | None = None) -> list[FileEdit]:
+        """The session's file edits, in order. ``since``: only those after it (epoch seconds; a fork's transcript opens
+        with its source's edits, made before), which a harness may also leave to the caller."""
 
     async def list_subagents(self, sessions: list[SessionSummary], roots: list[str]) -> dict[str, list[SubagentSummary]]:
         """Subagents of these sessions (this harness's own), keyed by session id. Called on every

@@ -1361,7 +1361,7 @@ class CodexHarness(Harness):
                 out.append(f"{pre}(turn interrupted)")
         return out
 
-    def file_edits(self, session_id: str, cwd: str) -> list[FileEdit]:
+    def file_edits(self, session_id: str, cwd: str, since: float | None = None) -> list[FileEdit]:
         edits: list[FileEdit] = []
         for path in self._rollouts(session_id):  # those of the turns an edit dropped too: the files kept the changes
             try:

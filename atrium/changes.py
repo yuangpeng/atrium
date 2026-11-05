@@ -27,6 +27,7 @@ import os
 import re
 import threading
 import time
+import zlib
 from pathlib import Path
 from typing import Any
 
@@ -37,11 +38,12 @@ from .harness.base import FileEdit, Replacement
 from .harness.util import iso_to_epoch
 from .project import Project
 
-# (transcript, session) -> (what they were read from, the session's edits): the last few sessions', whose files are
-# looked at one after another. Not every session's: an edit tool's result can hold the whole file, so the edits of a
-# directory's sessions took as much memory as their transcripts (gigabytes), and kept it.
-_edit_cache: dict[tuple[str, str], tuple[Any, list[FileEdit]]] = {}
-_EDIT_CACHE_MAX = 8
+# (transcript, session) -> (what they were read from, the session's edits as _pack keeps them, how much they hold): the
+# most recently used, as much as _EDIT_CACHE_BYTES. Trimmed (_slim) and compressed, they are a little of each file a
+# session changed, and a file that changes gets its sessions' rows worked out again without reading their transcripts.
+# Untrimmed and all kept, a directory's edits took as much memory as its transcripts (gigabytes).
+_edit_cache: dict[tuple[str, str], tuple[Any, list[tuple[FileEdit, bytes | None, bytes | None]], int]] = {}
+_EDIT_CACHE_BYTES = 64 << 20
 # (project, session) -> (what its change set was worked out from, the change set): the review inbox and the Tracker ask
 # for every agent's, again whenever a file changes, and one is tens of git calls and a read of its transcript
 _changes_cache: dict[tuple[str, str], tuple[Any, ...]] = {}
@@ -64,13 +66,33 @@ def _edits(project: Project, sid: str, cwd: str, harness_id: str) -> list[FileEd
     with _cache_lock:
         hit = _edit_cache.pop(key, None)
     if hit is None or hit[0] != state:
-        edits = [e for e in harness.file_edits(sid, cwd) if not inherited or ((ts := iso_to_epoch(e.ts)) is not None and ts > inherited)]
-        hit = (state, _slim(edits))
+        edits = harness.file_edits(sid, cwd, since=inherited)
+        edits = _slim([e for e in edits if not inherited or ((ts := iso_to_epoch(e.ts)) is not None and ts > inherited)])
+        hit = (state, *_pack(edits))
+    else:
+        edits = _unpack(hit[1])
     with _cache_lock:
         _edit_cache[key] = hit  # the most recently used last
-        while len(_edit_cache) > _EDIT_CACHE_MAX:
+        while len(_edit_cache) > 1 and sum(h[2] for h in _edit_cache.values()) > _EDIT_CACHE_BYTES:
             del _edit_cache[next(iter(_edit_cache))]
-    return hit[1]
+    return edits
+
+
+def _pack(edits: list[FileEdit]) -> tuple[list[tuple[FileEdit, bytes | None, bytes | None]], int]:
+    """``edits`` with their contents compressed (code takes a quarter of the room), and about how many bytes they hold."""
+    out, size = [], 0
+    for e in edits:
+        b, a = (None if t is None else zlib.compress(t.encode("utf-8", "surrogatepass"), 1) for t in (e.before, e.after))
+        out.append((e if b is None and a is None else dataclasses.replace(e, before=None, after=None), b, a))
+        size += 200 + len(b or b"") + len(a or b"") + len(e.patch or "")
+    return out, size
+
+
+def _unpack(packed: list[tuple[FileEdit, bytes | None, bytes | None]]) -> list[FileEdit]:
+    def text(z: bytes | None) -> str | None:
+        return None if z is None else zlib.decompress(z).decode("utf-8", "surrogatepass")
+
+    return [e if b is None and a is None else dataclasses.replace(e, before=text(b), after=text(a)) for e, b, a in packed]
 
 
 def _slim(edits: list[FileEdit]) -> list[FileEdit]:

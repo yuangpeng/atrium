@@ -257,25 +257,28 @@ export function Transcript({ blocks, results, running, cwd, forks, onFork, steps
   }, []);
   const day = useDay();
   // Where rendering starts: set once the conversation is there, then kept while it grows (what is on screen never
-  // moves); earlier when the reader scrolls up to it. A conversation cut short (a message changed) shows its end.
+  // moves); earlier when the reader scrolls up to it. A conversation cut short (a message changed) starts it again at
+  // its end, which then stays put too.
   const [start, setStart] = useState<number | null>(null);
   const end = windowStart(blocks, WINDOW);
   const from = start === null ? end : Math.min(start, end);
   useEffect(() => {
-    if (start === null && blocks.length) setStart(end);
+    if (start === null ? blocks.length > 0 : end < start) setStart(end);
   }, [start, blocks.length, end]);
   const moreRef = useRef<HTMLButtonElement>(null);
-  const keep = useRef<{ box: HTMLElement; below: number } | null>(null); // the scroll box, and how much of it was below the view
+  // the scroll box, the block that was first, and where it was: steps that came in below meanwhile don't count
+  const keep = useRef<{ box: HTMLElement; el: Element; top: number } | null>(null);
   const more = useCallback(() => {
     const box = moreRef.current?.closest<HTMLElement>(".chat-scroll");
-    if (box) keep.current = { box, below: box.scrollHeight - box.scrollTop };
+    const el = moreRef.current?.nextElementSibling;
+    if (box && el) keep.current = { box, el, top: el.getBoundingClientRect().top };
     setStart(windowStart(blocks, WINDOW, from));
   }, [blocks, from]);
   // what came in above leaves the view where it was (this runs before the chat's own scrolling to its end)
   useLayoutEffect(() => {
     const k = keep.current;
     keep.current = null;
-    if (k) k.box.scrollTop = k.box.scrollHeight - k.below;
+    if (k && k.el.isConnected) k.box.scrollTop += k.el.getBoundingClientRect().top - k.top;
   }, [from]);
   // near the top of what is rendered: more of it (observed again after each step, in case it is still in view)
   useEffect(() => {

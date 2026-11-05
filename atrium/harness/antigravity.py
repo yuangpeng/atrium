@@ -1854,7 +1854,7 @@ class AntigravityHarness(Harness):
                 steps[d["step_index"]] = d
         return [e for i in sorted(steps) for e in digest_entry(steps[i])]
 
-    def file_edits(self, session_id: str, cwd: str) -> list[FileEdit]:
+    def file_edits(self, session_id: str, cwd: str, since: float | None = None) -> list[FileEdit]:
         path = transcript_file(session_id)
         return file_edits_of(_entries(path)) if path else []
 

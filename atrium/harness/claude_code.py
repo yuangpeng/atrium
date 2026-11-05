@@ -53,7 +53,7 @@ try:  # how list_sessions reads one transcript (its head and tail): to read agai
 except ImportError:  # moved in another version of the SDK: list_sessions reads every transcript at every listing
     _sdk_sessions = None
 _LITE_READ = _sdk_sessions is not None and all(hasattr(_sdk_sessions, f) for f in (
-    "_canonicalize_path", "_find_project_dir", "_validate_uuid", "_read_session_lite", "_parse_session_info_from_lite"))
+    "_canonicalize_path", "_find_project_dir", "_get_worktree_paths", "_validate_uuid", "_read_session_lite", "_parse_session_info_from_lite"))
 
 from .. import gitops
 from ..capture import CAPTURE_URL_ENV, FIRST_PARTY_ENV, UPSTREAM_ENV, loopback_env
@@ -871,7 +871,7 @@ class ClaudeCodeHarness(Harness):
         found: list[tuple[Any, Path | None]] | None = None
         if self._lite_read:
             try:
-                found = self._read_listed(roots)
+                found = self._read_listed(project_dir, roots)
             except Exception:  # the SDK reads them some other way now
                 self._lite_read = False
                 log.exception("reading transcripts as list_sessions does failed: list_sessions reads them all from now on")
@@ -906,15 +906,19 @@ class ClaudeCodeHarness(Harness):
             )
         return out
 
-    def _read_listed(self, roots: list[str]) -> list[tuple[Any, Path | None]]:
-        """What ``list_sessions`` gives for the transcript directories of ``roots`` (the project and its worktrees,
-        removed ones too), with each transcript's path; one is read again only if it changed since the last listing: a
-        directory can hold hundreds of them, and the list is asked for whenever one of them grows."""
+    def _read_listed(self, project_dir: str, roots: list[str]) -> list[tuple[Any, Path | None]]:
+        """What ``list_sessions`` gave: for the project, with its git worktrees, then for those of ``roots`` that are
+        gone (removed worktrees) the sessions not found yet; with each transcript's path. A transcript is read again
+        only if it changed since the last listing: a directory can hold hundreds of them, and the list is asked for
+        whenever one of them grows."""
         sdk: Any = _sdk_sessions
+        canonical = sdk._canonicalize_path(project_dir)
+        wts = sdk._get_worktree_paths(canonical)  # the other worktrees only when there are some (a project in a subdirectory)
+        live = [canonical] + ([w for w in wts if w != canonical] if len(wts) > 1 else [])
+        gone = [sdk._canonicalize_path(r) for r in roots if not os.path.isdir(r)]
         newest: dict[str, tuple[Any, Path | None]] = {}
-        for root in dict.fromkeys(roots):
-            canonical = sdk._canonicalize_path(root)
-            d = sdk._find_project_dir(canonical)
+        for n, root in enumerate([*live, *gone]):
+            d = sdk._find_project_dir(root)
             if d is None:
                 continue
             try:
@@ -932,15 +936,15 @@ class ClaudeCodeHarness(Harness):
                     st = e.stat()
                 except OSError:
                     continue
-                sig = (st.st_ino, st.st_size, st.st_mtime_ns, canonical)
+                sig = (st.st_ino, st.st_size, st.st_mtime_ns, root)
                 hit = before.get(e.name)
                 if hit and hit[0] == sig:
                     info = hit[1]
                 else:
                     lite = sdk._read_session_lite(Path(e.path))
-                    info = sdk._parse_session_info_from_lite(sid, lite, canonical) if lite else None  # None: a sidechain, or no prompt yet
+                    info = sdk._parse_session_info_from_lite(sid, lite, root) if lite else None  # None: a sidechain, or no prompt yet
                 now[e.name] = (sig, info)
-                if info and (sid not in newest or info.last_modified > newest[sid][0].last_modified):
+                if info and (sid not in newest or (n < len(live) and info.last_modified > newest[sid][0].last_modified)):
                     newest[sid] = (info, Path(e.path))
             with self._listed_lock:
                 self._listed[str(d)] = now
@@ -1201,14 +1205,14 @@ class ClaudeCodeHarness(Harness):
                 out.append(f"{pre}(session renamed to '{d.get('customTitle')}')")
         return out
 
-    def file_edits(self, session_id: str, cwd: str) -> list[FileEdit]:
+    def file_edits(self, session_id: str, cwd: str, since: float | None = None) -> list[FileEdit]:
         path = self.transcript_path(session_id, cwd)
         if not path:
             return []
         files = [path] + sorted((path.parent / session_id / "subagents").rglob("agent-*.jsonl"))
         edits: list[FileEdit] = []
         for f in files:
-            scan = _EditScan(0)
+            scan = _EditScan(0, since)
             try:
                 scan.update(f)
             except OSError:
@@ -1428,14 +1432,38 @@ class _CompactionScan(TailScan):
 
 
 class _EditScan(TailScan):
-    """The file edits a transcript records (the results of the tools that changed a file)."""
+    """The file edits a transcript records (the results of the tools that changed a file), but a fork's inherited ones
+    (``since``). Each Edit result carries the whole file, and another copy is made of it changed: of those, only what a
+    file's changes are worked out from (changes._slim) is kept as the transcript is read, the content before its first
+    edit and after its last, or a long session's edits would all be held at once."""
 
-    def __init__(self, ino: int):
+    def __init__(self, ino: int, since: float | None = None):
         super().__init__(ino)
+        self.since = since
         self.edits: list[FileEdit] = []
+        self.ends: dict[str, tuple[tuple[tuple[str, int], FileEdit], tuple[tuple[str, int], FileEdit]]] = {}  # path -> first, last
 
     def needle(self) -> bytes | None:
         return b'"toolUseResult"'
+
+    def add(self, e: FileEdit) -> None:
+        """Keep ``e``, and of its file's edits only the first's content before and the last's after, in the order they
+        are sorted in (time, then as read)."""
+        key = (e.ts or "", len(self.edits))
+        self.edits.append(e)
+        ends = self.ends.get(e.path)
+        if ends is None:
+            self.ends[e.path] = ((key, e), (key, e))
+            return
+        (kf, first), (kl, last) = ends
+        if key < kf:  # earlier than its first (a line out of time order)
+            first.before, e.after = None, None
+            self.ends[e.path] = ((key, e), (kl, last))
+        elif key > kl:
+            last.after, e.before = None, None
+            self.ends[e.path] = ((kf, first), (key, e))
+        else:
+            e.before = e.after = None
 
     def line(self, raw: bytes) -> None:
         if b'"filePath"' not in raw:
@@ -1448,8 +1476,8 @@ class _EditScan(TailScan):
         if not isinstance(tur, dict) or not tur.get("filePath"):
             return
         edit = _edit_from_result(tur, d.get("timestamp"))
-        if edit:
-            self.edits.append(edit)
+        if edit and (not self.since or ((ts := iso_to_epoch(edit.ts)) is not None and ts > self.since)):
+            self.add(edit)
 
 
 def _is_boundary(entry: dict[str, Any]) -> bool:
