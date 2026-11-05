@@ -332,14 +332,19 @@ What goes through it:
   (`[model_providers]`). The built-in OpenAI provider (ChatGPT sign-in, `openai_base_url`), and providers
   with `supports_websockets`, call out directly.
 - **Antigravity**: what goes to the Gemini API endpoint, a custom model's relay or Google's. Not on Vertex AI.
-- **Grok Build**: what goes to a custom model's endpoint (a `[model.<id>]` with a `base_url`, or `api_base_url`),
-  its title and summary calls included. Its `config.toml` is left alone: the agent's process gets a campaign of
-  Atrium's (`atrium-capture`) in `GROK_CAMPAIGNS_OVERRIDE`, Grok's config patches that apply over its config
-  files and may set a model's `base_url` (`GROK_CONFIG`, its overlay, may not). Campaigns already in that variable
-  still apply; without it, Grok's own (xAI's, `[[campaigns]]` in its files) don't in Atrium's agents. xAI's
-  endpoints (`grok login`, `XAI_API_KEY`), whose address depends on the sign-in, are called directly, and so is a
-  model with `mtls_cert_dir`, or one whose `base_url` `requirements.toml` pins. A model added to `config.toml` is
-  captured in agents started afterwards.
+- **Grok Build**: what goes to a custom model's endpoint (a `[model.<id>]` with a `base_url` or `api_base_url`
+  of its own, or of the `[model_providers]` entry it names), its title and summary calls included. Its
+  `config.toml` is left alone: the agent's process gets a campaign of Atrium's (`atrium-capture`) in
+  `GROK_CAMPAIGNS_OVERRIDE`, Grok's config patches that apply over its config files and may set a model's
+  `base_url` (`GROK_CONFIG`, its overlay, may not). That variable replaces every other source of campaigns, so
+  Atrium puts in it the ones it held already, else the `[[campaigns]]` of Grok's files; xAI's, which its servers
+  send at runtime, don't apply in Atrium's agents. Atrium's campaign goes last: one that sets the same address
+  wins, and those calls go out directly. Called directly as well: xAI's endpoints (`grok login`, `XAI_API_KEY`),
+  whose address depends on the sign-in; the models Grok lists from `[endpoints] models_base_url`; a model with
+  `mtls_cert_dir`, or whose `base_url` `requirements.toml` pins; and every model when Grok signs in through
+  `[auth] auth_provider_command` and lists its models from such an endpoint (it then drops a model whose address
+  is on another host, as the proxy's would be). A model added to `config.toml` is captured in agents started
+  afterwards.
 
 Anything else the harnesses send isn't recorded: telemetry, update checks, MCP servers over HTTP, the
 plugins Codex fetches, web pages.
@@ -746,7 +751,7 @@ proxy the agents need. Claude Code's settings can add variables of their own und
 | `XAI_API_KEY` | Grok Build's key for xAI's API, when it isn't signed in with `grok login` ([Grok Build](#grok-build)). |
 | `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` | Passed on to every agent. With `capture.enabled`, Claude Code, Codex and Grok Build get the loopback addresses added to `NO_PROXY`, and the capture proxy sends their calls out through the proxy they would have used. |
 | `ATRIUM_CAPTURE_URL`, `ATRIUM_CAPTURE_UPSTREAM` | Set by Atrium for a captured Claude Code agent: the proxy's address and the one it replaced. An Atrium started with them sends its agents to `ATRIUM_CAPTURE_UPSTREAM` ([Request capture](#request-capture)). |
-| `GROK_CAMPAIGNS_OVERRIDE` | Grok Build's config patches (a JSON list). Atrium adds a campaign of its own (`atrium-capture`) for a captured Grok Build agent, and keeps the ones you set; an Atrium started with it drops that campaign ([Request capture](#request-capture)). |
+| `GROK_CAMPAIGNS_OVERRIDE` | Grok Build's config patches (a JSON list). Atrium adds a campaign of its own (`atrium-capture`) for a captured Grok Build agent, and keeps the ones you set (without, those of Grok's config files); an Atrium started with it drops that campaign ([Request capture](#request-capture)). |
 
 ## Checking your setup
 

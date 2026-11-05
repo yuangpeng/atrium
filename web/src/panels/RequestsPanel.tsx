@@ -20,7 +20,7 @@ const NARROW = 720; // below this the list and a call take turns
 const KIND: Record<string, [string, string]> = {
   agent: ["Agent", "The agent's own loop"],
   sub: ["Sub", "A subagent's call"],
-  aux: ["Aux", "No tools: a side call, such as a title or a summary"],
+  aux: ["Aux", "No tools, or just one it must call: a side call, such as a title or a summary"],
   count: ["Count", "Token counting"],
   compact: ["Compact", "Compaction: the harness has the model summarize the conversation so far, and goes on with the summary"],
 };

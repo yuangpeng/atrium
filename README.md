@@ -90,9 +90,10 @@ A project-centric workbench for coding agents — Claude Code, Codex, Antigravit
      another shell.
    * **Requests** — what each agent sends to its model and what comes back, call by call. Atrium points
      the harness's base URL (Claude Code's `ANTHROPIC_BASE_URL`, the Codex provider's `base_url`, the Gemini
-     endpoint of Antigravity) at a proxy of its own on a loopback port, which sends each call on unchanged
-     and records it with credentials blanked. The tab follows the selected agent and groups its calls by the
-     message each turn answers: the agent's loop, subagents, side calls such as titles. Each call is laid out
+     endpoint of Antigravity, the `base_url` of Grok Build's custom models) at a proxy of its own on a loopback
+     port, which sends each call on unchanged and records it with credentials blanked. The tab follows the
+     selected agent and groups its calls by the message each turn answers: the agent's loop, subagents, side
+     calls such as titles. Each call is laid out
      (settings, system prompt, tools, messages, with what the call before didn't have marked, and the
      answer); its stream is shown event by event, both bodies as they were. It shows how each harness works
      underneath. `capture` in the settings turns it off and caps what is kept (1 GB). Compactions are marked

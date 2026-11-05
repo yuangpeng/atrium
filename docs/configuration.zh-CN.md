@@ -310,13 +310,16 @@ agent 的 base URL 指向它。代理把每个请求原样转发到 harness 本�
   内置的 OpenAI provider（ChatGPT 登录、`openai_base_url`），以及设置了 `supports_websockets` 的 provider，
   都直接调用。
 - **Antigravity**：发往 Gemini API 端点的调用，不管是自定义模型的中转站还是 Google 自己的。Vertex AI 不经过。
-- **Grok Build**：发往自定义模型端点的调用（设了 `base_url` 或 `api_base_url` 的 `[model.<id>]`），包括会话标题和
-  摘要这类辅助调用。它的 `config.toml` 不会被改动：agent 的进程拿到的是 `GROK_CAMPAIGNS_OVERRIDE` 里一个 Atrium 自己的
-  campaign（`atrium-capture`）。campaign 是 Grok 的配置补丁，盖在它各层配置文件之上，可以设置模型的 `base_url`（它的
-  覆盖层 `GROK_CONFIG` 不行）。这个变量里原有的 campaign 照常生效；没设这个变量时，Grok 自己的 campaign（xAI 下发的、
-  它配置文件里的 `[[campaigns]]`）在 Atrium 的 agent 里不生效。xAI 自己的端点（`grok login`、`XAI_API_KEY`）地址取决于
-  登录方式，直接调用；设了 `mtls_cert_dir` 的模型、`base_url` 被 `requirements.toml` 锁定的模型也直接调用。新加进
-  `config.toml` 的模型，在之后启动的 agent 里才会被抓包。
+- **Grok Build**：发往自定义模型端点的调用（`[model.<id>]` 自己设了 `base_url` 或 `api_base_url`，或者从它指定的
+  `[model_providers]` 条目继承），包括会话标题和摘要这类辅助调用。它的 `config.toml` 不会被改动：agent 的进程拿到的是
+  `GROK_CAMPAIGNS_OVERRIDE` 里一个 Atrium 自己的 campaign（`atrium-capture`）。campaign 是 Grok 的配置补丁，盖在它各层
+  配置文件之上，可以设置模型的 `base_url`（它的覆盖层 `GROK_CONFIG` 不行）。这个变量会替换掉其他所有来源的 campaign，
+  所以 Atrium 会把变量里原有的 campaign 放进去，没设这个变量时放进 Grok 配置文件里的 `[[campaigns]]`；xAI 服务器在运行时
+  下发的 campaign 在 Atrium 的 agent 里不生效。Atrium 的 campaign 排在最后：别的 campaign 设了同一个地址时以它为准，
+  那些调用直接发出。以下也直接调用：xAI 自己的端点（`grok login`、`XAI_API_KEY`），地址取决于登录方式；Grok 从
+  `[endpoints] models_base_url` 列出的模型；设了 `mtls_cert_dir` 的模型、`base_url` 被 `requirements.toml` 锁定的模型；
+  以及 Grok 通过 `[auth] auth_provider_command` 登录、又从这样的端点列出模型时的所有模型（这时 Grok 会去掉地址在其他
+  主机上的模型，换成代理的地址正属于这种）。新加进 `config.toml` 的模型，在之后启动的 agent 里才会被抓包。
 
 harness 发出的其他流量不会被记录：遥测、更新检查、走 HTTP 的 MCP 服务器、Codex 拉取的插件、网页。
 
@@ -692,7 +695,7 @@ Claude Code 的配置可以在 `env` 里另加变量；Antigravity 配置的 `en
 | `XAI_API_KEY` | Grok Build 访问 xAI API 用的 key，在没有 `grok login` 登录时使用（见 [Grok Build](#grok-build)）。 |
 | `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` | 原样传给每个 agent。开启 `capture.enabled` 时，Claude Code、Codex 和 Grok Build 的 `NO_PROXY` 会加上回环地址，抓包代理再按它们本来会用的代理把调用发出去。 |
 | `ATRIUM_CAPTURE_URL`、`ATRIUM_CAPTURE_UPSTREAM` | Atrium 给被抓包的 Claude Code agent 设置的：代理的地址，以及它代替的地址。带着它们启动的 Atrium 会让自己的 agent 改用 `ATRIUM_CAPTURE_UPSTREAM`（见[请求抓取](#请求抓取)）。 |
-| `GROK_CAMPAIGNS_OVERRIDE` | Grok Build 的配置补丁（JSON 列表）。Atrium 给被抓包的 Grok Build agent 加上自己的 campaign（`atrium-capture`），你设的照样保留；带着它启动的 Atrium 会去掉这个 campaign（见[请求抓取](#请求抓取)）。 |
+| `GROK_CAMPAIGNS_OVERRIDE` | Grok Build 的配置补丁（JSON 列表）。Atrium 给被抓包的 Grok Build agent 加上自己的 campaign（`atrium-capture`），你设的照样保留（没设时放进 Grok 配置文件里的）；带着它启动的 Atrium 会去掉这个 campaign（见[请求抓取](#请求抓取)）。 |
 
 ## 检查配置
 

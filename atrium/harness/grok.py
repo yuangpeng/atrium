@@ -82,6 +82,7 @@ _EXIT_RE = re.compile(r"\Aexit: (-?\d+)\n?")  # how Grok heads a command's outpu
 _NOTE_RE = re.compile(r"\A<system-reminder>\n.*?\n</system-reminder>\n\n", re.S)
 # Turning down a call ends Grok's turn: the read-only agent is then told why, as its next message, and carries on.
 READ_ONLY_NOTE = "That action isn't allowed: this agent only reads (it may run the read-only commands it was given). Carry on without it."
+SYSTEM_DIR = Path("/etc/grok")  # Grok's root-owned tier: requirements.toml, managed_config.toml
 
 
 def grok_home() -> Path:
@@ -147,29 +148,73 @@ def agent_env() -> dict[str, str]:
 def capture_env(spec: LiveSpec, session_id: str, env: dict[str, str]) -> dict[str, str]:
     """``GROK_CAMPAIGNS_OVERRIDE`` sending the session's model calls through Atrium's capture proxy (capture.py): a campaign
     of Atrium's (config patches, which apply over config.toml) setting the ``base_url`` (and ``api_base_url``) of each
-    custom model to the proxy's. Campaigns already given there are kept; without, Grok applies no others (xAI's,
-    config.toml's). Empty when capture is off, or no model has an address of its own: xAI's endpoints, which depend on
-    the sign-in, are reached directly, and so is a model with an mTLS identity."""
+    custom model, its own or its ``[model_providers]`` entry's, to the proxy's. The variable replaces every other source
+    of campaigns, so the ones it holds already are kept, else those of Grok's config files (xAI's, which come at runtime,
+    don't apply); Atrium's goes last, so a campaign setting the same address wins, and those calls go out directly.
+    Empty when capture is off, or no model has an address of its own: xAI's endpoints, which depend on the sign-in, are
+    reached directly, and so is a model with an mTLS identity, and every model when Grok lists them from the endpoint of
+    an external sign-in (it then drops a model whose address is on another host, as the proxy's would be)."""
     if not spec.capture:
         return {}
     cfg = user_config()
-    models, defaults = cfg.get("model"), cfg.get("models")
+    layers = [_toml(SYSTEM_DIR / "requirements.toml"), _toml(grok_home() / "requirements.toml"), cfg,
+              _toml(grok_home() / "managed_config.toml"), _toml(SYSTEM_DIR / "managed_config.toml")]  # Grok's campaign order
+    if _endpoint_catalog(layers):
+        return {}
+    models, defaults, providers = cfg.get("model"), cfg.get("models"), cfg.get("model_providers")
     common = defaults.get("extra_headers") if isinstance(defaults, dict) else None
     patch: dict[str, dict[str, str]] = {}
     for key, m in models.items() if isinstance(models, dict) else ():
         if not isinstance(m, dict) or m.get("mtls_cert_dir"):
             continue
+        provider = providers.get(m.get("model_provider")) if isinstance(providers, dict) and isinstance(m.get("model_provider"), str) else None
+        provider = provider if isinstance(provider, dict) else {}
         # the headers it was configured to send, blanked like credentials
-        headers = [h for d in (common, m.get("extra_headers"), m.get("env_http_headers")) if isinstance(d, dict) for h in d]
+        headers = [h for d in (common, m.get("extra_headers"), m.get("env_http_headers"), provider.get("extra_headers"),
+                               provider.get("env_http_headers")) if isinstance(d, dict) for h in d]
         for field in ("base_url", "api_base_url"):
-            upstream = os.path.expandvars(m[field]) if isinstance(m.get(field), str) else ""  # Grok expands $VAR and ${VAR}
+            raw = m.get(field) or provider.get(field)  # the model's own wins, as in Grok
+            upstream = os.path.expandvars(raw) if isinstance(raw, str) else ""  # Grok expands $VAR and ${VAR}
             if upstream and "$" not in upstream:
                 url = spec.capture.base_url("grok", upstream, env=env, session=session_id, secret=headers)
                 if url:
                     patch.setdefault(key, {})[field] = url
     if not patch:
         return {}
-    return {GROK_CAMPAIGNS_ENV: json.dumps([{"id": CAPTURE_CAMPAIGN, "model": patch}, *other_campaigns(env.get(GROK_CAMPAIGNS_ENV))])}
+    given = env.get(GROK_CAMPAIGNS_ENV)
+    others = other_campaigns(given) if given is not None else file_campaigns(layers)
+    return {GROK_CAMPAIGNS_ENV: json.dumps([*others, {"id": CAPTURE_CAMPAIGN, "model": patch}])}
+
+
+def file_campaigns(layers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The ``[[campaigns]]`` of Grok's config files, highest priority first (the shape GROK_CAMPAIGNS_OVERRIDE takes); none
+    when campaigns are off (``GROK_CAMPAIGNS=0``, ``[features] campaigns = false``), which the variable would override."""
+    if (os.environ.get("GROK_CAMPAIGNS") or "1").strip().lower() in ("0", "false", "off", "no") or any(
+            isinstance(t.get("features"), dict) and t["features"].get("campaigns") is False for t in layers):
+        return []
+    out: list[dict[str, Any]] = []
+    for t in layers:
+        campaigns = t.get("campaigns")
+        for c in campaigns if isinstance(campaigns, list) else ():
+            if isinstance(c, dict) and (c.get("id") or c.get("campaign_id")):
+                try:
+                    json.dumps(c)
+                except (TypeError, ValueError):  # a TOML date, which JSON has no form for
+                    continue
+                out.append(c)
+    return out
+
+
+def _endpoint_catalog(layers: list[dict[str, Any]]) -> bool:
+    """Whether Grok signs in through a command of the user's (``[auth] auth_provider_command``) and lists its models from
+    their endpoint (``[endpoints] models_base_url``): it then keeps only the models on that endpoint's host."""
+    def setting(table: str, *keys: str) -> bool:
+        return any(isinstance(t.get(table), dict) and any(t[table].get(k) for k in keys) for t in layers)
+
+    auth = os.environ.get("GROK_AUTH_PROVIDER_COMMAND") or setting("auth", "auth_provider_command") or setting("grok_com_config", "auth_provider_command")
+    listed = (os.environ.get("GROK_MODELS_BASE_URL") or os.environ.get("GROK_MODELS_LIST_URL")
+              or setting("endpoints", "models_base_url", "models_list_url", "models_endpoint"))
+    return bool(auth and listed)
 
 
 # --------------------------------------------------------------------------
@@ -196,6 +241,14 @@ def user_config() -> dict[str, Any]:
         data = {}
     _toml_cache[str(path)] = (sig, data)
     return data
+
+
+def _toml(path: Path) -> dict[str, Any]:
+    """Another of Grok's config files (requirements.toml, managed_config.toml); {} if it doesn't exist or doesn't parse."""
+    try:
+        return tomllib.loads(path.read_text())
+    except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError):
+        return {}
 
 
 def acp_mcp_servers(servers: dict[str, Any]) -> list[dict[str, Any]]:
