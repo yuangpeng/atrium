@@ -21,7 +21,7 @@ export function ScrollAids({ target, onEnd }: { target: RefObject<HTMLElement | 
     const sc = target.current, th = thumb.current;
     if (!sc || !th) return;
     let hide = 0, settle = 0;
-    let drag: { y: number; top: number; per: number } | null = null;
+    let drag: { y: number } | null = null; // where the finger was at the last move
     const fade = () => {
       clearTimeout(hide);
       hide = window.setTimeout(() => !drag && th.classList.remove("on", "grab"), 1500);
@@ -54,13 +54,18 @@ export function ScrollAids({ target, onEnd }: { target: RefObject<HTMLElement | 
       if (range <= 1) return;
       e.preventDefault();
       th.setPointerCapture(e.pointerId);
-      // a pixel of thumb is this many pixels of chat
-      drag = { y: e.clientY, top: sc.scrollTop, per: range / Math.max(1, sc.clientHeight - 2 * EDGE - th.offsetHeight) };
+      drag = { y: e.clientY };
       th.classList.add("on", "drag");
       clearTimeout(hide);
     };
+    // by each move, not to where the thumb went from where it started: the chat renders only its end, and the part
+    // above comes in as the top nears (Transcript), the view kept where it was; set from the start, the next move
+    // undid that, landed at the top of what had just come in, and so pulled in the next part, and on through all of it
     const onMove = (e: PointerEvent) => {
-      if (drag) sc.scrollTop = drag.top + (e.clientY - drag.y) * drag.per;
+      if (!drag) return;
+      const per = (sc.scrollHeight - sc.clientHeight) / Math.max(1, sc.clientHeight - 2 * EDGE - th.offsetHeight); // chat per thumb pixel
+      sc.scrollTop += (e.clientY - drag.y) * per;
+      drag.y = e.clientY;
     };
     const onUp = () => {
       if (!drag) return;
