@@ -215,6 +215,7 @@ class Rewind:
 
     resume_at: str | None = None  # resume up to here only (``LiveSpec.resume_at``): a harness that cuts as it resumes
     fresh: bool = False  # nothing is left: it starts over as a new conversation under the same id
+    cut: bool = False  # its history was cut too: ``load_history`` now gives the conversation it carries on with
 
 
 @dataclass

@@ -166,9 +166,9 @@ A project-centric workbench for coding agents — Claude Code, Codex, Antigravit
    resumes up to there (`resume_session_at`; the transcript keeps the replaced conversation as a
    branch, and editing the first message starts it over under the same id, the old transcript kept
    in `.atrium/trash/sessions/`); Codex drops the turns (`thread/revert`); Antigravity's
-   conversation is cut there in place, what it held before kept in `.atrium/trash/sessions/`. Hover
-   any message — a tap, on a phone — for when it was sent; the agent's replies too (Codex records a
-   time per turn only).
+   conversation is cut there in place, its state database and transcripts as they were kept in
+   `.atrium/trash/sessions/`. Hover any message — a tap, on a phone — for when it was sent; the
+   agent's replies too (Codex records a time per turn only).
 8. **Agents outlive their worktrees.** Remove a worktree — from the Git panel, or the agent does it
    after merging its branch — and its agents stay in the list with the worktree struck through
    (⎇ ~~feat/x~~). Their process stops, and their Changes show the files as they left them, read-only.

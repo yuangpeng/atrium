@@ -22,7 +22,9 @@ Approvals go through a pre-tool hook that asks in the chat, as the session's per
 from __future__ import annotations
 
 import asyncio
+import copy
 import functools
+import hashlib
 import json
 import logging
 import os
@@ -34,14 +36,16 @@ import threading
 import time
 import urllib.parse
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .. import gitops
 from ..config import ATRIUM_HOME, atomic_write, config
-from .base import Attachment, Emit, FileEdit, ForkPoint, Harness, Item, LiveSession, LiveSpec, Replacement, Rewind, SessionSummary, ToolSpec
-from .util import attachment_note, clip, hhmm, iso_to_epoch, parse_json_loose, short, short_tail, split_attachment_note, upload_url
+from .base import (
+    Attachment, Compaction, Emit, FileEdit, ForkPoint, Harness, Item, LiveSession, LiveSpec, Replacement, Rewind, SessionSummary, ToolSpec,
+)
+from .util import TailScan, attachment_note, clip, hhmm, iso_to_epoch, parse_json_loose, short, short_tail, split_attachment_note, tail_scan, upload_url
 
 log = logging.getLogger("atrium.antigravity")
 
@@ -82,6 +86,8 @@ _STAMP_RE = re.compile(r"^(?:Created|Completed) At: .*\n?", re.M)
 _FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---\n?", re.S)
 _CMD_RULE_RE = re.compile(r"Bash\((.+?)(?::\*)?\)$")  # Claude-style allow rules ("Bash(git log:*)")
 _API_ERROR_RE = re.compile(r"Error (\d{3}), Message: ([^\[\]\"(]+)")  # "Error 503, Message: Upstream service unavailable [trace…"
+_HEAD_RE = re.compile(rb'\{"step_index":(\d+),"source":"(\w*)","type":"(\w*)"')  # how the runtime starts a transcript line
+COMPACTED = "CHECKPOINT"  # a compaction's step: its content is the summary the model goes on from
 
 
 # --------------------------------------------------------------------------
@@ -698,22 +704,155 @@ def step_result(call: Any, step: Any) -> tuple[str, bool]:
 # --------------------------------------------------------------------------
 
 
-def _entries(path: Path) -> list[dict[str, Any]]:
-    """The transcript's steps in order (lines are not always written in order; a rewritten step wins)."""
+def _count(v: Any) -> int:
+    """A token count as the transcript records it (a string of digits)."""
+    try:
+        return int(v or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _step_of(line: bytes) -> dict[str, Any] | None:
+    try:
+        d = json.loads(line.decode("utf-8", errors="replace"))
+    except ValueError:
+        return None
+    return d if isinstance(d, dict) and isinstance(d.get("step_index"), int) else None
+
+
+def _entries(path: Path, lo: int | None = None, hi: int | None = None, start: int = 0) -> list[dict[str, Any]]:
+    """The transcript's steps in order (lines are not always written in order; a rewritten step wins): with ``lo`` and
+    ``hi``, those from step ``lo`` up to ``hi`` (not included), read from byte ``start`` on. A line's step is read off its
+    start, and only the lines of those steps are parsed: a conversation compacted many times is tens of megabytes."""
+
+    def wanted(i: int) -> bool:
+        return (lo is None or i >= lo) and (hi is None or i < hi)
+
     steps: dict[int, dict[str, Any]] = {}
     try:
-        fh = path.open(encoding="utf-8", errors="replace")
+        fh = path.open("rb")
     except OSError:
         return []
     with fh:
+        fh.seek(start)
         for line in fh:
-            try:
-                d = json.loads(line)
-            except ValueError:
+            head = _HEAD_RE.match(line)
+            if head and not wanted(int(head.group(1))):
                 continue
-            if isinstance(d, dict) and isinstance(d.get("step_index"), int):
+            d = _step_of(line)
+            if d is not None and wanted(d["step_index"]):
                 steps[d["step_index"]] = d
     return [steps[i] for i in sorted(steps)]
+
+
+class _StepScan(TailScan):
+    """Where a transcript's steps are, as far as it was read: where each one's line starts, the compactions (their
+    steps) and the user's messages. The chat, an edit and the session list need only those and the conversation's
+    end: a conversation compacted many times is tens of megabytes."""
+
+    def __init__(self, ino: int):
+        super().__init__(ino)
+        self.lines: dict[int, int] = {}  # step -> where its line starts (a rewritten step: the last one)
+        self.top = -1  # the highest step read so far
+        self.started: float | None = None  # when the conversation began (its first line)
+        # compaction step -> {at, tokens, start: where the steps from it on are read from (None: some came before its line)}
+        self.compactions: dict[int, dict[str, Any]] = {}
+        self.prompts: dict[int, tuple[float | None, str]] = {}  # the user's messages: step -> (when, what was typed, shortened)
+
+    def line(self, raw: bytes) -> None:
+        at = self.offset - len(raw)
+        head = _HEAD_RE.match(raw)
+        d = None if head else _step_of(raw)
+        if head:
+            step, source, kind = int(head.group(1)), head.group(2).decode(), head.group(3).decode()
+        elif d is not None:
+            step, source, kind = d["step_index"], str(d.get("source") or ""), str(d.get("type") or "")
+        else:
+            return  # not a step (a line cut short?)
+        prompt = kind == "USER_INPUT" and source == "USER_EXPLICIT"
+        if kind == COMPACTED or prompt or self.started is None:
+            d = d or _step_of(raw) or {}
+            ts = iso_to_epoch(d.get("created_at"))
+            self.started = self.started if self.started is not None else ts
+            if kind == COMPACTED:
+                tokens = sum(_count(d.get(k)) for k in ("input_tokens", "cache_read_tokens"))  # what it summarized
+                self.compactions[step] = {"at": ts, "tokens": tokens or None, "start": at if self.top < step else None}
+            if prompt:
+                self.prompts[step] = (ts, short(split_attachment_note(user_text(d.get("content") or ""))[0], 300))
+        if kind != COMPACTED:
+            self.compactions.pop(step, None)
+        if not prompt:
+            self.prompts.pop(step, None)
+        self.lines[step] = at
+        self.top = max(self.top, step)
+
+    def copy(self) -> "_StepScan":
+        out = copy.copy(self)
+        out.lines, out.compactions, out.prompts = dict(self.lines), dict(self.compactions), dict(self.prompts)
+        return out
+
+
+_scans: dict[str, _StepScan] = {}  # transcript path -> what's read of it
+_scan_lock = threading.Lock()
+
+
+def _steps(path: Path | None) -> _StepScan | None:
+    """The transcript's scan, read on to its end: a copy (they are read on in worker threads)."""
+    if path is None:
+        return None
+    with _scan_lock:
+        scan = tail_scan(_scans, path, _StepScan)
+        return scan.copy() if scan else None
+
+
+def _step_at(path: Path, steps: _StepScan, i: int) -> dict[str, Any]:
+    """Step ``i`` as its line in the transcript has it ({} if it isn't there)."""
+    try:
+        with path.open("rb") as fh:
+            fh.seek(steps.lines[i])
+            d = _step_of(fh.readline())
+    except (KeyError, OSError):
+        return {}
+    return d if d is not None and d["step_index"] == i else {}
+
+
+def current_steps(path: Path) -> list[dict[str, Any]]:
+    """The conversation since its last compaction, which opens it (what the model still sees, as the chat shows it): its
+    steps from the last compaction's on; all of them if there is none."""
+    steps = _steps(path)
+    if not steps or not steps.compactions:
+        return _entries(path)
+    last = max(steps.compactions)
+    return _entries(path, lo=last, start=steps.compactions[last]["start"] or 0)
+
+
+def compacted_steps(path: Path, cid: str) -> list[dict[str, Any]] | None:
+    """The part of the conversation compaction ``cid`` closed: from the compaction before it (which opens it) or the
+    start, up to this one. None if there is no such compaction."""
+    steps = _steps(path)
+    m = re.fullmatch(r"s(\d+)", cid)
+    end = int(m.group(1)) if m else None
+    if not steps or end not in steps.compactions:
+        return None
+    before = max((c for c in steps.compactions if c < end), default=None)
+    start = (steps.compactions[before]["start"] or 0) if before is not None else 0
+    return _entries(path, lo=before, hi=end, start=start)
+
+
+def compactions_of(path: Path) -> list[Compaction]:
+    """The conversation's compactions, oldest first: each with when the part it closed began, and its first message."""
+    steps = _steps(path)
+    out: list[Compaction] = []
+    prev = -1
+    if steps is None:
+        return out
+    for c in sorted(steps.compactions):
+        found = steps.compactions[c]
+        first = next((text for i, (_ts, text) in sorted(steps.prompts.items()) if prev < i < c), "")
+        out.append(Compaction(id=f"s{c}", at=found["at"], started_at=out[-1].at if out else steps.started, tokens=found["tokens"],
+                              first_prompt=first))
+        prev = c
+    return out
 
 
 def _targs(raw: Any) -> dict[str, Any]:
@@ -770,7 +909,7 @@ def _calls(entries: list[dict[str, Any]]) -> list[tuple[dict[str, Any], int, dic
                 if isinstance(c, dict):
                     waiting.append(len(out))
                     out.append((d, n, c, None))
-        elif t == "USER_INPUT":
+        elif t == "USER_INPUT" or t == COMPACTED:
             waiting = []
         elif waiting:
             i = waiting.pop(0)
@@ -808,8 +947,8 @@ def history_items(entries: list[dict[str, Any]]) -> list[Item]:
                 if res is not None:
                     content, err = _result_text(res)
                     items.append({"kind": "tool_result", "id": f"{iid}:{n}", "content": content, "is_error": err})
-        elif t and "COMPACT" in t:
-            items.append({"kind": "system", "id": iid, "subtype": "compact", "text": "Conversation compacted", "compaction": iid})
+        elif t == COMPACTED:
+            items += compaction_items(iid, d.get("content") or "")
         elif id(d) not in results and t == "ERROR_MESSAGE" and d.get("status") != "ERROR":  # the call was retried
             items.append(retry_item(iid, str(d.get("error") or _result_text(d)[0])))
         elif id(d) not in results and (d.get("status") == "ERROR" or t == "ERROR_MESSAGE"):
@@ -921,10 +1060,11 @@ def file_edits_of(entries: list[dict[str, Any]]) -> list[FileEdit]:
 def turn_edits(sid: str, cut: int) -> list[FileEdit]:
     """The file edits made in the turn that step ``cut`` is in, up to that step (``Harness.fork_edits``)."""
     path = transcript_file(sid)
-    entries = _entries(path) if path else []
-    start = max((d["step_index"] for d in entries if d["step_index"] <= cut and d.get("type") == "USER_INPUT"
-                 and d.get("source") == "USER_EXPLICIT"), default=-1)
-    return file_edits_of([d for d in entries if start < d["step_index"] <= cut])
+    steps = _steps(path)
+    if path is None or steps is None:
+        return []
+    start = max((i for i in steps.prompts if i <= cut), default=-1)
+    return file_edits_of(_entries(path, lo=start + 1, hi=cut + 1))
 
 
 def retry_item(iid: str, error: str) -> Item:
@@ -932,6 +1072,25 @@ def retry_item(iid: str, error: str) -> Item:
     m = _API_ERROR_RE.search(error)
     why = f"{m.group(1)} {m.group(2).strip()}" if m else short(error, 120)
     return {"kind": "system", "id": iid, "subtype": "retry", "text": f"Model provider error ({why}), retried", "detail": error}
+
+
+def compaction_items(iid: str, summary: str) -> list[Item]:
+    """Where a compaction cut the conversation, and the summary the model goes on from, folded. ``compaction`` opens the
+    part it closed when ``list_compactions`` has that id: a step of the transcript's (``s<step>``). The live stream's ids
+    never are (its numbers aren't the transcript's once a conversation is long): its compaction opens once the chat is
+    loaded again."""
+    items: list[Item] = [{"kind": "system", "id": iid, "subtype": "compact", "text": "Conversation compacted", "compaction": iid}]
+    summary = _STAMP_RE.sub("", summary).strip()
+    if summary:
+        items.append({"kind": "system", "id": f"{iid}:summary", "subtype": "compact_summary", "text": "Summary of the earlier conversation",
+                      "detail": summary})
+    return items
+
+
+def _last_prompt(path: Path | None) -> int | None:
+    """The step of the user's last message in the transcript."""
+    steps = _steps(path)
+    return max(steps.prompts, default=None) if steps else None
 
 
 def _last_usage(path: Path | None) -> int | None:
@@ -966,7 +1125,8 @@ def _last_usage(path: Path | None) -> int | None:
 # ``trajectory_metadata_blob`` (#6 the id, #7 the workspaces). The id also appears inside the steps' and
 # model calls' records; the new id has the same length, so it is swapped byte for byte.
 
-_STEP_RE = re.compile(r"^(?:s|(?P<conv>[0-9A-Za-z-]{32,}):)(?P<step>\d+)(?::.*)?$")  # history ids s<step>[:…], live <conversation>:<step>[:…]
+# history ids s<step>[:…]; live ones <conversation>:<number>@<run>[:…], numbered by the stream of that run (_Run)
+_STEP_RE = re.compile(r"^(?:s|(?P<conv>[0-9A-Za-z-]{32,}):)(?P<step>\d+)(?:@(?P<run>[0-9a-f]+))?(?::.*)?$")
 _FINISHED = {3, 4, 5, 6, 7, 12}  # CortexStepStatus: done, invalid, cleared, canceled, error, interrupted
 _CANCELED = 2  # ExecutorTerminationReason USER_CANCELED: how an execution cut short ends
 _CHUNK = 102_400  # the runtime also keeps each transcript in chunks of this many bytes (logs/chunks/<name>/<n>.jsonl)
@@ -1047,8 +1207,106 @@ def _made_with(entries: list[dict[str, Any]], at: int) -> list[int]:
     return [at]
 
 
-def fork_cut(sid: str, anchor: str | None, user_index: int | None, after: bool) -> ForkPoint:
-    """Where a fork of conversation ``sid`` cuts it (``Harness.fork_point``): ``cut`` is the last step kept."""
+# Items shown live. The runtime's stream numbers steps its own way: a response that only calls tools has no number of
+# its own there (each call has one), and a resumed runtime numbers what it reloads its own way too. So the number of an
+# item shown live is no step of the transcript: it is placed by its turn, through the turns' messages (numbered by the
+# stream and by the transcript), and within its turn by what it is. Its id says which run of the runtime numbered it.
+
+_STALE = "That part of the chat is out of date: open the agent again, then try again"
+RUNS_KEPT = 64  # runs of a conversation's runtime whose live items can still be placed
+# a tool call's kind, by its name in the transcript or on the stream (where the SDK renames some): calls are lined up by it
+_TOOL_KINDS = {"write_to_file": "edit", "create_file": "edit", "replace_file_content": "edit", "multi_replace_file_content": "edit",
+               "edit_file": "edit", "list_dir": "list_directory", "grep_search": "search_directory"}
+
+
+@dataclass
+class _Run:
+    """One start of a conversation's runtime, as far as its live items can be placed in the transcript."""
+
+    start: int  # the transcript's last message when it started (-1: none)
+    turns: dict[int, int | None] = field(default_factory=dict)  # its turns' messages: their number -> their step (None: not known)
+    marks: dict[int, tuple[str, str]] = field(default_factory=dict)  # replies and tool calls: number -> ("text", digest) | ("tool", kind)
+    running: int | None = None  # the turn in progress (its message's number)
+
+    def copy(self) -> "_Run":
+        return _Run(self.start, dict(self.turns), dict(self.marks), self.running)
+
+    def ended(self, live: int, step: int | None) -> None:
+        """Turn ``live`` ended, the transcript's last message being ``step``: its own, if it came after the turn before's."""
+        known = [s for i, s in self.turns.items() if s is not None and i != live]
+        self.turns[live] = step if step is not None and step > max(known, default=self.start) else None
+        self.running = None
+
+
+def _digest(text: str) -> str:
+    return hashlib.sha1(text.encode("utf-8", "surrogatepass")).hexdigest()[:16]
+
+
+def _tool_kind(name: str, server: str | None = None) -> str:
+    return f"mcp:{server}:{name}" if server else _TOOL_KINDS.get(name, name)
+
+
+def _call_kind(c: dict[str, Any]) -> str:
+    """A transcript tool call's kind (``_tool_kind``)."""
+    name = str(c.get("name") or "")
+    if name == "call_mcp_tool":
+        a = _targs(c.get("args"))
+        return _tool_kind(str(a.get("ToolName") or ""), str(a.get("ServerName") or "") or None)
+    return _tool_kind(name)
+
+
+def _turn_message(run: _Run, prompts: list[int], n: int) -> int | None:
+    """The transcript step of the message of the turn that live item ``n`` of ``run`` is in (None: not known)."""
+    opened = [live for live in run.turns if live <= n]
+    if not opened:
+        return None
+    live = max(opened)
+    if run.turns[live] is None and live == run.running:  # its message is the first after the run's last known
+        return next((u for u in prompts if u > max([s for s in run.turns.values() if s is not None], default=run.start)), None)
+    return run.turns[live]
+
+
+def _after_live(run: _Run | None, prompts: list[int], n: int) -> int | None:
+    """The first of the user's messages after live item ``n`` of ``run`` (None: none yet)."""
+    if run is None:  # numbered by a run that is gone (or before runs were told apart)
+        raise ValueError(_STALE)
+    step = _turn_message(run, prompts, n)
+    if step is None:
+        raise ValueError("Couldn't find that point of the conversation in its transcript")
+    return next((u for u in prompts if u > step), None)
+
+
+def _live_step(run: _Run | None, entries: list[dict[str, Any]], prompts: list[int], n: int) -> int | None:
+    """The transcript step of live item ``n`` of ``run``, a reply or a tool call (None: not found, or not written yet).
+    Within its turn, a reply is found by its text, a tool call by its place among the turn's calls of its kind: the
+    transcript's are matched in order, those the stream didn't show skipped."""
+    if run is None:
+        raise ValueError(_STALE)
+    mark, step = run.marks.get(n), _turn_message(run, prompts, n)
+    if mark is None or step is None:
+        return None
+    first = max(live for live in run.turns if live <= n)
+    end = next((u for u in prompts if u > step), None)
+    turn = [d for d in entries if d["step_index"] > step and (end is None or d["step_index"] < end)]
+    mine = [m for i, m in sorted(run.marks.items()) if first < i <= n and m[0] == mark[0]]  # the turn's, up to it
+    if mark[0] == "text":
+        found = [d["step_index"] for d in turn if d.get("type") == "PLANNER_RESPONSE" and _digest(d.get("content") or "") == mark[1]]
+        k = mine.count(mark) - 1  # replies with the same text before it in its turn
+        return found[k] if k < len(found) else None
+    calls = [(p["step_index"], _call_kind(c)) for p, _i, c, _r in _calls(turn)]
+    at, pos = None, 0
+    for _tag, kind in mine:
+        while pos < len(calls) and calls[pos][1] != kind:
+            pos += 1
+        if pos == len(calls):
+            return None
+        at, pos = calls[pos][0], pos + 1
+    return at
+
+
+def fork_cut(sid: str, anchor: str | None, user_index: int | None, after: bool, run: _Run | None = None) -> ForkPoint:
+    """Where a fork of conversation ``sid`` cuts it (``Harness.fork_point``): ``cut`` is the last step kept. ``run``: the run
+    that numbered ``anchor``, when it is an item shown live."""
     path = transcript_file(sid)
     entries = _entries(path) if path else []
     if not entries:
@@ -1056,10 +1314,15 @@ def fork_cut(sid: str, anchor: str | None, user_index: int | None, after: bool) 
     by_step = {d["step_index"]: d for d in entries}
     prompts = [d["step_index"] for d in entries if d.get("type") == "USER_INPUT" and d.get("source") == "USER_EXPLICIT"]
     m = _STEP_RE.match(anchor or "")
-    at = int(m.group("step")) if m and m.group("conv") in (None, sid) else None  # (a subagent's steps are its own conversation's)
+    live = int(m.group("step")) if m and m.group("conv") == sid else None  # an item shown live, numbered by its run
+    at = int(m.group("step")) if m and m.group("conv") is None else None  # (a subagent's steps are its own conversation's)
     status, gens, times = _db_steps(sid)
     called = False  # the step called tools: its turn goes on after it, recorded yet or not (the agent may still be working)
     if after:
+        if live is not None:
+            at = _live_step(run, entries, prompts, live)
+            if at is None and run is not None and run.running is not None and live >= run.running:
+                raise ValueError("That step is still running: wait for its tools to finish, or fork from an earlier one")
         if at is None or at not in by_step:  # (a step is written to the transcript once it is done)
             raise ValueError("That step is still running: wait for its tools to finish, or fork from an earlier one"
                              if at is not None and at in status and status[at] not in _FINISHED
@@ -1071,11 +1334,16 @@ def fork_cut(sid: str, anchor: str | None, user_index: int | None, after: bool) 
             raise ValueError("That step is still running: wait for its tools to finish, or fork from an earlier one")
         called = any((by_step.get(i) or {}).get("tool_calls") for i in made)
     else:
-        if at is None and user_index and user_index < len(prompts):  # an item shown live may not carry a step
-            at = prompts[user_index] - 1
-        if at is None or at < 0:
-            raise ValueError("Couldn't find that point of the conversation in its transcript")
-        nxt = next((u for u in prompts if u > at), None)
+        if live is not None:
+            nxt = _after_live(run, prompts, live)
+        else:
+            if at is None and user_index and user_index < len(prompts):  # nothing before it to find it by (or no step: an Atrium tool's)
+                if any(d.get("type") == COMPACTED for d in entries):  # counted from where the chat starts: the start, or a compaction
+                    raise ValueError("Couldn't find that message in the transcript: fork from one of the agent's steps instead")
+                at = prompts[user_index] - 1
+            if at is None or at < 0:
+                raise ValueError("Couldn't find that point of the conversation in its transcript")
+            nxt = next((u for u in prompts if u > at), None)
         cut = nxt - 1 if nxt is not None else max(by_step)
     later = [i for i in by_step if i > cut]
     nxt_step = min(later) if later else None
@@ -1088,32 +1356,37 @@ def fork_cut(sid: str, anchor: str | None, user_index: int | None, after: bool) 
     return ForkPoint(cut=str(cut), cut_ts=when(cut), next_ts=when(nxt_step), turn_ts=when(turn))
 
 
-def edit_cut(sid: str, item: str | None, anchor: str | None, user_index: int) -> ForkPoint:
+def edit_cut(sid: str, item: str | None, anchor: str | None, user_index: int, run: _Run | None = None) -> ForkPoint:
     """Where editing one of the user's messages cuts conversation ``sid`` (``Harness.edit_point``): just before
-    that message's step; ``drop`` is that step, ``cut`` None if nothing comes before it."""
+    that message's step; ``drop`` is that step, ``cut`` None if nothing comes before it. ``run``: the run that numbered
+    ``anchor``, when it is an item shown live."""
     path = transcript_file(sid)
-    entries = _entries(path) if path else []
-    by_step = {d["step_index"]: d for d in entries}
-    prompts = [d["step_index"] for d in entries if d.get("type") == "USER_INPUT" and d.get("source") == "USER_EXPLICIT"]
-    m = _STEP_RE.match(item or "")
+    steps = _steps(path)
+    prompts = sorted(steps.prompts) if steps else []
+    m, a = _STEP_RE.match(item or ""), _STEP_RE.match(anchor or "")
     target = int(m.group("step")) if m and m.group("conv") is None and int(m.group("step")) in prompts else None
     if target is None and anchor:  # sent live, the message has an id of Atrium's: the first prompt after the anchor
-        a = _STEP_RE.match(anchor)
-        at = int(a.group("step")) if a and a.group("conv") in (None, sid) else None
-        target = next((u for u in prompts if at is not None and u > at), None)
+        if a and a.group("conv") == sid:
+            target = _after_live(run, prompts, int(a.group("step")))
+        elif a and a.group("conv") is None:
+            target = next((u for u in prompts if u > int(a.group("step"))), None)
     elif target is None and user_index < len(prompts):  # nothing before it to find it by (0: the conversation's first)
-        target = prompts[user_index]
-    if target is None:
+        first = min(steps.compactions, default=None) if steps else None
+        if first is None or prompts[user_index] < first:  # (after one, the chat shows that compaction before it)
+            target = prompts[user_index]
+    if target is None or path is None or steps is None:
         raise ValueError("Couldn't find that message in the transcript")
-    kept = [i for i in by_step if i < target]
-    return ForkPoint(cut=str(target - 1) if kept else None, cut_ts=iso_to_epoch(by_step[max(kept)].get("created_at")) if kept else None,
-                     next_ts=iso_to_epoch(by_step[target].get("created_at")), drop=str(target))
+    kept = max((i for i in steps.lines if i < target), default=None)
+    return ForkPoint(cut=str(target - 1) if kept is not None else None,
+                     cut_ts=iso_to_epoch(_step_at(path, steps, kept).get("created_at")) if kept is not None else None,
+                     next_ts=steps.prompts[target][0], drop=str(target))
 
 
 def cut_conversation(sid: str, cut: int | None, backup: Path) -> bool:
-    """Make stopped conversation ``sid`` end after step ``cut``; what it drops goes to ``backup`` first (its whole
-    state and data directory). With ``cut`` None nothing is kept: both are moved there, and it starts over under
-    its id. Returns whether anything is left."""
+    """Make stopped conversation ``sid`` end after step ``cut``. What the cut changes goes to ``backup`` first: its state
+    database, its transcripts and the chunks of them written again. The rest of its data directory stays as it is, and
+    isn't copied: over NFS, its hundreds of files took most of an edit's time. With ``cut`` None nothing is kept: both
+    are moved there, and it starts over under its id. Returns whether anything is left."""
     db, brain = _save_dir() / f"{sid}.db", _brain_dir() / sid
     backup.mkdir(parents=True, exist_ok=True)
     if cut is None:
@@ -1123,19 +1396,10 @@ def cut_conversation(sid: str, cut: int | None, backup: Path) -> bool:
         return False
     if not db.exists():
         raise FileNotFoundError(f"Antigravity's state of {sid}")
-    tmp = _save_dir() / f".{sid}.db.tmp"
-    try:
-        _copy_state(db, backup / db.name, b"", b"", None)
-        if brain.is_dir():
-            shutil.copytree(brain, backup / brain.name, symlinks=True)
-        _copy_state(db, tmp, b"", b"", cut)
-        for suffix in ("-wal", "-shm"):  # the old database's, if its runtime didn't close it
-            Path(f"{db}{suffix}").unlink(missing_ok=True)
-        os.replace(tmp, db)
-    finally:
-        tmp.unlink(missing_ok=True)
+    _backup_state(db, backup / db.name)
+    _cut_in_place(db, cut)
     if brain.is_dir():
-        _cut_transcripts(_logs(sid), sid, sid, cut)
+        _cut_transcripts(_logs(sid), _logs(sid), sid, sid, cut, backup=backup / brain.name / _logs(sid).relative_to(brain))
     return True
 
 
@@ -1161,9 +1425,9 @@ def copy_conversation(sid: str, new: str, cut: int | None, cwd: str, target_cwd:
     try:
         _copy_state(db, tmp, sid.encode(), new.encode(), cut)
         os.replace(tmp, dest)
-        if brain.is_dir():
-            shutil.copytree(brain, new_brain, symlinks=True)
-            _cut_transcripts(_logs(new), sid, new, cut)
+        if brain.is_dir():  # (its transcripts written as they are cut)
+            shutil.copytree(brain, new_brain, symlinks=True, ignore=_without_transcripts(_logs(sid)))
+            _cut_transcripts(_logs(sid), _logs(new), sid, new, cut)
         rewrite_workspace(new, cwd, target_cwd)
         write_index(new, cwd=os.path.realpath(target_cwd), created_at=time.time(), title=title, forked_from=sid)
     except BaseException:
@@ -1241,30 +1505,102 @@ def _cut_state(con: Any, cut: int) -> None:
         con.execute("UPDATE executor_metadata SET data = ? WHERE idx = ?", (out, idx))
 
 
-def _cut_transcripts(logs: Path, old: str, new: str, cut: int | None) -> None:
-    """Make a copied conversation's transcripts (and their chunks) hold the steps up to ``cut``, under the new id."""
-    for name in ("transcript_full", "transcript"):
-        path = logs / f"{name}.jsonl"
+def _backup_state(db: Path, dest: Path) -> None:
+    """Copy a stopped conversation's state database: its log folded into it, then the file as it is (SQLite's own backup
+    goes page by page, five times slower over NFS); page by page if something still has it open."""
+    import sqlite3
+
+    con = sqlite3.connect(db)
+    try:
+        con.execute("SELECT count(*) FROM sqlite_master").fetchone()  # (a journal left behind is rolled back)
+        busy = con.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0]
+    except sqlite3.Error:
+        busy = 1
+    finally:
+        con.close()
+    if busy:
+        _copy_state(db, dest, b"", b"", None)
+    else:
+        shutil.copyfile(db, dest)
+
+
+def _cut_in_place(db: Path, cut: int) -> None:
+    """Take every step after ``cut`` out of a stopped conversation's state database, in one transaction (``_cut_state``)."""
+    import sqlite3
+
+    con = sqlite3.connect(db)
+    try:
+        with con:
+            _cut_state(con, cut)
+        con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    except (sqlite3.Error, ValueError, IndexError) as e:
+        raise ValueError(f"Antigravity's state ({db.name}) has a format Atrium doesn't know ({e})") from e
+    finally:
+        con.close()
+
+
+_TRANSCRIPTS: tuple[str, ...] = ("transcript_full", "transcript")
+
+
+def _without_transcripts(logs: Path) -> Callable[[str, list[str]], set[str]]:
+    """``shutil.copytree``'s ``ignore`` for a data directory whose transcripts and their chunks ``_cut_transcripts`` writes."""
+
+    def ignore(d: str, names: list[str]) -> set[str]:
+        if d == str(logs):
+            return {f"{n}.jsonl" for n in _TRANSCRIPTS} & set(names)
+        return set(_TRANSCRIPTS) & set(names) if d == str(logs / "chunks") else set()
+
+    return ignore
+
+
+def _cut_transcripts(src: Path, dest: Path, old: str, new: str, cut: int | None, backup: Path | None = None) -> None:
+    """Write the transcripts in logs directory ``src`` (and their chunks) to ``dest``, holding the steps up to ``cut``,
+    under the new id. ``dest`` is ``src`` for a conversation cut in place: a transcript then starts as it did up to the
+    first line it drops, and only the chunks from there on are written again, what they and it held kept in ``backup``."""
+    dest.mkdir(parents=True, exist_ok=True)
+    for name in _TRANSCRIPTS:
+        path = src / f"{name}.jsonl"
         if not path.exists():
             continue
-        lines = []
-        for line in path.read_bytes().splitlines(keepends=True):
-            try:
-                step = json.loads(line).get("step_index")
-            except (ValueError, AttributeError):
-                continue
-            if isinstance(step, int) and (cut is None or step <= cut):
-                lines.append(line.replace(old.encode(), new.encode()))
-        data = b"".join(lines)
-        tmp = path.with_name(f".{path.name}.tmp")
+        raw = path.read_bytes()
+        kept: list[bytes] = []
+        same = len(raw)  # how much of it the new one starts with as it is
+        pos = 0
+        for line in raw.splitlines(keepends=True):
+            whole = line.endswith(b"\n")  # else cut short as it was written (its runtime was stopped): kept if it is all there
+            head = _HEAD_RE.match(line) if whole else None
+            d = None if head else _step_of(line)
+            step = int(head.group(1)) if head else d["step_index"] if d else None
+            if step is not None and (cut is None or step <= cut):
+                line_ = line if whole else line + b"\n"  # (what the runtime writes next starts a line of its own)
+                kept.append(line_.replace(old.encode(), new.encode()) if old != new else line_)
+            if step is None or cut is not None and step > cut or not whole:
+                same = min(same, pos)
+            pos += len(line)
+        data = b"".join(kept)
+        if dest == src and data == raw:
+            continue  # nothing of it is dropped
+        if old != new:
+            same = 0
+        chunks, out = src / "chunks" / name, dest / "chunks" / name
+        have = {int(f.stem) for f in out.glob("*.jsonl") if f.stem.isdigit()} if out.is_dir() else set()
+        first = min([same // _CHUNK, *(n for n in range(same // _CHUNK) if n not in have)])  # the first chunk that changes
+        if backup is not None:
+            backup.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(path, backup / path.name)
+            for n in sorted(n for n in have if n >= first):
+                (backup / "chunks" / name).mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(out / f"{n:08d}.jsonl", backup / "chunks" / name / f"{n:08d}.jsonl")
+        tmp = dest / f".{path.name}.tmp"
         tmp.write_bytes(data)
-        os.replace(tmp, path)
-        chunks = logs / "chunks" / name
+        os.replace(tmp, dest / path.name)
         if chunks.is_dir():
-            shutil.rmtree(chunks)
-            chunks.mkdir(parents=True)
-            for n in range(0, len(data), _CHUNK):
-                (chunks / f"{n // _CHUNK:08d}.jsonl").write_bytes(data[n:n + _CHUNK])
+            out.mkdir(parents=True, exist_ok=True)
+            end = -(-len(data) // _CHUNK)  # how many it has now
+            for n in sorted(n for n in have if n >= end):
+                (out / f"{n:08d}.jsonl").unlink(missing_ok=True)
+            for n in range(first, end):
+                (out / f"{n:08d}.jsonl").write_bytes(data[n * _CHUNK : (n + 1) * _CHUNK])
 
 
 # --------------------------------------------------------------------------
@@ -1325,6 +1661,8 @@ class AntigravityLiveSession(LiveSession):
         self._tool_seen: dict[str, str] = {}  # tool step -> what was last emitted for it (steps repeat)
         self._atrium_steps: dict[str, list[str]] = {}  # one of Atrium's tools -> the steps of its calls the gate let through
         self._errored = False  # this turn already showed an error step
+        self._message: int | None = None  # this turn's message as the stream numbers it
+        self._run_id, self._run = "", _Run(-1)  # the runtime's current run: its items' ids end with @<run id> (_Run)
         self._closed = False
         self._atrium = {f"{ns}_{t.name}" for ns, specs in spec.toolsets.items() for t in specs}  # names here
         self._tools = [self._python_tool(ns, t) for ns, specs in spec.toolsets.items() for t in specs]
@@ -1388,6 +1726,9 @@ class AntigravityLiveSession(LiveSession):
             except BaseException:
                 pass
         await self._shut()
+        run, live = self._run, self._run.running
+        if live is not None:  # a turn cut short (cancelled, it didn't end): its message, if it was written
+            run.ended(live, await asyncio.to_thread(_last_prompt, transcript_file(self.session_id)))
         self._set_state("closed")
 
     # ---- runtime -----------------------------------------------------------
@@ -1428,6 +1769,8 @@ class AntigravityLiveSession(LiveSession):
         _brain_dir().mkdir(parents=True, exist_ok=True)
         await asyncio.to_thread(_warm_runtime)
         self._choice = resolve_model(self.model)  # the settings file may have changed since
+        start = await asyncio.to_thread(_last_prompt, transcript_file(self.session_id))
+        self._run_id, self._run = self.harness.new_run(self.session_id, -1 if start is None else start)
         agent = Agent(self._config())
         await agent.__aenter__()
         self._agent = agent
@@ -1449,6 +1792,10 @@ class AntigravityLiveSession(LiveSession):
         finally:
             if guard:
                 guard.cancel()
+
+    def _lid(self, step_id: str) -> str:
+        """The id of the chat item a step of the stream shows as: its own, and the run that numbered it."""
+        return f"{step_id}@{self._run_id}"
 
     def _alive(self) -> bool:
         proc = getattr(self._agent.conversation.connection, "_process", None) if self._agent is not None else None
@@ -1488,7 +1835,7 @@ class AntigravityLiveSession(LiveSession):
 
         started = time.time()
         self._set_state("running")
-        self._errored = False
+        self._errored, self._message = False, None
         subtype, error = "success", None
         try:
             if self._stale or self._agent is None:
@@ -1513,6 +1860,9 @@ class AntigravityLiveSession(LiveSession):
             if not self._errored:  # else the error step said it already
                 self.emit({"kind": "error", "id": f"err-{uuid.uuid4().hex[:8]}", "text": error})
             self._stale = True  # a failed turn can leave the runtime's connection closed: start afresh (and re-read the settings)
+        if self._message is not None:  # where its message is in the transcript: the last one there
+            run, live = self._run, self._message
+            run.ended(live, await asyncio.to_thread(_last_prompt, transcript_file(self.session_id)))
         used = await asyncio.to_thread(_last_usage, transcript_file(self.session_id))
         if used:
             self.emit({"kind": "usage", "id": "usage", "used": used, "max": self._choice.window})
@@ -1532,46 +1882,53 @@ class AntigravityLiveSession(LiveSession):
         if step.depth or step.parent_trajectory_id:
             return  # a subagent's own steps: its invoke_subagent call stands for them
         if step.source == StepSource.USER:
+            if self._message is None:
+                self._message = self._run.running = step.step_index
+                self._run.turns[step.step_index] = None
             return  # Atrium showed the message when it was sent
-        status = step.status
+        status, lid = step.status, self._lid(step.id)
         if step.type == StepType.TOOL_CALL:
             call = step.tool_calls[0] if step.tool_calls else None
+            if call is not None:
+                self._run.marks.setdefault(step.step_index, ("tool", _tool_kind(str(call.name), call.server_name)))
             if call is None or not call.server_name and str(call.name) in self._atrium:
                 return  # Atrium's own tools show themselves (see _python_tool); an MCP server's may share their names
             view = step_view(call)
             if view is None:
                 return
             shown = json.dumps(view, sort_keys=True, default=str)
-            if self._tool_seen.get(step.id) != shown:
-                self._tool_seen[step.id] = shown
-                self.emit({"kind": "tool", "id": step.id, "name": view[0], "input": view[1]})
+            if self._tool_seen.get(lid) != shown:
+                self._tool_seen[lid] = shown
+                self.emit({"kind": "tool", "id": lid, "name": view[0], "input": view[1]})
             if status in (StepStatus.DONE, StepStatus.ERROR, StepStatus.CANCELED):
                 content, err = step_result(call, step)
-                self.emit({"kind": "tool_result", "id": step.id, "content": content, "is_error": err})
+                self.emit({"kind": "tool_result", "id": lid, "content": content, "is_error": err})
             return
         if step.type == StepType.COMPACTION:
-            if status == StepStatus.DONE and step.id not in self._shown:
-                self._shown.add(step.id)
-                self.emit({"kind": "system", "id": step.id, "subtype": "compact", "text": "Conversation compacted", "compaction": step.id})
+            if status == StepStatus.DONE and lid not in self._shown:
+                self._shown.add(lid)
+                for it in compaction_items(lid, step.content or ""):
+                    self.emit(it)
             return
         if status == StepStatus.ERROR:
             error = step.error or step.content or "Error"
             if "retryable error" in error:  # the runtime tries the call again
-                self.emit(retry_item(step.id, error))
+                self.emit(retry_item(lid, error))
             elif "denied by pre-tool hook" not in error:  # refusals show on their approval card
                 self._errored = True
-                self.emit({"kind": "error", "id": step.id, "text": error})
+                self.emit({"kind": "error", "id": lid, "text": error})
             return
         if step.source != StepSource.MODEL or step.type not in (StepType.TEXT_RESPONSE, StepType.THINKING):
             return
         if status == StepStatus.ACTIVE and step.content_delta:
             self.emit({"kind": "delta", "text": step.content_delta})
-        if status == StepStatus.DONE and step.id not in self._shown:
-            self._shown.add(step.id)  # chat items are shown once: thinking and text when the step ends
+        if status == StepStatus.DONE and lid not in self._shown:
+            self._shown.add(lid)  # chat items are shown once: thinking and text when the step ends
             if step.thinking.strip():
-                self.emit({"kind": "thinking", "id": f"{step.id}:think", "text": step.thinking})
+                self.emit({"kind": "thinking", "id": f"{lid}:think", "text": step.thinking})
             if step.content.strip():
-                self.emit({"kind": "text", "id": step.id, "text": step.content})
+                self._run.marks[step.step_index] = ("text", _digest(step.content))
+                self.emit({"kind": "text", "id": lid, "text": step.content})
 
     # ---- tools and approvals -----------------------------------------------
     def _python_tool(self, ns: str, spec: ToolSpec) -> Any:
@@ -1604,7 +1961,7 @@ class AntigravityLiveSession(LiveSession):
         name, args = str(tc.name), dict(tc.args or {})
         mcp = f"mcp__{tc.server_name}__{name}" if tc.server_name else None
         if not mcp and name in self._atrium and tc.step_id:
-            self._atrium_steps.setdefault(name, []).append(str(tc.step_id))  # the item its call shows as (see _python_tool)
+            self._atrium_steps.setdefault(name, []).append(self._lid(str(tc.step_id)))  # the item its call shows as (see _python_tool)
         if self.mode == "always-proceed" or not mcp and (name in self._atrium or name in READ_TOOLS):
             return True, ""
         command = None if mcp or "CommandLine" not in args else str(args["CommandLine"])
@@ -1669,6 +2026,7 @@ class AntigravityHarness(Harness):
     def __init__(self) -> None:
         self._prompts: dict[str, str] = {}  # transcript -> its first message
         self._cwds: dict[str, str | None] = {}  # session id -> cwd (index)
+        self._runs: dict[str, dict[str, _Run]] = {}  # session id -> the latest runs of its runtime (RUNS_KEPT), by id
 
     def available(self) -> tuple[bool, str | None]:
         if not _defaults().get("enabled", True):
@@ -1700,6 +2058,22 @@ class AntigravityHarness(Harness):
 
     def on_config_saved(self, file_id: str) -> None:
         _cli_cache.clear()
+
+    def new_run(self, session_id: str, start: int) -> tuple[str, _Run]:
+        """A session's runtime starts (``start``: the transcript's last message then): the run's id, and its record."""
+        runs = self._runs.setdefault(session_id, {})
+        rid = uuid.uuid4().hex[:8]
+        runs[rid] = _Run(start)
+        while len(runs) > RUNS_KEPT:
+            del runs[next(iter(runs))]
+        return rid, runs[rid]
+
+    def _run_of(self, session_id: str, anchor: str | None) -> _Run | None:
+        """The run that numbered chat item ``anchor``, if it is one shown live and the run is known: a copy (it is read in a
+        worker thread while the stream goes on)."""
+        m = _STEP_RE.match(anchor or "")
+        run = self._runs.get(session_id, {}).get(m.group("run") or "") if m else None
+        return run.copy() if run else None
 
     def gate_hook(self, session: AntigravityLiveSession) -> Any:
         from google.antigravity.hooks import hooks
@@ -1792,7 +2166,7 @@ class AntigravityHarness(Harness):
 
     # ---- forks: a copy of the runtime's state and data under a new id, cut after a step (see "Forks" above)
     async def fork_point(self, session_id: str, cwd: str, anchor: str | None, user_index: int | None, *, after: bool = False) -> ForkPoint:
-        return await asyncio.to_thread(fork_cut, session_id, anchor, user_index, after)
+        return await asyncio.to_thread(fork_cut, session_id, anchor, user_index, after, self._run_of(session_id, anchor))
 
     async def fork_edits(self, session_id: str, cwd: str, point: ForkPoint) -> list[FileEdit] | None:
         if point.cut is None or point.turn_ts is None:
@@ -1808,11 +2182,12 @@ class AntigravityHarness(Harness):
 
     # ---- edits: the conversation is cut in place just before the message (its old state kept in the backup)
     async def edit_point(self, session_id: str, cwd: str, item: str | None, anchor: str | None, user_index: int) -> ForkPoint:
-        return await asyncio.to_thread(edit_cut, session_id, item, anchor, user_index)
+        return await asyncio.to_thread(edit_cut, session_id, item, anchor, user_index, self._run_of(session_id, anchor))
 
     async def rewind_session(self, session_id: str, cwd: str, point: ForkPoint, backup: Path) -> Rewind:
         left = await asyncio.to_thread(cut_conversation, session_id, int(point.cut) if point.cut is not None else None, backup)
-        return Rewind(fresh=not left)
+        self._runs.pop(session_id, None)  # (the steps after the cut are numbered anew: the chat loads the conversation again)
+        return Rewind(fresh=not left, cut=True)
 
     async def move_session(self, session_id: str, cwd: str, target_cwd: str, note: str = "") -> None:
         # ``note`` reaches the model through the system prompt, which a resumed runtime takes anew
@@ -1835,13 +2210,32 @@ class AntigravityHarness(Harness):
 
         await asyncio.to_thread(delete)
         self._cwds.pop(session_id, None)
+        self._runs.pop(session_id, None)
 
     # ---- content -----------------------------------------------------------
     async def load_history(self, session_id: str, cwd: str) -> list[Item]:
         path = transcript_file(session_id)
         if not path:
             return []
-        return await asyncio.to_thread(lambda: history_items(_entries(path)))
+        return await asyncio.to_thread(lambda: history_items(current_steps(path)))
+
+    # ---- compactions: CHECKPOINT steps (the chat shows the conversation since the last, as the runtime resumes it)
+    async def list_compactions(self, sessions: list[SessionSummary]) -> dict[str, list[Compaction]]:
+        def scan() -> dict[str, list[Compaction]]:
+            found = {s.id: compactions_of(Path(s.transcript)) for s in sessions if s.harness == self.id and s.transcript}
+            return {sid: cs for sid, cs in found.items() if cs}
+
+        return await asyncio.to_thread(scan)
+
+    async def load_compacted_history(self, session_id: str, compaction_id: str, cwd: str) -> list[Item]:
+        def load() -> list[Item]:
+            path = transcript_file(session_id)
+            steps = compacted_steps(path, compaction_id) if path else None
+            if steps is None:
+                raise FileNotFoundError(f"no compaction {compaction_id} in session {session_id}")
+            return history_items(steps)
+
+        return await asyncio.to_thread(load)
 
     def digest_lines(self, lines: list[str]) -> list[str]:
         steps: dict[int, dict[str, Any]] = {}  # in order, as in _entries: a planner step is written after its tools' results

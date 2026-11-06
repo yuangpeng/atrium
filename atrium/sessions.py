@@ -67,6 +67,7 @@ class LiveHandle:
     started_at: float = field(default_factory=time.time)
     last_activity: float = field(default_factory=time.time)
     pending: dict[str, Item] = field(default_factory=dict)
+    compacted: int = 0  # where the conversation since its last compaction starts in ``items`` (``current``)
     tasks: dict[str, dict[str, Any]] = field(default_factory=dict)  # subagents seen on the stream, by spawning tool call
     title_synced: bool = False
     released: bool = False  # stopped because its directory went away
@@ -85,7 +86,16 @@ class LiveHandle:
             return
         if iid:
             self.index[iid] = len(self.items)
+        if item.get("kind") == "system" and item.get("subtype") == "compact" and item.get("compaction"):
+            self.compacted = len(self.items)
         self.items.append(item)
+
+    def current(self) -> list[Item]:
+        """What the chat is sent: the conversation since its last compaction (what the model still sees; the part before
+        opens on its own), with the context gauge and the questions the agent still waits on. A session that runs for
+        days, compacted over and over, would otherwise come whole each time its chat opens."""
+        keep = [it for it in self.items[: self.compacted] if it.get("id") == "usage" or it.get("kind") == "permission" and it.get("id") in self.pending]
+        return keep + self.items[self.compacted :]
 
     def settings(self) -> dict[str, Any]:
         return {"model": self.model or "", "effort": self.effort or "", "mode": self.mode or ""}
@@ -823,6 +833,8 @@ class SessionManager:
             backup = project.state_dir / "trash" / "sessions" / f"{time.strftime('%Y%m%d-%H%M%S')}-{harness_id}-{sid}-edit"
             rewind: Rewind = await harness.rewind_session(sid, cwd, point, backup)
             try:
+                if rewind.cut:  # its history ends where it went back to (items shown live have ids of their own: not in it)
+                    kept = await harness.load_history(sid, cwd)
                 h = await self._start(project, sid, resume=not rewind.fresh, resume_at=rewind.resume_at, harness_id=harness_id, cwd=cwd,
                                       name=_session_name(meta, summary), role=meta.get("role", "worker"), model=meta.get("model"),
                                       effort=meta.get("effort"), mode=meta.get("mode"), preload=_with_usage(kept, meta))
@@ -1001,7 +1013,7 @@ class SessionManager:
         meta = project.session_meta(sid)
         h = self.live.get(sid)
         if h and h.alive:  # (a copy: it is written out in a thread, while the session goes on)
-            return {"live": True, "state": h.state, "items": list(h.items), "pending": list(h.pending), "settings": h.settings()}
+            return {"live": True, "state": h.state, "items": h.current(), "pending": list(h.pending), "settings": h.settings()}
         settings = {"model": meta.get("model") or "", "effort": meta.get("effort") or "", "mode": meta.get("mode") or ""}
         summary = await self.find_summary(project, sid)
         if not summary and not meta.get("forked_from"):  # never reached the transcript (e.g. failed to start): show what we have
