@@ -529,7 +529,11 @@ Requests go to `<base_url>/v1beta/models/<model>:streamGenerateContent`, with th
 `gemini-api://http://127.0.0.1:<port>/models/<model>`. Without the `gemini-api://` prefix, `modelName`
 counts as a model id on Google's API, which then gets this file's key. A custom model can also have:
 
-- `maxTokens`: its context window in tokens, for the context gauge (default 1,048,576).
+- `maxTokens`: its context window in tokens, for the context gauge (1,048,576 when unset) and
+  auto-compaction: with it, the conversation is compacted at 72% of it (754,974 tokens of 1,048,576), by the
+  runtime's count of the context, which can run about a fifth below the model's. Without it, the runtime
+  compacts at its own 256,000 tokens, which have come with calls of up to 325,000: a model whose window is
+  under 400,000 tokens needs `maxTokens`, and a larger one needs it to use the rest.
 - `modelFeatures.supportsThinking: false`: no thinking level is sent; the effort picker does nothing.
 - `modelFeatures.supportsImages: false`: attached images go by path only, not as images.
 
@@ -571,6 +575,9 @@ Custom models still go to their own endpoint.
   there is a Serper key.
 - the **endpoint's address**, while `capture.enabled` is on: the Gemini endpoint's base URL points at
   Atrium's capture proxy, which sends each call on to yours ([Request capture](#request-capture)).
+- **when the conversation is compacted**: at 72% of the model's window, where Atrium knows it: a custom
+  model's `maxTokens` (above), or 1,048,576 for a `gemini-…` model id that isn't a custom model. Otherwise
+  Atrium leaves it to the runtime, which compacts at 256,000 tokens whatever the window.
 
 Changes apply to agents started afterwards. Whether Antigravity is available, and its model list, update
 right away, in an open page after a save in ⚙ Settings or a reload. Its conversations live in

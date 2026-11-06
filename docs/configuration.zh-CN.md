@@ -492,7 +492,10 @@ Atrium 的环境变量里。Antigravity 的条款规定 Google 账号登录只�
 如果漏了 `gemini-api://` 前缀，`modelName` 会被当成 Google API 上的模型 id，这个文件里的 key 就会发给 Google。
 自定义模型还可以设置：
 
-- `maxTokens`：上下文窗口大小（token 数），用于上下文用量指示（默认 1,048,576）。
+- `maxTokens`：上下文窗口大小（token 数），用于上下文用量指示（不写时按 1,048,576）和自动压缩：写了它，对话在
+  它的 72% 处压缩（1,048,576 时是 754,974 token），按运行时自己对上下文的计数，这个计数可能比模型的少约五分之一。
+  不写的话，运行时按自己的默认在 256,000 token 处压缩，实测那时的调用最多到过 325,000：窗口小于 400,000 token
+  的模型必须写 `maxTokens`，窗口更大的要写了它才用得上多出来的部分。
 - `modelFeatures.supportsThinking: false`：不发送思考等级；effort 选择器不起作用。
 - `modelFeatures.supportsImages: false`：附加的图片只传路径，不作为图片发送。
 
@@ -529,6 +532,9 @@ Atrium 的环境变量里。Antigravity 的条款规定 Google 账号登录只�
 - **去掉**：开启 `web.replace_builtin_web_tools` 时去掉 `read_url_content`；有 Serper key 时再去掉 `search_web`。
 - **端点地址**，在 `capture.enabled` 开启时：Gemini 端点的 base URL 指向 Atrium 的抓包代理，再由代理转发到你的
   地址（见[请求抓取](#请求抓取)）。
+- **对话何时压缩**：Atrium 知道模型窗口时，在窗口的 72% 处：自定义模型看它的 `maxTokens`（见上文），不是自定义
+  模型的 `gemini-…` 模型 id 按 1,048,576。其他情况 Atrium 不设，由运行时按自己的默认，不管窗口多大都在
+  256,000 token 处压缩。
 
 修改对之后启动的 agent 生效。Antigravity 是否可用、它的模型列表会立即更新（已打开的页面要在 ⚙ Settings
 保存之后或刷新后才看到）。它的对话保存在 `~/.atrium/antigravity/`，没有 CLI 能列出它们。fork 会在那里以新 id

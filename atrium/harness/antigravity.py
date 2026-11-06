@@ -70,6 +70,11 @@ DEFAULT_MODEL = "gemini-3.8-flash"  # the SDK's default (google.antigravity.mode
 IMAGE_MODEL = "gemini-3.1-flash-lite-image"  # the SDK's image model (generate_image)
 GEMINI_API = "https://generativelanguage.googleapis.com"  # the Gemini API's own address (an endpoint with no base URL)
 CONTEXT_WINDOW = 1_048_576  # Gemini 3.x models
+# The runtime compacts at 256,000 tokens of its own count, whatever the model's window, unless told otherwise. That
+# count runs short of the model's: at 256,000, compactions came with calls of up to 325k tokens (27% more). So when
+# the window is known, it compacts at this much of it, where 27% more and an answer (65,536 at most) still fit:
+# 754,974 of 1,048,576. A relay's model without maxTokens keeps the runtime's 256,000: its window may be smaller.
+COMPACT_AT = 0.72
 # Tools that only read: never asked about. Names as the pre-tool hook sees them (the SDK maps
 # write_to_file to create_file and replace_file_content to edit_file).
 READ_TOOLS = {
@@ -345,7 +350,7 @@ class ModelChoice:
     label: str
     thinking: bool = True  # takes a thinking level (modelFeatures.supportsThinking)
     images: bool = True  # takes images (modelFeatures.supportsImages)
-    window: int = CONTEXT_WINDOW  # context window, in tokens (maxTokens)
+    window: int | None = None  # context window, in tokens (maxTokens); None: unknown (a relay's model without maxTokens)
 
 
 def parse_model_name(name: str) -> tuple[str | None, str]:
@@ -371,11 +376,11 @@ def custom_models() -> dict[str, dict[str, Any]]:
     return {str(k): m for k, m in found.items() if isinstance(m, dict) and isinstance(m.get("modelName"), str)}
 
 
-def _max_tokens(key: str, m: dict[str, Any]) -> int:
-    """A custom model's context window (``maxTokens``); the default, with a warning, if that isn't a number of tokens."""
+def _max_tokens(key: str, m: dict[str, Any]) -> int | None:
+    """A custom model's context window (``maxTokens``); None if unset, or (with a warning) not a number of tokens."""
     raw = m.get("maxTokens")
     if raw in (None, ""):
-        return CONTEXT_WINDOW
+        return None
     n = 0
     if not isinstance(raw, bool) and not (isinstance(raw, float) and not raw.is_integer()):
         try:
@@ -386,8 +391,8 @@ def _max_tokens(key: str, m: dict[str, Any]) -> int:
         return n
     if (key, repr(raw)) not in _bad_max_tokens:  # once: the catalog asks on every page load
         _bad_max_tokens.add((key, repr(raw)))
-        log.warning("%s: maxTokens %r of custom model %s isn't a number of tokens; using %d", cli_settings_path(), raw, key, CONTEXT_WINDOW)
-    return CONTEXT_WINDOW
+        log.warning("%s: maxTokens %r of custom model %s isn't a number of tokens; taken as unset", cli_settings_path(), raw, key)
+    return None
 
 
 def resolve_model(pick: str | None) -> ModelChoice:
@@ -405,7 +410,8 @@ def resolve_model(pick: str | None) -> ModelChoice:
     base, model = parse_model_name(name)
     if " " in model:  # a built-in model's label, as the CLI saves "/model": "Gemini 3.8 Flash (High)" → gemini-3.8-flash
         model = re.sub(r"\s*\(.*\)$", "", model).strip().lower().replace(" ", "-")
-    return ModelChoice(model=model, base_url=base, label=model)
+    window = CONTEXT_WINDOW if base is None and model.startswith("gemini-") else None  # Google's Gemini, by its id
+    return ModelChoice(model=model, base_url=base, label=model, window=window)
 
 
 def _google(url: str | None) -> bool:
@@ -1735,9 +1741,10 @@ class AntigravityLiveSession(LiveSession):
     def _config(self) -> Any:
         from google.antigravity import CapabilitiesConfig, LocalAgentConfig
         from google.antigravity.hooks import policy
-        from google.antigravity.types import BuiltinTools, SessionContinuationMode
+        from google.antigravity.types import BuiltinTools, CompactionConfig, SessionContinuationMode
 
         spec = self.spec
+        window = self._choice.window
         disabled = [BuiltinTools.SCHEDULE]  # wake-ups only work while Atrium keeps the runtime open
         if "WebSearch" in spec.disallowed_tools:  # Atrium's web tools replace the built-in ones
             disabled.append(BuiltinTools.SEARCH_WEB)
@@ -1760,6 +1767,7 @@ class AntigravityLiveSession(LiveSession):
             session_continuation_mode=SessionContinuationMode.CREATE_OR_RESUME,
             save_dir=str(_save_dir()),
             app_data_dir=str(_data_dir()),
+            compaction_config=CompactionConfig(token_threshold=max(1, int(window * COMPACT_AT))) if window else None,
         )
 
     async def _open(self) -> None:
@@ -1865,7 +1873,7 @@ class AntigravityLiveSession(LiveSession):
             run.ended(live, await asyncio.to_thread(_last_prompt, transcript_file(self.session_id)))
         used = await asyncio.to_thread(_last_usage, transcript_file(self.session_id))
         if used:
-            self.emit({"kind": "usage", "id": "usage", "used": used, "max": self._choice.window})
+            self.emit({"kind": "usage", "id": "usage", "used": used, "max": self._choice.window or CONTEXT_WINDOW})
         stop = getattr(getattr(self._agent, "conversation", None), "connection", None)
         reason = str(getattr(getattr(stop, "_last_turn_stop_reason", None), "value", "") or "") if stop else ""
         self.emit({
