@@ -375,6 +375,10 @@ export function App() {
   useEffect(() => {
     void init();
   }, [init]);
+  // The tab names the open project ("myrepo · Atrium"), the home page just Atrium.
+  useEffect(() => {
+    document.title = project ? `${project.name} · Atrium` : "Atrium";
+  }, [project]);
   // ⌘K (Ctrl+K off the Mac): the home page's project search, from anywhere but the editor (Monaco's own ⌘K chords)
   // and a terminal (⌘K clears it; Ctrl+K is the shell's)
   useEffect(() => {
