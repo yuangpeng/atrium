@@ -6,8 +6,8 @@ import { EMPTY_DRAFT, NewAgentDraft, Workspace, useDrafts } from "../drafts";
 import { clsx } from "../util";
 import { Popover, Spinner } from "./ui";
 import {
-  AttachButton, AttachmentTray, EffortPicker, HarnessPicker, ModelChip, NewWorktreeFields, PendingUpload, PermissionPicker, ProjectDirChip, WorkspaceMenu, WorkspacePickChip,
-  effortOptions, useAttachments, useChatFloor, workspaceLabel,
+  AttachButton, AttachmentTray, EffortPicker, HarnessPicker, ModelPicker, NewWorktreeFields, PendingUpload, PermissionPicker, ProjectDirChip, WorkspaceMenu, WorkspacePickChip,
+  compatibleEffort, effortOptions, useAttachments, useChatFloor, workspaceLabel,
 } from "../chat/Composer";
 import { mergeCommands, useSlashCommands, useSlashMenu } from "../chat/SlashMenu";
 import { useVoiceInput } from "../chat/Voice";
@@ -82,7 +82,7 @@ export function NewAgent() {
         harness: harness.id,
         mode,
         model: model || undefined,
-        effort: effort || defaults.effort || undefined,
+        effort: efforts.length ? (effort || defaults.effort || undefined) : undefined,
         attachments: att.ids,
         cwd: ws.kind === "worktree" ? ws.path : undefined,
         worktree: ws.kind === "new" ? { branch: ws.branch.trim(), base: ws.base || undefined, create: true } : undefined,
@@ -153,7 +153,8 @@ export function NewAgent() {
             {meta.harnesses.length > 1 && (
               <HarnessPicker harnesses={meta.harnesses} value={harness.id} onChange={(id) => patch({ harness: id, mode: undefined, model: undefined, effort: undefined })} />
             )}
-            <ModelChip harness={harness} model={model || harness.config_model} />
+            <ModelPicker harness={harness} value={model} defaultModel={defaults.model || harness.config_model || ""} disabled={busy}
+              onChange={(model) => patch({ model, effort: compatibleEffort(harness, model || defaults.model || harness.config_model, draft.effort || defaults.effort || harness.config_effort) })} />
             </div>
             <div className="bar-end">
               <EffortPicker efforts={efforts} value={effort} base={baseEffort} onChange={(effort) => patch({ effort })} />

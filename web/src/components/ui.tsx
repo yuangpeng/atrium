@@ -60,6 +60,7 @@ export function Popover({
   up = false,
   width,
   within,
+  fitHeight = false,
 }: {
   trigger: (open: boolean, toggle: () => void) => ReactNode;
   children: (close: () => void) => ReactNode;
@@ -67,6 +68,7 @@ export function Popover({
   up?: boolean;
   width?: number | "max-content";
   within?: string;
+  fitHeight?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -74,15 +76,33 @@ export function Popover({
   // narrow and slide the menu sideways until it fits inside `within` and the window
   useLayoutEffect(() => {
     const menu = menuRef.current;
-    if (!open || !menu || !within) return;
-    const box = ref.current?.closest(within)?.getBoundingClientRect();
+    if (!open || !menu || (!within && !fitHeight)) return;
+    const box = within ? ref.current?.closest(within)?.getBoundingClientRect() : undefined;
     const lo = Math.max(8, box?.left ?? 0);
     const hi = Math.min(window.innerWidth - 8, box?.right ?? Infinity);
     if (menu.offsetWidth > hi - lo) menu.style.width = `${hi - lo}px`;
     const r = menu.getBoundingClientRect();
     const dx = r.right > hi ? hi - r.right : r.left < lo ? lo - r.left : 0;
     menu.style.transform = dx ? `translateX(${dx}px)` : "";
-  }, [open, within]);
+    if (!fitHeight) return;
+    const resize = () => {
+      const anchor = ref.current?.getBoundingClientRect();
+      if (!anchor) return;
+      const viewport = window.visualViewport;
+      const top = viewport?.offsetTop ?? 0;
+      const bottom = top + (viewport?.height ?? window.innerHeight);
+      menu.style.maxHeight = `${Math.max(0, (up ? anchor.top - top : bottom - anchor.bottom) - 14)}px`;
+      menu.style.overflowY = "auto";
+      menu.style.overscrollBehavior = "contain";
+    };
+    resize();
+    window.addEventListener("resize", resize);
+    window.visualViewport?.addEventListener("resize", resize);
+    return () => {
+      window.removeEventListener("resize", resize);
+      window.visualViewport?.removeEventListener("resize", resize);
+    };
+  }, [open, within, fitHeight, up]);
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => ref.current && !ref.current.contains(e.target as Node) && setOpen(false);

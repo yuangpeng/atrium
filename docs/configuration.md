@@ -10,6 +10,21 @@ setup that works in those CLIs works in Atrium too.
 too. A save is checked first (valid JSON / TOML, not changed on disk since you opened it), and the
 previous version goes to `~/.atrium/backups/`.
 
+Click the model name in the chat or new-agent composer to search the model list or enter a custom model ID.
+In an existing conversation, finish or stop the current turn before switching; the next message uses the new
+model and keeps the conversation. Default uses the currently configured default model, applied explicitly
+in an existing Codex thread so it does not keep the previous model. Compatible reasoning effort is preserved;
+otherwise the picker chooses a supported default for the new model.
+
+Click the harness icon in an idle worker chat to continue with another available harness. Review or edit
+its context excerpts and next instruction, and choose the target harness's model, effort and permission mode.
+Atrium creates a new conversation in the same directory and keeps the original conversation and draft.
+The handoff uses the original task (or its available preview), an available compaction summary and recent
+text/tool observations, up to 48,000 characters; omissions and truncation are marked. Native tool state, hidden reasoning and binary
+attachments are not transferred. The target uses its own settings and credentials. If its first message
+fails after creation, the handoff text is saved as the new agent's draft for retry. Git, Review, subagent
+and compaction views keep their harness fixed.
+
 What an agent gets is decided in three places:
 
 1. **The agent's pickers** (new-agent page, chat): permission mode, model, effort.

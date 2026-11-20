@@ -740,7 +740,7 @@ export const api = {
       worktree?: { branch: string; base?: string; create?: boolean };
     },
   ) => req<{ id: string; cwd: string }>("POST", `/api/p/${pid}/sessions`, body),
-  session: (pid: string, sid: string) => req<Snapshot>("GET", `/api/p/${pid}/sessions/${sid}`),
+  session: (pid: string, sid: string, signal?: AbortSignal) => req<Snapshot>("GET", `/api/p/${pid}/sessions/${sid}`, undefined, signal),
   subagent: (pid: string, sid: string, aid: string) =>
     req<{ subagent: SubagentRow; items: Item[] }>("GET", `/api/p/${pid}/sessions/${sid}/subagents/${encodeURIComponent(aid)}`),
   compaction: (pid: string, sid: string, cid: string) =>

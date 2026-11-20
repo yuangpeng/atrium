@@ -1,6 +1,6 @@
 // Composer building blocks shared by the chat view and the new-agent page:
 // attachments (paste / drop / pick → uploaded to ~/.atrium/uploads), the icon-only harness / permission-mode
-// pickers, the workspace menu, the read-only model chip (and a started agent's harness and workspace), the
+// pickers, the workspace menu, the model picker (and a started agent's harness and workspace), the
 // reasoning-effort slider and the context gauge.
 import type { CSSProperties, DependencyList, RefObject } from "react";
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
@@ -171,7 +171,16 @@ function catalogModel(harness: Harness | undefined, id: string | null | undefine
 export function effortOptions(harness: Harness | undefined, model: string | null | undefined): string[] {
   if (!harness) return [];
   const m = catalogModel(harness, model) ?? harness.models.find((x) => x.id === "");
-  return m?.efforts?.length ? m.efforts : harness.efforts;
+  return m?.efforts ?? harness.efforts;
+}
+
+/** Keep a valid effort when the model changes; otherwise use that model's default. */
+export function compatibleEffort(harness: Harness | undefined, model: string | null | undefined, preferred?: string | null): string {
+  const levels = effortOptions(harness, model);
+  if (!levels.length) return "";
+  if (preferred && levels.includes(preferred)) return preferred;
+  const fallback = catalogModel(harness, model)?.default_effort;
+  return fallback && levels.includes(fallback) ? fallback : levels[0]!;
 }
 
 const EFFORT_LABEL: Record<string, string> = { low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max", ultra: "Ultra", minimal: "Minimal", none: "None" };
@@ -193,7 +202,7 @@ function EffortBars({ level, levels }: { level: number; levels: number }) {
 }
 
 /** Reasoning effort as a slider (after Codex's). `value` "" = no pick: `base` (from the config files) applies. */
-export function EffortPicker({ efforts, value, base, onChange }: { efforts: string[]; value: string; base?: string | null; onChange: (v: string) => void }) {
+export function EffortPicker({ efforts, value, base, onChange, within = ".composer-box" }: { efforts: string[]; value: string; base?: string | null; onChange: (v: string) => void; within?: string }) {
   const [drag, setDrag] = useState<number | null>(null); // stop under the pointer while dragging
   const track = useRef<HTMLDivElement>(null);
   const shown = value || base || "";
@@ -220,7 +229,7 @@ export function EffortPicker({ efforts, value, base, onChange }: { efforts: stri
     <Popover
       up
       align="right"
-      within=".composer-box"
+      within={within}
       width={264}
       trigger={(open, toggle) => (
         <button className={clsx("chip effort-chip", open && "open")} onClick={toggle} aria-label={`Reasoning effort: ${title}`} {...tipProps}>
@@ -382,31 +391,93 @@ export function useChatFloor(spare = false) {
   );
 }
 
-/** The model, read-only: its maker's mark + name while the chip row has room, else the mark (name on hover). */
-export function ModelChip({ harness, model, faded }: { harness: Harness; model: string | null | undefined; faded?: boolean }) {
+/** A model choice, including relay model ids missing from the harness's catalog. */
+export function ModelPicker({ harness, value, defaultModel, onChange, disabled = false, hint, within = ".composer-box" }: {
+  harness: Harness;
+  value: string;
+  defaultModel?: string | null;
+  onChange: (model: string) => void | boolean | Promise<boolean>;
+  disabled?: boolean;
+  hint?: string;
+  within?: string;
+}) {
+  const model = value || defaultModel;
   const name = modelName(harness, model);
-  const maker = model || ({ "claude-code": "claude", antigravity: "gemini", grok: "grok" } as Record<string, string>)[harness.id] || null; // the harness's default model's maker
-  const ref = useRef<HTMLSpanElement>(null);
+  const maker = model || ({ "claude-code": "claude", antigravity: "gemini", grok: "grok" } as Record<string, string>)[harness.id] || null;
+  const [busy, setBusy] = useState(false);
+  const ref = useRef<HTMLButtonElement>(null);
   const roomy = useRoomy(ref, [name]);
-  const [tipProps, tip] = useTip(
-    <>
-      <div>
-        <span className="k">Model:</span> {name}
-      </div>
-      {model && model !== name && <div className="k mono">{model}</div>}
-    </>,
-    { tap: true }, // shown, not picked: a tap only has this to give
-  );
   return (
-    <span ref={ref} data-fold className={clsx("chip model-chip fixed", !roomy && "icon-chip", faded && "faded")} aria-label={`Model: ${name}`} {...tipProps}>
-      <ModelIcon model={maker} />
-      {roomy && <span>{name}</span>}
-      <span className="chip model-chip measure" aria-hidden>
-        <ModelIcon model={maker} />
-        <span>{name}</span>
-      </span>
-      {tip}
-    </span>
+    <Popover up within={within} width={340} trigger={(open, toggle) => (
+      <button ref={ref} type="button" data-fold className={clsx("chip model-chip", !roomy && "icon-chip", open && "open")}
+        onClick={toggle} aria-label={"Change model: " + name} aria-expanded={open} data-tip={"Change model: " + name} disabled={busy}>
+        {busy ? <Spinner /> : <ModelIcon model={maker} />}
+        {roomy && <><span>{name}</span><ChevronDown size={12} /></>}
+        <span className="chip model-chip measure" aria-hidden>
+          <ModelIcon model={maker} /><span>{name}</span><ChevronDown size={12} />
+        </span>
+      </button>
+    )}>
+      {(close) => <ModelMenu harness={harness} value={value} defaultModel={defaultModel} disabled={disabled || busy} hint={hint}
+        onPick={async (id) => {
+          setBusy(true);
+          try {
+            if (await onChange(id) !== false) close();
+          } finally {
+            setBusy(false);
+          }
+        }} />}
+    </Popover>
+  );
+}
+
+function ModelMenu({ harness, value, defaultModel, disabled, hint, onPick }: {
+  harness: Harness;
+  value: string;
+  defaultModel?: string | null;
+  disabled: boolean;
+  hint?: string;
+  onPick: (id: string) => Promise<void>;
+}) {
+  const [query, setQuery] = useState("");
+  const q = query.trim();
+  const models = harness.models.filter((m) => m.id);
+  if (value && !models.some((m) => m.id === value)) models.unshift({ id: value, label: modelName(harness, value), description: "Current model" });
+  const choices = [
+    ...(defaultModel !== null ? [{ id: "", label: "Default", description: defaultModel ? modelName(harness, defaultModel) : "From configuration" }] : []),
+    ...models,
+  ].filter((m) => (m.id + " " + m.label + " " + (m.description || "")).toLowerCase().includes(q.toLowerCase()));
+  const custom = q && !/\s/.test(q) && !models.some((m) => m.id === q);
+  const pick = (id: string) => { if (!disabled) void onPick(id); };
+  return (
+    <div className="model-menu">
+      <div className="pick-head">Choose a model</div>
+      <input className="input model-search" type="search" placeholder="Search or enter model ID" aria-label="Search models"
+        value={query} onChange={(e) => setQuery(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key !== "Enter" || e.nativeEvent.isComposing) return;
+          e.preventDefault();
+          const exact = q ? choices.find((m) => m.id === q) : undefined;
+          const id = exact?.id ?? choices[0]?.id ?? (custom ? q : undefined);
+          if (id !== undefined) pick(id);
+        }} />
+      <div className="model-list" role="group" aria-label="Models">
+        {choices.map((m) => (
+          <button key={m.id} type="button" className={clsx("menu-item pick-item model-item", value === m.id && "on")}
+            disabled={disabled} aria-pressed={value === m.id} onClick={() => pick(m.id)}>
+            <ModelIcon model={m.id || defaultModel} />
+            <span className="model-label"><span>{m.label}</span>{m.description && <span className="d">{m.description}</span>}
+              {!!m.id && m.id !== m.label && <span className="d mono">{m.id}</span>}</span>
+            {value === m.id && <Check size={14} />}
+          </button>
+        ))}
+        {custom && <button type="button" className="menu-item pick-item model-item" disabled={disabled} onClick={() => pick(q)}>
+          <ModelIcon model={q} /><span className="model-label"><span>Use {q}</span><span className="d">Custom model ID</span></span>
+        </button>}
+        {!choices.length && !custom && <div className="model-hint">No matching models</div>}
+      </div>
+      {(hint || harness.catalog_error) && <div className="model-hint">{hint}{harness.catalog_error && <div>Model list unavailable; enter a model ID.</div>}</div>}
+    </div>
   );
 }
 
@@ -442,7 +513,7 @@ export function ContextRing({ used, max }: { used?: number | null; max?: number 
 }
 
 /** Harness picker: only the harness's mark in the composer; the menu names each one. */
-export function HarnessPicker({ harnesses, value, onChange }: { harnesses: Harness[]; value: string; onChange: (id: string) => void }) {
+export function HarnessPicker({ harnesses, value, onChange, disabled = false, hint }: { harnesses: Harness[]; value: string; onChange: (id: string) => void; disabled?: boolean; hint?: string }) {
   const cur = harnesses.find((h) => h.id === value) ?? harnesses[0];
   const [tipProps, tip] = useTip(
     cur && (
@@ -451,6 +522,7 @@ export function HarnessPicker({ harnesses, value, onChange }: { harnesses: Harne
           <span className="k">Harness:</span> {cur.label}
         </div>
         {!cur.available && <div className="k">{cur.unavailable_reason || "unavailable"}</div>}
+        {hint && <div className="k">{hint}</div>}
       </>
     ),
   );
@@ -458,18 +530,20 @@ export function HarnessPicker({ harnesses, value, onChange }: { harnesses: Harne
   return (
     <Popover
       up
+      fitHeight
       within=".composer-box"
       width={220}
       trigger={(open, toggle) => (
-        <button className={clsx("chip icon-chip", open && "open")} onClick={toggle} aria-label={`Harness: ${cur.label}`} {...tipProps}>
+        <button className={clsx("chip icon-chip", open && "open")} onClick={toggle} aria-label={`Harness: ${cur.label}`} aria-disabled={disabled} {...tipProps}>
           <HarnessIcon id={cur.id} />
           {tip}
         </button>
       )}
     >
-      {(close) =>
-        harnesses.map((h) => (
-          <button key={h.id} className="menu-item pick-item" disabled={!h.available} onClick={() => (onChange(h.id), close())}>
+      {(close) => <>
+        {hint && <div className="model-hint">{hint}</div>}
+        {harnesses.map((h) => (
+          <button key={h.id} className="menu-item pick-item" disabled={disabled || !h.available} onClick={() => (onChange(h.id), close())}>
             <HarnessIcon id={h.id} />
             <div className="grow">
               <div>{h.label}</div>
@@ -477,8 +551,8 @@ export function HarnessPicker({ harnesses, value, onChange }: { harnesses: Harne
             </div>
             {h.id === cur.id && <Check size={15} />}
           </button>
-        ))
-      }
+        ))}
+      </>}
     </Popover>
   );
 }
@@ -724,7 +798,7 @@ const MODE_DOCS: Record<string, string> = {
 };
 
 /** Permission mode: only the mode's icon in the composer; the menu (after Codex's) explains each mode. */
-export function PermissionPicker({ harness, value, onChange, detached }: { harness: Harness; value: string; onChange: (mode: string) => void; detached?: boolean }) {
+export function PermissionPicker({ harness, value, onChange, detached, within = ".composer-box" }: { harness: Harness; value: string; onChange: (mode: string) => void; detached?: boolean; within?: string }) {
   const info = MODE_INFO[harness.id] ?? {};
   const label = harness.permission_modes.find((m) => m.id === value)?.label ?? value;
   const Icon = info[value]?.icon ?? Shield;
@@ -740,7 +814,7 @@ export function PermissionPicker({ harness, value, onChange, detached }: { harne
   return (
     <Popover
       up
-      within=".composer-box"
+      within={within}
       width="max-content"
       trigger={(open, toggle) => (
         <button
