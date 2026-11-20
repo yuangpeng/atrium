@@ -173,11 +173,31 @@ def P(pid: str) -> Project:
 
 async def _catalog(h: Any) -> dict[str, Any]:
     try:
-        return await asyncio.wait_for(h.catalog(), timeout=20)
+        d = await asyncio.wait_for(h.catalog(), timeout=20)
     except Exception as e:
         d = h.describe()
         d["catalog_error"] = str(e) or type(e).__name__
-        return d
+    _merge_extra_models(d)
+    return d
+
+
+def _merge_extra_models(d: dict[str, Any]) -> None:
+    """Models added by hand in settings.json: ``harnesses.<id>.extra_models``,
+    each a model id string or ``{"id", "label", "efforts", ...}``. They appear
+    after the harness's own list, for gateways whose catalog the harness cannot
+    see (a models-proxy, say)."""
+    extra = config.get(f"harnesses.{d.get('id')}.extra_models") or []
+    if not isinstance(extra, list):
+        return
+    models = list(d.get("models") or [])
+    seen = {m.get("id") for m in models}
+    for item in extra:
+        entry: dict[str, Any] = {"id": item, "label": item} if isinstance(item, str) else dict(item)
+        if entry.get("id") and entry["id"] not in seen:
+            entry.setdefault("label", entry["id"])
+            models.append(entry)
+            seen.add(entry["id"])
+    d["models"] = models
 
 
 # ---------------------------------------------------------------------------
