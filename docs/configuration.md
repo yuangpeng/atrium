@@ -10,6 +10,12 @@ setup that works in those CLIs works in Atrium too.
 too. A save is checked first (valid JSON / TOML, not changed on disk since you opened it), and the
 previous version goes to `~/.atrium/backups/`.
 
+Click the model name in the chat or new-agent composer to search the model list or enter a custom model ID.
+In an existing conversation, finish or stop the current turn before switching; the next message uses the new
+model and keeps the conversation. Default uses the currently configured default model, applied explicitly
+in an existing Codex thread so it does not keep the previous model. Compatible reasoning effort is preserved;
+otherwise the picker chooses a supported default for the new model.
+
 What an agent gets is decided in three places:
 
 1. **The agent's pickers** (new-agent page, chat): permission mode, model, effort.
