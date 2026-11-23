@@ -3,7 +3,7 @@ import { useShallow } from "zustand/react/shallow";
 import { api, ForkAt, Meta, onLoggedOut, onProjectGone, Project, ProjectInfo, SessionRow } from "./api";
 import { socket } from "./ws";
 import { EMPTY_DRAFT, hasContent, useDrafts } from "./drafts";
-import { throttle } from "./util";
+import { displayName, throttle, tidyNote } from "./util";
 import { syncThemeColor } from "./layout";
 
 export type Panel = "board" | "files" | "changes" | "git" | "terminal" | "requests";
@@ -33,10 +33,18 @@ export interface ForkRequest {
   step?: string; // the step forked after, in a few words
 }
 
-interface Toast {
+interface ToastAction {
+  label: string;
+  key: string;
+  run: () => Promise<void>;
+}
+
+export interface Toast {
   id: number;
   text: string;
   kind: "info" | "error" | "ok";
+  action?: ToastAction;
+  pending?: boolean;
 }
 
 interface AppState {
@@ -83,6 +91,7 @@ interface AppState {
   goHome: (search?: boolean) => Promise<void>;
   refreshProject: () => Promise<void>;
   refreshSessions: () => Promise<void>;
+  setSessionArchived: (session: SessionRow, archived: boolean) => Promise<void>;
   selectSession: (sid: string | null) => void;
   selectSubagent: (sid: string, aid: string) => void;
   selectCompaction: (sid: string, cid: string) => void;
@@ -101,7 +110,9 @@ interface AppState {
   openFile: (path: string, root?: string, target?: FileTarget) => void;
   showOnBoard: (target: BoardTarget) => void;
   reviewChanges: (sid: string | null) => void;
-  toast: (text: string, kind?: Toast["kind"]) => void;
+  toast: (text: string, kind?: Toast["kind"], action?: ToastAction) => void;
+  dismissToast: (id: number) => void;
+  runToastAction: (id: number) => Promise<void>;
 }
 
 let unsubProject: (() => void) | null = null;
@@ -147,6 +158,7 @@ export function resolvedTheme(): "light" | "dark" {
 }
 
 export const useApp = create<AppState>((set, get) => {
+  const archivePending = new Set<string>();
   const refreshSessionsThrottled = throttle(() => void get().refreshSessions(), 800);
   const refreshProjectThrottled = throttle(() => void get().refreshProject(), 800);
 
@@ -335,6 +347,46 @@ export const useApp = create<AppState>((set, get) => {
       }
     },
 
+    setSessionArchived: async (session, archived) => {
+      const project = get().project;
+      if (!project) return;
+      const pid = project.id;
+      const key = `archive:${pid}:${session.id}`;
+      if (archivePending.has(key)) return;
+      archivePending.add(key);
+      const wasSelected = get().sessionId === session.id;
+      try {
+        const res = await api.patchSession(pid, session.id, { archived });
+        const note = tidyNote(res.worktree);
+        if (note) get().toast(...note);
+        // A manual unarchive (or a new archive) makes any earlier Undo for this session obsolete.
+        set((s) => ({ toasts: s.toasts.filter((t) => t.action?.key !== key) }));
+        if (get().project?.id === pid) {
+          if (archived && get().sessionId === session.id) get().selectSession(null);
+          void get().refreshSessions();
+        }
+        if (archived) {
+          const detail = res.worktree?.removed ? " Its merged worktree was removed; Undo restores the conversation only." : "";
+          get().toast(`Archived “${displayName(session)}”.${detail}`, "info", {
+            label: "Undo", key,
+            run: async () => {
+              // Keep the original project and session even if the user has navigated elsewhere.
+              await api.patchSession(pid, session.id, { archived: false });
+              if (get().project?.id === pid) {
+                await get().refreshSessions();
+                if (get().project?.id === pid && wasSelected && get().sessionId === null)
+                  get().selectSession(session.id);
+              }
+            },
+          });
+        }
+      } catch (e) {
+        get().toast(e instanceof Error ? e.message : String(e), "error");
+      } finally {
+        archivePending.delete(key);
+      }
+    },
+
     selectSession: (sid) => {
       get().setChatOpen(true);
       set({ sessionId: sid, subagentId: null, compactionId: null, pane: "chat", railOpen: false });
@@ -396,11 +448,27 @@ export const useApp = create<AppState>((set, get) => {
       set({ changesSession: sid });
       get().setPanel("changes");
     },
-    toast: (text, kind = "info") => {
-      if (get().toasts.some((t) => t.text === text)) return; // showing already
+    toast: (text, kind = "info", action) => {
+      if (!action && get().toasts.some((t) => !t.action && t.text === text)) return; // showing already
       const id = ++toastId;
-      set((s) => ({ toasts: [...s.toasts, { id, text, kind }] }));
-      setTimeout(() => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })), kind === "error" ? 7000 : 3500);
+      set((s) => ({ toasts: [...s.toasts, { id, text, kind, action }] }));
+      // ActionToast handles its own timeout so pointer/focus interaction and pending requests can pause it.
+      if (!action) setTimeout(() => get().dismissToast(id), kind === "error" ? 7000 : 3500);
+    },
+    dismissToast: (id) => {
+      set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }));
+    },
+    runToastAction: async (id) => {
+      const t = get().toasts.find((t) => t.id === id);
+      if (!t?.action || t.pending) return;
+      set((s) => ({ toasts: s.toasts.map((t) => t.id === id ? { ...t, pending: true } : t) }));
+      try {
+        await t.action.run();
+        get().dismissToast(id);
+      } catch (e) {
+        set((s) => ({ toasts: s.toasts.map((t) => t.id === id ? { ...t, pending: false } : t) }));
+        get().toast(e instanceof Error ? e.message : String(e), "error");
+      }
     },
   };
 });

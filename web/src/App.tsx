@@ -1,10 +1,10 @@
 import type { JSX, ReactNode } from "react";
 import { Activity, memo, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { Archive, ArchiveRestore, ArrowLeft, ArrowLeftRight, ChevronRight, FileDiff, Files, GitBranch, GitFork, LayoutDashboard, MessageSquare, PanelLeftOpen, PanelRightClose, Plug, SquareTerminal, Unplug } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowLeft, ArrowLeftRight, ChevronRight, FileDiff, Files, GitBranch, GitFork, LayoutDashboard, MessageSquare, PanelLeftOpen, PanelRightClose, Plug, SquareTerminal, Unplug, X } from "lucide-react";
 import { api, loginUrl, SessionRow } from "./api";
-import { Panel, useApp, useAppState } from "./store";
-import { clsx, displayName, isMac, tidyNote } from "./util";
+import { Panel, type Toast, useApp, useAppState } from "./store";
+import { clsx, displayName, isMac } from "./util";
 import { useCompact, useLayout } from "./layout";
 import { Rail, RailToggle, liveLabel, statusClass } from "./components/Rail";
 import { NewAgent } from "./components/NewAgent";
@@ -59,6 +59,7 @@ function CloseChat() {
 function SessionHeader() {
   const { project, sessions, sessionId, toast, refreshSessions, reviewChanges, selectSession, setForkRequest, meta } = useAppState("project", "sessions", "sessionId", "toast", "refreshSessions", "reviewChanges", "selectSession", "setForkRequest", "meta");
   const s = sessions.find((x) => x.id === sessionId);
+  const setSessionArchived = useApp((s) => s.setSessionArchived);
   const canFork = meta?.harnesses.find((h) => h.id === s?.harness)?.can_fork !== false;
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState("");
@@ -129,13 +130,10 @@ function SessionHeader() {
         <button
           className="icon-btn"
           title={s?.archived ? "Unarchive" : "Archive"}
-          onClick={async () => {
-            const res = await api.patchSession(project.id, sessionId, { archived: !s?.archived }).catch((e) => void toast(e.message, "error"));
-            const note = tidyNote(res?.worktree);
-            if (note) toast(...note);
-            await refreshSessions();
-            if (!s?.archived) selectSession(null);
-          }}
+          aria-label={s?.archived ? "Unarchive" : "Archive"}
+          data-tip={s?.archived ? "Unarchive" : "Archive"}
+          disabled={!s}
+          onClick={() => s && void setSessionArchived(s, !s.archived)}
         >
           {s?.archived ? <ArchiveRestore size={15} /> : <Archive size={15} />}
         </button>
@@ -365,6 +363,36 @@ const ChatColumn = memo(function ChatColumn() {
   );
 });
 
+const ACTION_TOAST_MS = 6000;
+
+function ActionToast({ t }: { t: Toast }) {
+  const { dismissToast, runToastAction } = useAppState("dismissToast", "runToastAction");
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const paused = hovered || focused || !!t.pending;
+  useEffect(() => {
+    if (paused) return;
+    // Give the user a fresh window after interacting, or if a restore failed and can be retried.
+    const timer = setTimeout(() => dismissToast(t.id), ACTION_TOAST_MS);
+    return () => clearTimeout(timer);
+  }, [t.id, paused, dismissToast]);
+  return (
+    <div className={clsx("toast", t.kind, "with-action")} role="status"
+      onPointerEnter={(e) => { if (e.pointerType === "mouse") setHovered(true); }}
+      onPointerLeave={() => setHovered(false)}
+      onFocusCapture={(e) => { if (e.target.matches(":focus-visible")) setFocused(true); }}
+      onBlurCapture={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setFocused(false); }}>
+      <span className="toast-text">{t.text}</span>
+      <button className="toast-action" disabled={t.pending} aria-busy={!!t.pending} onClick={() => void runToastAction(t.id)}>
+        {t.pending ? "Restoring…" : t.action?.label}
+      </button>
+      <button className="toast-dismiss" disabled={t.pending} aria-label="Dismiss notification" data-tip="Dismiss notification" onClick={() => dismissToast(t.id)}>
+        <X size={14} />
+      </button>
+    </div>
+  );
+}
+
 const Toasts = memo(function Toasts() {
   const toasts = useApp((s) => s.toasts);
   const loggedOut = useApp((s) => s.loggedOut);
@@ -376,9 +404,9 @@ const Toasts = memo(function Toasts() {
           You were logged out. <a href={loginUrl()}>Log in again</a>
         </div>
       )}
-      {toasts.map((t) => (
-        <div key={t.id} className={clsx("toast", t.kind)}>
-          {t.text}
+      {toasts.map((t) => t.action ? <ActionToast key={t.id} t={t} /> : (
+        <div key={t.id} className={clsx("toast", t.kind)} role={t.kind === "error" ? "alert" : "status"}>
+          <span className="toast-text">{t.text}</span>
         </div>
       ))}
     </div>

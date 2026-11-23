@@ -14,7 +14,7 @@ import {
 import { api, SessionRow } from "../api";
 import { useApp, useAppState } from "../store";
 import { EMPTY_REPLY, hasContent, hasReply, useDrafts } from "../drafts";
-import { clsx, displayName, tidyNote, timeAgo } from "../util";
+import { clsx, displayName, timeAgo } from "../util";
 import { realHover, useCompact, useLayout } from "../layout";
 import { holdTouch } from "../tips";
 import { Popover, useInterval, useTick, useTouchDismiss } from "./ui";
@@ -194,14 +194,7 @@ function AgentsFlyout({ onClose }: { onClose: () => void }) {
   // agents with an unsent reply, but not the one whose composer is on screen
   const drafted = useDrafts(useShallow((d) => Object.keys(d.bySession).filter((k) => hasReply(d.bySession[k]) && (k !== sessionId || !!subagentId || !!compactionId))));
   const updateReply = useDrafts((d) => d.updateReply);
-  const setArchived = async (s: SessionRow, archived: boolean) => {
-    if (!project) return;
-    const res = await api.patchSession(project.id, s.id, { archived }).catch((e) => void toast(e.message, "error"));
-    const note = tidyNote(res?.worktree);
-    if (note) toast(...note);
-    if (archived && s.id === sessionId) selectSession(null);
-    void refreshSessions();
-  };
+  const setArchived = useApp((s) => s.setSessionArchived);
   const remove = async (s: SessionRow) => {
     if (!project) return;
     const harness = meta?.harnesses.find((h) => h.id === s.harness)?.label ?? s.harness;
@@ -279,7 +272,7 @@ function AgentsFlyout({ onClose }: { onClose: () => void }) {
         </div>
       </button>
       <div className="sb-actions">
-        <button className="icon-btn sm" title={s.archived ? "Unarchive" : "Archive"} onClick={() => void setArchived(s, !s.archived)}>
+        <button className="icon-btn sm" title={s.archived ? "Unarchive" : "Archive"} aria-label={s.archived ? "Unarchive" : "Archive"} data-tip={s.archived ? "Unarchive" : "Archive"} onClick={() => void setArchived(s, !s.archived)}>
           {s.archived ? <ArchiveRestore size={14} /> : <Archive size={14} />}
         </button>
         <button className="icon-btn sm danger" title="Delete" onClick={() => void remove(s)}>
