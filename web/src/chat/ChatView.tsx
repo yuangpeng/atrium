@@ -12,12 +12,13 @@ import { FileLinks } from "../components/FileLinks";
 import { BoardToolRow, PermissionCard, ToolRow, isBoardTool, useOpenSubagent } from "./ToolViews";
 import { ReviewToolBlock, isReviewTool } from "./ReviewCards";
 import {
-  AttachButton, AttachmentTray, ContextRing, EffortPicker, HarnessChip, HarnessPicker, MessageAttachments, ModelChip, NewWorktreeFields, PendingUpload, PermissionPicker,
-  WorkspaceChip, effortOptions, useAttachments, useChatFloor,
+  AttachButton, AttachmentTray, ContextRing, EffortPicker, HarnessChip, MessageAttachments, ModelPicker, NewWorktreeFields, PendingUpload, PermissionPicker,
+  WorkspaceChip, compatibleEffort, effortOptions, useAttachments, useChatFloor,
 } from "./Composer";
 import { mergeCommands, useAtriumCommands, useSlashCommands, useSlashMenu } from "./SlashMenu";
 import { useVoiceInput } from "./Voice";
 import { MessageEditor } from "./MessageEditor";
+import { modelRoutes } from "./modelRoutes";
 import { ScrollAids } from "./ScrollAids";
 import { GoalBar } from "./GoalBar";
 import { Outgoing, newMessageId, post, sentAttachments, useOutbox, useOutgoing } from "./outbox";
@@ -511,7 +512,8 @@ export const ChatView = memo(function ChatView({ pid, sid, cwd, compact, forkabl
   // where the agent carries on once its directory is gone (a removed worktree): picked here, applied on send
   const [ws, setWs] = useState<Workspace | null>(null);
   // another harness to continue in, while its handoff is reviewed
-  const [handoffTarget, setHandoffTarget] = useState<string | null>(null);
+  const [handoffTarget, setHandoffTarget] = useState<{ harnessId: string; model: string } | null>(null);
+  const [modelChanging, setModelChanging] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -653,8 +655,9 @@ export const ChatView = memo(function ChatView({ pid, sid, cwd, compact, forkabl
   const moveTo: MoveWorkspace | null =
     !gone || !ws || moving ? null : ws.kind === "new" ? { kind: "new", branch: ws.branch.trim(), base: ws.base.trim() || undefined } : ws;
   const placed = !gone || moving || (!!moveTo && (moveTo.kind !== "new" || !!moveTo.branch)); // a removed worktree: somewhere picked to go on
-  const handoffBlocked = running || outgoing.length > 0 || loading || !!editing || att.uploading || gone || !!row?.pending;
-  const target = meta?.harnesses.find((h) => h.id === handoffTarget);
+  const handoffBlocked = running || outgoing.length > 0 || modelChanging || loading || !!editing || att.uploading || gone || !!row?.pending;
+  const target = meta?.harnesses.find((h) => h.id === handoffTarget?.harnessId);
+  const canHandoff = row?.role === "worker" && forkable && !modeLocked;
   // a new worktree for an agent that lost its own starts out on that worktree's branch name
   const pickWs = (w: Workspace) => setWs(w.kind === "new" && !w.branch && row?.worktree && row.branch ? { ...w, branch: row.branch } : w);
 
@@ -663,7 +666,7 @@ export const ChatView = memo(function ChatView({ pid, sid, cwd, compact, forkabl
   // on meanwhile, and the message comes back here if it fails (outbox)
   const send = (override?: string) => {
     const t = (override ?? text).trim();
-    if (!(t || att.ids.length) || att.uploading || handoffTarget) return;
+    if (!(t || att.ids.length) || att.uploading || handoffTarget || modelChanging) return;
     if (forkable && atrium.run(t)) return setText(""); // an agent's chat (not the Git agent's)
     if (!placed) return;
     if (held(t)) return void (override !== undefined && setText(override)); // (a command picked in the menu waits there)
@@ -736,9 +739,36 @@ export const ChatView = memo(function ChatView({ pid, sid, cwd, compact, forkabl
   // detached sessions: show what the next attach will use (session settings, else the harness defaults)
   const defaults = meta?.settings.harnesses?.[harness?.id ?? ""] ?? {};
   const shownMode = st.mode || settings.mode || defaults.permission_mode || "";
-  const shownModel = st.model || settings.model || defaults.model || harness?.config_model || "";
+  const shownModel = settings.model || st.model || defaults.model || harness?.config_model || "";
   const efforts = effortOptions(harness, shownModel || null);
   const baseEffort = defaults.effort || st.effort || harness?.config_effort; // in effect while no effort is picked
+  const setModel = async (pick: string) => {
+    if (running || outgoing.length > 0 || modelChanging || loading || !placed || !!editing || att.uploading || !!row?.pending) return false;
+    // Resolve Default explicitly: Codex turn/start otherwise keeps the thread's previous model.
+    const model = pick || defaults.model || harness?.config_model || "";
+    if (!model) return false;
+    if (model === shownModel) return true;
+    setModelChanging(true);
+    try {
+      await api.setModel(pid, sid, model);
+      setSettings((current) => ({ ...current, model }));
+      const oldEffort = settings.effort || baseEffort;
+      const effort = compatibleEffort(harness, model, oldEffort);
+      if (oldEffort && oldEffort !== effort) {
+        if (!await setEffort(effort)) {
+          toast("Model changed; choose a supported reasoning effort before sending.", "error");
+          return true;
+        }
+      }
+      toast("Model changed. Your next message uses " + model + ".", "ok");
+      return true;
+    } catch (e: any) {
+      toast(e.message || String(e), "error");
+      return false;
+    } finally {
+      setModelChanging(false);
+    }
+  };
   // slash commands: Atrium's own in an agent's chat, then the harness's
   const atrium = useAtriumCommands({
     pid, sid, harness: harness?.id, cwd, running, canFork: harness?.can_fork !== false, efforts, effort: settings.effort || baseEffort || "", setEffort,
@@ -752,14 +782,14 @@ export const ChatView = memo(function ChatView({ pid, sid, cwd, compact, forkabl
   // would come back in the reply box as one text, the message the command's arguments (only for that moment)
   const unsent = outgoing.filter((o) => o.sent === undefined);
   const held = (t: string) => unsent.length > 0 && (isCommand(t.trim()) || unsent.some((o) => o.command));
-  const canSend = !handoffTarget && (!!text.trim() || att.ids.length > 0) && !att.uploading && placed && !held(text);
+  const canSend = !handoffTarget && !modelChanging && (!!text.trim() || att.ids.length > 0) && !att.uploading && placed && !held(text);
   const slash = useSlashMenu({ text, setText, input: inputRef, skills, commands, onRun: (t) => send(t) });
   const voice = useVoiceInput({ pid, sid, text, setText, input: inputRef });
   const barRef = useChatFloor(running && !canSend); // the queue button's room while it's away: typing doesn't move the column
 
   return (
     <div className={clsx("chat", compact && "compact")}>
-      {target && row && <HarnessHandoff key={sid + ":" + target.id} pid={pid} source={row} target={target} blocked={handoffBlocked}
+      {target && row && <HarnessHandoff key={sid + ":" + target.id + ":" + handoffTarget?.model} pid={pid} source={row} target={target} initialModel={handoffTarget?.model} blocked={handoffBlocked}
         draft={text} hasAttachments={att.items.length > 0} onClose={() => setHandoffTarget(null)} />}
       <div className="chat-body">
         <div className="chat-scroll" ref={scrollRef} onScroll={onScroll}>
@@ -839,15 +869,18 @@ export const ChatView = memo(function ChatView({ pid, sid, cwd, compact, forkabl
           <div className="composer-bar" ref={barRef}>
             <div className="bar-chips">
             <AttachButton onClick={att.open} />
-            {/* the new-agent page's chips, in its order; harness and workspace can't change any more (the
-                workspace can once it's gone) */}
             {harness && !modeLocked && <PermissionPicker harness={harness} value={shownMode} onChange={(m) => void setMode(m)} detached={!st.mode} />}
             {project && row && !compact && <WorkspaceChip project={project} session={row} pick={ws} onPick={pickWs} />}
-            {harness && !compact && (meta?.harnesses.length ?? 0) > 1 && (row?.role === "worker" && forkable && !modeLocked ?
-              <HarnessPicker harnesses={meta!.harnesses} value={harness.id} disabled={handoffBlocked}
-                hint={gone ? "Choose a workspace before switching harnesses." : handoffBlocked ? "Finish or stop the turn before switching harnesses." : "Continue with another harness; review the context in a new conversation."}
-                onChange={(id) => { if (!handoffBlocked && id !== harness.id) setHandoffTarget(id); }} /> : <HarnessChip harness={harness} />)}
-            {harness && !compact && <ModelChip harness={harness} model={shownModel} faded={!st.model} />}
+            {harness && !compact && (meta?.harnesses.length ?? 0) > 1 && <HarnessChip harness={harness} />}
+            {harness && !compact && <ModelPicker harness={harness} value={shownModel} defaultModel={defaults.model || harness.config_model || null}
+              routes={canHandoff && meta ? modelRoutes(meta.harnesses, meta.settings.defaults.harness) : undefined}
+              onChange={(model, next = harness) => {
+                if (next.id === harness.id) return setModel(model);
+                if (!canHandoff || handoffBlocked) return false;
+                setHandoffTarget({ harnessId: next.id, model });
+                return true;
+              }} disabled={running || outgoing.length > 0 || modelChanging || loading || !placed || !!editing || att.uploading || !!row?.pending}
+              hint={running ? "Finish or stop this turn to change models." : !placed ? "Choose a workspace before changing models." : "Models using another runtime continue in a new conversation with your context."} />}
             </div>
             <div className="bar-end">
             <ContextRing used={st.usage?.used} max={st.usage?.max} />

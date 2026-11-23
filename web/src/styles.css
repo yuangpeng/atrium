@@ -508,7 +508,15 @@ a { color: var(--accent-strong); }
 .pill.gone { text-decoration: line-through; opacity: 0.75; }
 /* the hidden copy measures the width the model's name needs */
 .composer-bar .chip.model-chip { padding: 0 6px; }
-.composer-bar .chip.measure { position: absolute; left: 0; top: 0; visibility: hidden; pointer-events: none; }
+.composer-bar .chip.measure { position: absolute; right: 0; top: 0; visibility: hidden; pointer-events: none; }
+.model-menu { display: flex; flex-direction: column; max-height: min(420px, calc(100dvh - 160px)); font-size: var(--fs); }
+.model-search { flex: none; width: auto; min-width: 0; margin: 4px 5px 8px; padding: 8px 10px; font-size: inherit; }
+.model-list { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.model-item { font-size: inherit; white-space: normal; }
+.model-item > svg { flex: none; }
+.model-label { display: flex; flex-direction: column; flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.model-item .d { font-size: 0.9em; }
+.model-hint { flex: none; padding: 6px 10px; color: var(--muted); font-size: 0.9em; overflow-wrap: anywhere; }
 /* reasoning effort: a pill opening a slider (after Codex's) */
 .composer-bar .chip.effort-chip { border-color: transparent; background: var(--surface-2); border-radius: 99px; padding: 0 7px 0 10px; gap: 3px; }
 /* the level as bars filled up to it: same width for every level */

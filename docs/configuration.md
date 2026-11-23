@@ -10,15 +10,22 @@ setup that works in those CLIs works in Atrium too.
 too. A save is checked first (valid JSON / TOML, not changed on disk since you opened it), and the
 previous version goes to `~/.atrium/backups/`.
 
-Click the harness icon in an idle worker chat to continue with another available harness. Review or edit
-its context excerpts and next instruction, and choose the target harness's permission mode and effort (its
-model is the one its settings give it, shown as on the new-agent page). Atrium creates a new conversation in
-the same directory and keeps the original conversation and draft. The handoff uses the original task (or its
-available preview), an available compaction summary and recent text/tool observations, up to 48,000
-characters; omissions and truncation are marked. Native tool state, hidden reasoning and binary attachments
-are not transferred. The target uses its own settings and credentials. If its first message fails after
-creation, the handoff text is saved as the new agent's draft for retry. Git, Review, subagent and compaction
-views keep their harness fixed.
+Click the model name in the new-agent composer or an ordinary worker chat to choose from all available
+harnesses' visible models. Atrium selects the corresponding harness automatically; its icon shows the runtime
+in use. The same model appears once, with `defaults.harness` preferred when multiple harnesses offer it.
+Pi and DSH's local provider prefixes are ignored for this comparison and retained in API requests.
+Add relay model IDs with `harnesses.<harness>.extra_models`, after configuring their endpoint and credentials.
+
+For a new agent, selecting a model also loads its harness's permission and effort defaults while keeping the draft.
+In an existing conversation, finish or stop the current turn before switching. A model using the same harness
+applies to the next message in that conversation; compatible effort is preserved. A model using another harness
+opens a context handoff with the selected model already set. Review the context excerpts and next instruction;
+Atrium creates a new conversation in the same directory and keeps the original conversation and draft.
+The handoff uses the original task (or its available preview), an available compaction summary and recent
+text/tool observations, up to 48,000 characters; omissions and truncation are marked. Native tool state, hidden reasoning and binary
+attachments are not transferred. The target uses its own settings and credentials. If its first message
+fails after creation, the handoff text is saved as the new agent's draft for retry. Git, Review, subagent
+and compaction views keep their harness fixed.
 
 What an agent gets is decided in three places:
 

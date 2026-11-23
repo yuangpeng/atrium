@@ -3,25 +3,23 @@ import { createPortal } from "react-dom";
 import { api, Harness, SessionRow } from "../api";
 import { useAppState } from "../store";
 import { useDrafts } from "../drafts";
-import { EffortPicker, effortOptions, ModelChip, PermissionPicker } from "../chat/Composer";
+import { compatibleEffort, EffortPicker, effortOptions, modelName, ModelPicker, PermissionPicker } from "../chat/Composer";
 import { handoffContext, handoffPrompt } from "../chat/harnessHandoff";
 import { displayName } from "../util";
 import { Modal, Spinner } from "./ui";
 
 const busyState = (state: string | null) => state === "starting" || state === "running" || state === "waiting";
 
-export function HarnessHandoff({ pid, source, target, blocked, draft, hasAttachments, onClose }: {
-  pid: string; source: SessionRow; target: Harness; blocked: boolean; draft: string; hasAttachments: boolean; onClose: () => void;
+export function HarnessHandoff({ pid, source, target, initialModel, blocked, draft, hasAttachments, onClose }: {
+  pid: string; source: SessionRow; target: Harness; initialModel?: string; blocked: boolean; draft: string; hasAttachments: boolean; onClose: () => void;
 }) {
   const { meta, toast, refreshSessions, selectSession } = useAppState("meta", "toast", "refreshSessions", "selectSession");
   const defaults = meta?.settings.harnesses[target.id] ?? {};
-  const [name, setName] = useState(() => displayName(source) + " · " + target.label);
+  const [name, setName] = useState(() => displayName(source) + " · " + modelName(target, initialModel || defaults.model || target.config_model));
   const [context, setContext] = useState("");
   const [instruction, setInstruction] = useState(draft.trim() || "Continue the task from the latest point. Check what is complete and carry out the remaining work.");
-  // the model is shown, not picked, as on the new-agent page: Atrium's default for the harness, else its config files'
-  const model = defaults.model || "";
-  // an effort picked here; without one, Atrium's default for the harness, else what its config files say
-  const [effort, setEffort] = useState("");
+  const [model, setModel] = useState(initialModel || defaults.model || "");
+  const [effort, setEffort] = useState(() => compatibleEffort(target, initialModel || defaults.model || target.config_model, defaults.effort || target.config_effort));
   const [mode, setMode] = useState(() => target.permission_modes.find((m) => m.id === defaults.permission_mode)?.id || target.permission_modes[0]?.id || "");
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -29,8 +27,9 @@ export function HarnessHandoff({ pid, source, target, blocked, draft, hasAttachm
   const [busy, setBusy] = useState(false);
   const [contextCwd, setContextCwd] = useState(source.cwd);
   const efforts = effortOptions(target, model || target.config_model);
-  const baseEffort = defaults.effort || target.config_effort || "";
+  const baseEffort = compatibleEffort(target, model || target.config_model, defaults.effort || target.config_effort);
   const close = () => !busy && onClose();
+  const selectedName = modelName(target, model || defaults.model || target.config_model);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -62,7 +61,7 @@ export function HarnessHandoff({ pid, source, target, blocked, draft, hasAttachm
       // Create first without sending, so a failed first message cannot cause a retry to make a duplicate agent.
       const res = await api.createSession(pid, {
         name: name.trim(), harness: target.id, cwd: contextCwd, mode,
-        model: model || undefined, effort: effort || defaults.effort || undefined,
+        model: model || undefined, effort: efforts.length ? effort || baseEffort || undefined : undefined,
       });
       let sendError = "";
       try { await api.send(pid, res.id, prompt, []); }
@@ -74,26 +73,27 @@ export function HarnessHandoff({ pid, source, target, blocked, draft, hasAttachm
       selectSession(res.id);
       void refreshSessions().catch(() => toast("Agent created. Reload the agent list if it is missing.", "info"));
       if (sendError) toast("Agent created, but the handoff message failed: " + sendError + ". The message is saved in its draft; retry there.", "error");
-      else toast("Continued in " + target.label + ". The original conversation is kept.", "ok");
+      else toast("Continued with " + selectedName + ". The original conversation is kept.", "ok");
     } catch (e: any) {
       toast(e.message || String(e), "error");
     } finally { setBusy(false); }
   };
 
   return createPortal(
-    <div className="harness-handoff" role="dialog" aria-modal="true" aria-label={"Switch to " + target.label}>
-      <Modal title={"Switch to " + target.label} onClose={close} footer={<>
+    <div className="harness-handoff" role="dialog" aria-modal="true" aria-label={"Continue with " + selectedName}>
+      <Modal title={"Continue with " + selectedName} onClose={close} footer={<>
         <div className="handoff-pickers composer-bar"><div className="bar-chips">
           <PermissionPicker within=".modal" harness={target} value={mode} onChange={(m) => !busy && setMode(m)} />
-          <ModelChip harness={target} model={model || target.config_model} />
-          <EffortPicker within=".modal" efforts={efforts} value={effort} base={baseEffort} onChange={(e) => !busy && setEffort(e)} />
+          <ModelPicker within=".modal" harness={target} value={model} defaultModel={defaults.model || target.config_model || ""} disabled={busy}
+            onChange={(m) => { setModel(m); setEffort(compatibleEffort(target, m || defaults.model || target.config_model, effort)); }} />
+          <EffortPicker within=".modal" efforts={efforts} value={effort} base={baseEffort} onChange={(e) => !busy && setEffort(e || baseEffort)} />
         </div></div>
         <button className="btn" disabled={busy} onClick={close}>Cancel</button>
         <button className="btn btn-primary" disabled={busy || loading || !!loadError || blocked || !target.available || !context.trim() || !instruction.trim()} onClick={() => void submit()}>
-          {busy && <Spinner />} Continue in {target.label}
+          {busy && <Spinner />} Continue
         </button>
       </>}>
-        <p className="handoff-intro">Creates a new conversation with {target.label} in the same directory. The original conversation and its draft are kept.</p>
+        <p className="handoff-intro">Continue with {selectedName} in a new conversation in the same directory. Review the context to carry over below.</p>
         <div className="hint handoff-cwd">{contextCwd}</div>
         <div className="field">
           <label htmlFor="handoff-name">Name</label>
