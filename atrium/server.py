@@ -1098,9 +1098,15 @@ async def site_file(key: str, path: str):
 
 @app.put("/api/p/{pid}/file")
 async def write_file(pid: str, body: dict[str, Any] = Body(...)):
-    return await asyncio.to_thread(
-        fs.write_file, P(pid), body.get("root"), body["path"], body.get("content", ""), body.get("base_sha"), bool(body.get("force"))
+    p = P(pid)
+    root = os.path.realpath(body.get("root") or p.path)
+    made = not os.path.exists(os.path.join(root, body["path"]))
+    res = await asyncio.to_thread(
+        fs.write_file, p, body.get("root"), body["path"], body.get("content", ""), body.get("base_sha"), bool(body.get("force"))
     )
+    # the language servers hear of it now, not after the watcher's pause: a rename's next one is made from it
+    await lsp.registry.files_changed([(1 if made else 2, os.path.join(root, res["path"]))])
+    return res
 
 
 @app.post("/api/p/{pid}/file/create")
@@ -1173,15 +1179,18 @@ async def git_diff(pid: str, path: str, root: str | None = None, staged: bool = 
     p = P(pid)
     r = _git_root(p, root)
     original = await gitops.show_file_at(r, "HEAD", path) or ""
-    sha = None
+    sha, text = None, False
     if staged:
         current = await gitops.show_file_at(r, "", path) or ""  # ":path" = index
     else:
         target = p.resolve(path, root=r)
         data = target.read_bytes() if target.is_file() else None
-        current = "" if data is None or b"\0" in data[:8192] else data.decode("utf-8", errors="replace")  # as fs.read_text
+        text = data is not None and b"\0" not in data[:8192]
+        current = data.decode("utf-8", errors="replace") if text else ""  # as fs.read_text
         sha = fs.sha_of(data)  # what an edit there is saved over (409 when the file changed since)
-    return {"path": path, "original": original, "current": current or "", "editable": not staged, "sha": sha}
+    # editable: a text file there now. A binary file shows an empty side, a deleted one too: typing there would be saved
+    # over the binary file, or bring the deleted one back
+    return {"path": path, "original": original, "current": current or "", "editable": text, "sha": sha}
 
 
 @app.post("/api/p/{pid}/git/init")

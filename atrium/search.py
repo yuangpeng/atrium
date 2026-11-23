@@ -36,6 +36,7 @@ _GLOB = re.compile(r"[*?\[{]")
 
 _running: dict[str, asyncio.subprocess.Process] = {}  # page -> its search on its way
 _pcre: bool | None = None  # git grep -P works (git built with PCRE)
+_git_ver: tuple[int, int] | None = None
 
 
 def _checkout(project: Project, root: str | None) -> str:
@@ -70,12 +71,13 @@ def _walk(root: str, cap: int) -> tuple[list[str], bool]:
 def list_files(project: Project, root: str | None) -> dict[str, Any]:
     """The files of a checkout (one of the project's roots), relative to it, for quick open."""
     root = _checkout(project, root)
-    listed = _git_lines(root, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--deduplicate")
+    listed = _git_lines(root, "ls-files", "-z", "--cached", "--others", "--exclude-standard")
     if listed is None:
         files, truncated = _walk(root, LIST_MAX)
         return {"root": root, "files": files, "truncated": truncated}
     deleted = set(_git_lines(root, "ls-files", "-z", "--deleted") or [])  # tracked, but gone from the checkout
-    files = [p for p in listed if p not in deleted]
+    # once each: a file in a merge conflict is in the index once per side (ls-files --deduplicate, git 2.31, does this)
+    files = [p for p in dict.fromkeys(listed) if p not in deleted]
     return {"root": root, "files": files[:LIST_MAX], "truncated": len(files) > LIST_MAX}
 
 
@@ -248,6 +250,18 @@ async def _search_rg(rg: str, root: str, query: str, regex: bool, case: bool, wo
     return await _run(argv, root, page, res, parse, "ripgrep")
 
 
+def _git_version() -> tuple[int, int]:
+    """git's version, (0, 0) when it can't be told. Machines keep old ones (Ubuntu 18.04 has 2.17, CentOS 7 1.8)."""
+    global _git_ver
+    if _git_ver is None:
+        try:
+            m = re.search(rb"(\d+)\.(\d+)", subprocess.run(["git", "--version"], capture_output=True, timeout=10).stdout)
+            _git_ver = (int(m[1]), int(m[2])) if m else (0, 0)
+        except (OSError, subprocess.TimeoutExpired):
+            _git_ver = (0, 0)
+    return _git_ver
+
+
 def _git_pcre() -> bool:
     global _pcre
     if _pcre is None:
@@ -339,6 +353,7 @@ async def search(project: Project, root: str | None, query: str, *, regex: bool 
     rg = shutil.which("rg")
     if rg:
         return await _search_rg(rg, root, query, regex, case, word, inc, exc, ignored, res, page)
-    if await asyncio.to_thread(_git_lines, root, "rev-parse", "-z", "--show-toplevel") is not None:
+    # git grep --column is git 2.19's
+    if await asyncio.to_thread(_git_version) >= (2, 19) and await asyncio.to_thread(_git_lines, root, "rev-parse", "-z", "--show-toplevel") is not None:
         return await _search_git(root, query, regex, case, word, inc, exc, ignored, res, page)
     return await asyncio.to_thread(_search_py, root, query, regex, case, word, inc, exc, res)

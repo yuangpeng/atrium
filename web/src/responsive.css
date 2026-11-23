@@ -273,6 +273,23 @@ html, body { overscroll-behavior: none; } /* the app doesn't rubber-band as a wh
 [data-compact] .qo-backdrop { padding-top: calc(8px + env(safe-area-inset-top)); }
 [data-compact] :is(.qo-row, .search-results) { font-size: var(--fs); }
 
+/* ---------------------------------------------------------------- inline completion */
+/* Monaco's toolbar over a suggestion (Editors.tsx shows it always on a touch screen): a phone has no Tab key, so its
+   Accept is how a suggestion is taken. Its buttons a fingertip's size; the keys they stand for, of no use there, go. */
+@media (pointer: coarse) {
+  .monaco-editor .inlineSuggestionsHints .action-label {
+    min-width: 30px;
+    min-height: 30px;
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  /* (over Monaco's own rules, which come later and name these more closely) */
+  .monaco-editor .inlineSuggestionsHints .availableSuggestionCount .action-label { min-width: 30px; }
+  .monaco-editor .inlineSuggestionsHints .inlineSuggestionStatusBarItemLabel .keybinding { display: none; }
+}
+
 /* ---------------------------------------------------------------- voice input */
 /* the strip's buttons (chat/Voice.tsx) take a fingertip; the strip grows with them */
 @media (pointer: coarse) {

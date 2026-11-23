@@ -280,12 +280,12 @@ microphone; if that was denied, allow it in the browser's settings for the site.
 | `lsp.commands` | `{}` | A server per language instead of the one found automatically: a program (name or path, no arguments) or an argument list, e.g. `{"c": "clangd", "python": ["pyright-langserver", "--stdio"]}`. Languages: `python`, `c`, `cpp`, `go`, `rust`, `typescript`, `javascript` (one server reads both; a `typescript` entry serves JavaScript too). |
 | `lsp.python.typeCheckingMode` | `"standard"` | `off`, `basic`, `standard`, `strict`, `recommended` or `all`. |
 | `ui.theme` | `"system"` | Not read: the browser remembers the rail's theme switch. |
-| `ui.auto_save` | `true` | The Files editor, and the editable side of a diff in Changes (by agent, and the working tree), save a file a moment (1 s) after you stop typing, and at once when you switch to another file or panel, close its tab or leave the page. The toggle beside the lock in the editor's bar sets it. `false`: ⌘S or the Save button saves. Either way, a file that changed on disk meanwhile isn't overwritten: the editor asks. |
+| `ui.auto_save` | `true` | The Files editor, and the editable side of a diff in Changes (by agent, and the working tree), save a file a moment (1 s) after you stop typing, and at once when you switch to another file or panel, close its tab or leave the page. The toggle beside the lock in the editor's bar sets it. `false`: ⌘S or the Save button saves. Either way, a file that changed on disk meanwhile isn't overwritten: the editor asks. A binary or deleted file's side of a diff is read-only. |
 | `ui.completion` | `true` | Inline completion in the Files editor (below), once `completion.model` is set. The ✦ switch in the editor's bar sets it. |
 | `completion.model` | `""` | The model that suggests code as you type, through `/v1/chat/completions`. `""` = no inline completion. |
 | `completion.base_url` | `""` | Its server, with or without `/v1`, as `voice.base_url`; nothing is taken from `voice`, so set it even when the two are the same. |
 | `completion.api_key` | `""` | Sent as `Authorization: Bearer …`; not sent when empty. Its own, like the server: `voice.api_key` isn't used. `/api/meta` only says whether it is set. |
-| `completion.max_per_minute` | `40` | Requests to the model a minute at most (`0`: no limit). Keep it under what the server allows: one gateway allows 50 a minute per model and key, shared with everything else that uses them. Past three quarters of it, nothing is asked for ahead; at the limit, no suggestions until a minute has passed. When the server itself says it is asked too often (429), none until the time it gives; the ✦ switch says so. |
+| `completion.max_per_minute` | `40` | Requests to the model a minute at most (`0`: no limit). Keep it under what the server allows: one gateway allows 50 a minute per model and key, shared with everything else that uses them. A request goes at a pause in the typing (0.3 s), and none while one on its way may still hold the answer; past three quarters of the limit, nothing is asked for ahead; at the limit, no suggestions until a minute has passed. When the server itself says it is asked too often (429), none until the time it gives; the ✦ switch says so. |
 | `completion.effort` | `"none"` | The `reasoning_effort` sent: a suggestion has to come in a second or two, so the least the model takes (`none` for gpt-6-luna; `minimal` for some). A model that refuses it is asked again without it; `""` sends none. |
 | `completion.next_edit` | `true` | Next edit (below): after an edit, the next one the model expects elsewhere in the file, marked where it goes. Same model and server, asked only with room to spare under `completion.max_per_minute`. `false`: only the suggestion at the cursor. |
 
@@ -299,7 +299,10 @@ Python, clangd for C and C++, gopls for Go, rust-analyzer for Rust, and for Type
 offers shows in the editor: ⌘-click and F12 go to a definition, ⇧F12 lists references, F2 renames a symbol in every
 file that uses it, ⌘. offers quick fixes, ⇧⌥F formats (where the server formats: clangd, gopls, rust-analyzer,
 TypeScript's; not basedpyright), ⇧⌘O lists the file's symbols. A rename writes the files that aren't open; in open
-ones it changes the text, which auto-save then writes.
+ones it changes the text, which auto-save then writes. It changes every file or none: one that can't be written, or one
+that changed since the language server read it, stops it (the servers hear of the files written on disk, by an agent
+or by Atrium, as the file watch sees them). ⌘Z in the file it was made in takes it back in the other files too, and
+redo makes it again.
 
 The Files panel takes VS Code's keys (Ctrl for ⌘ off the Mac): ⌘P opens a file by name, ⌘⇧F finds in files, ⌘B
 hides or shows the file tree (its own button does too), ⌘⇧E shows it, ⌘W closes a tab, ⌘⇧T opens the last one closed

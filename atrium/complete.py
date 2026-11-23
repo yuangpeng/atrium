@@ -324,6 +324,11 @@ class _Throttle:
             self.sent.popleft()
         return len(self.sent)
 
+    def note(self) -> None:
+        """A request sent. The minute's older ones go (no limit set, nothing else would let them go)."""
+        self.sent.append(time.monotonic())
+        self.used()
+
     def wait(self, limit: int) -> float:
         """Seconds before this model may be asked again (0: now), by the server's word or by ``limit`` a minute."""
         now = time.monotonic()
@@ -461,7 +466,7 @@ async def _stream(s: dict[str, Any], payload: dict[str, Any], url: str):
     _used = time.monotonic()
     throttle = _throttle(s)
     for _ in range(3):
-        throttle.sent.append(time.monotonic())
+        throttle.note()
         try:
             async with _http().stream("POST", url, json=payload, headers=headers) as r:
                 if r.status_code >= 400:
@@ -616,40 +621,54 @@ async def complete(pid: str, path: str, label: str, language: str, before: str, 
             jobs.append(_Job(pid, s, label, language, before, after, events_text(events or []), related_text(related or [])))
             _jobs[key] = _tidy(jobs)
         return {"text": "", "queued": True}
-    own = None
-    if not exact and (not fits or throttle.spare(limit)):  # a second request for this place only when there is room
+    own: _Job | None = None
+
+    def ask() -> _Job:
         if wait := throttle.wait(limit):
             why = "rate limited by the server" if throttle.until > time.monotonic() else f"asked {limit} times in the last minute (completion.max_per_minute)"
             raise CompletionError(f"{s['model']}: {why}; suggestions resume in {wait:.0f} s", 429)
-        own = _Job(pid, s, label, language, before, after, events_text(events or []), related_text(related or []))
-        jobs.append(own)
+        job = _Job(pid, s, label, language, before, after, events_text(events or []), related_text(related or []))
+        jobs.append(job)
         _jobs[key] = _tidy(jobs)
-    # the first that fits: one on its way since before the typing, or this one's own; its first line, if the rest is slow
-    candidates = [*fits, *([(own, "")] if own else [])]
-    waiting: dict[asyncio.Future[str], tuple[_Job, str, bool]] = {}
-    for j, typed in candidates:
-        waiting[asyncio.ensure_future(asyncio.shield(j.answer))] = (j, typed, False)
-        if not whole:
-            waiting[asyncio.ensure_future(asyncio.shield(j.first))] = (j, typed, True)
+        return job
+
+    def watch(candidates: list[tuple[_Job, str]]) -> dict[asyncio.Future[str], tuple[_Job, str, bool]]:
+        out: dict[asyncio.Future[str], tuple[_Job, str, bool]] = {}
+        for j, typed in candidates:
+            out[asyncio.ensure_future(asyncio.shield(j.answer))] = (j, typed, False)
+            if not whole:
+                out[asyncio.ensure_future(asyncio.shield(j.first))] = (j, typed, True)
+        return out
+
+    # The requests on their way that may hold the answer go first: typing on as the model predicted is the usual case,
+    # and a request at every pause in the typing would use up max_per_minute in seconds. This place is asked about
+    # itself when none of them is there, or once they have come back without it.
+    if not fits:
+        own = ask()
+    waiting = watch(fits if own is None else [(own, "")])
     try:
-        while waiting:
-            done, _ = await asyncio.wait(waiting, return_when=asyncio.FIRST_COMPLETED)
-            for fut in done:
-                j, typed, first = waiting.pop(fut)
-                if not first and j is own and (err := fut.exception()) is not None:
-                    raise err
-                if text := j.rest(typed):
-                    return {"text": text, "ms": round((time.monotonic() - j.started) * 1000)}
-                if first and (line := j.rest(typed, first=True)):
-                    try:  # a short answer ends right after its first line
-                        await asyncio.wait_for(asyncio.shield(j.answer), FIRST_GRACE)
-                    except (TimeoutError, CompletionError):
-                        pass
+        while True:
+            while waiting:
+                done, _ = await asyncio.wait(waiting, return_when=asyncio.FIRST_COMPLETED)
+                for fut in done:
+                    j, typed, first = waiting.pop(fut)
+                    if not first and j is own and (err := fut.exception()) is not None:
+                        raise err
                     if text := j.rest(typed):
                         return {"text": text, "ms": round((time.monotonic() - j.started) * 1000)}
-                    if not j.answer.done():
-                        return {"text": line, "partial": True, "ms": round((time.monotonic() - j.started) * 1000)}
-        return {"text": ""}
+                    if first and (line := j.rest(typed, first=True)):
+                        try:  # a short answer ends right after its first line
+                            await asyncio.wait_for(asyncio.shield(j.answer), FIRST_GRACE)
+                        except (TimeoutError, CompletionError):
+                            pass
+                        if text := j.rest(typed):
+                            return {"text": text, "ms": round((time.monotonic() - j.started) * 1000)}
+                        if not j.answer.done():
+                            return {"text": line, "partial": True, "ms": round((time.monotonic() - j.started) * 1000)}
+            if own is not None or exact:  # asked, or one was for this very place: the model had nothing to add
+                return {"text": ""}
+            own = ask()
+            waiting = watch([(own, "")])
     finally:
         for fut in waiting:
             fut.cancel()

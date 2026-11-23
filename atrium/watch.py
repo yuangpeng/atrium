@@ -34,7 +34,7 @@ from watchfiles import Change
 from watchfiles._rust_notify import RustNotify
 from watchfiles.main import _default_force_polling  # what awatch makes of force_polling=None: the env var, or WSL
 
-from . import fs
+from . import fs, lsp
 from .events import hub
 from .harness import all_harnesses
 from .project import Project
@@ -418,6 +418,9 @@ class _DirWatcher:
             log.exception("%s: can't check the new watch", self._name)
 
 
+_LSP_CHANGE = {Change.added: 1, Change.modified: 2, Change.deleted: 3}  # LSP's FileChangeType
+
+
 class ProjectWatcher(_DirWatcher):
     def __init__(self, project: Project):
         super().__init__(f"watch-{project.id}", debounce=400, step=100, watch_filter=self._wanted)
@@ -440,6 +443,7 @@ class ProjectWatcher(_DirWatcher):
         if files:
             fs.files_changed(files)
             hub.publish(topic, {"type": "fs", "paths": files[:200]})
+            await lsp.registry.files_changed([(_LSP_CHANGE[Change.modified], p) for p in files])
         hub.publish(topic, {"type": "git_changed"})
 
     async def _changed(self, changes: set[tuple[Change, str]]) -> None:
@@ -460,6 +464,8 @@ class ProjectWatcher(_DirWatcher):
         if files:
             fs.files_changed(files)  # before the pages hear of it: the file lists the chat's links are found in
             hub.publish(topic, {"type": "fs", "paths": files[:200]})
+            # and the language servers: what they know of the files no editor has open
+            await lsp.registry.files_changed([(_LSP_CHANGE[c], p) for c, p in changes if "/.git/" not in p])
         if files or git_changed:
             hub.publish(topic, {"type": "git_changed"})
         if worktrees_changed:  # the worktree pickers, and agents whose worktree went away; and a root to watch, or one less

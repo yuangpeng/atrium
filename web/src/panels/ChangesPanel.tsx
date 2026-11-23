@@ -185,8 +185,10 @@ function AgentChangesView() {
       toast(e.message, "error");
     }
   };
-  // the file as it is now, edited on the diff's right: saved as typed (ui.auto_save), the diff left as it is
-  const saver = useDiffAutoSave(detail && detail.exists && !detail.gone ? { key: `${sid}:${detail.path}`, pid, path: detail.path, text: detail.current ?? "", sha: detail.sha } : null);
+  // the file as it is now, edited on the diff's right: saved as typed (ui.auto_save), the diff left as it is. Only a text
+  // file there now: a binary one's side is empty (current null), and typing there would be saved over it
+  const writable = !!detail && detail.exists && !detail.gone && detail.current != null && detail.sha != null;
+  const saver = useDiffAutoSave(writable ? { key: `${sid}:${detail.path}`, pid, path: detail.path, text: detail.current ?? "", sha: detail.sha } : null);
 
   return (
     <div className="split stack">
@@ -280,7 +282,7 @@ function AgentChangesView() {
                 <FileNav index={tree.order.indexOf(cur)} count={tree.order.length} onGo={(i) => pick(tree.order[i].path)} />
                 <span className="grow" />
                 <SaveButton saver={saver} />
-                {detail.exists && !detail.gone && <LockToggle />}
+                {writable && <LockToggle />}
                 <button className="btn btn-sm" aria-label="Edit" data-tip="Open in the editor" onClick={() => openFile(cur.path, cwd)} disabled={!detail.exists || detail.gone}>
                   <ExternalLink size={12} /> <span className="lbl">Edit</span>
                 </button>
@@ -314,7 +316,7 @@ function AgentChangesView() {
                 original={detail.baseline ?? ""}
                 modified={detail.current ?? ""}
                 language={languageFor(cur.path)}
-                editable={detail.exists && !detail.gone && !locked}
+                editable={writable && !locked}
                 labels={{
                   original: (
                     <>
@@ -330,7 +332,7 @@ function AgentChangesView() {
                     </>
                   ) : detail.exists ? (
                     <>
-                      <b>Now</b> on disk <span className="faint ellipsis">· {locked ? "locked" : saveHint(saver)}</span>
+                      <b>Now</b> on disk <span className="faint ellipsis">· {!writable ? "binary, read-only" : locked ? "locked" : saveHint(saver)}</span>
                     </>
                   ) : (
                     <>
@@ -613,7 +615,8 @@ function WorkingTreeView() {
                     </>
                   ) : (
                     <>
-                      <b>Working tree</b> <span className="faint ellipsis">· {diff.editable && locked ? "locked" : saveHint(saver)}</span>
+                      <b>Working tree</b>{" "}
+                      <span className="faint ellipsis">· {!diff.editable ? (diff.sha ? "binary, read-only" : "deleted") : locked ? "locked" : saveHint(saver)}</span>
                     </>
                   ),
                 }}

@@ -668,15 +668,23 @@ const whyGone = (res: Response, data: any, url: string) => {
   return pid ? projectGone(pid) : undefined;
 };
 
-/** keepalive: the request outlives the page (a save as it goes away); browsers take only small bodies so. */
+// what a request may carry to outlive the page: browsers take 64 KiB, in bytes, for all such requests on their way
+const KEEPALIVE_MAX = 60_000;
+
+/** keepalive: the request outlives the page (a save as it goes away). A body too large for that (counted in bytes:
+ *  Chinese takes 3 a character), or one the browser refuses so (others on their way take the room), goes as a usual
+ *  request, which a page only hidden still sees through. */
 async function req<T>(method: string, url: string, body?: unknown, signal?: AbortSignal, keepalive?: boolean): Promise<T> {
-  const res = await fetch(url, {
-    method,
-    headers: body !== undefined ? { "content-type": "application/json" } : undefined,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-    signal,
-    keepalive,
-  });
+  const payload = body !== undefined ? JSON.stringify(body) : undefined;
+  const init: RequestInit = { method, headers: body !== undefined ? { "content-type": "application/json" } : undefined, body: payload, signal };
+  const keep = !!keepalive && new Blob([payload ?? ""]).size <= KEEPALIVE_MAX;
+  let res: Response;
+  try {
+    res = await fetch(url, { ...init, keepalive: keep });
+  } catch (e) {
+    if (!keep) throw e;
+    res = await fetch(url, init);
+  }
   const text = await res.text();
   let data: any = null;
   try {

@@ -10,7 +10,6 @@ import { basename } from "./util";
 
 const AUTO_SAVE_MS = 1000; // as the Files editor
 const RETRY_MS = 4000;
-const KEEPALIVE_MAX = 60_000; // a save sent as the page goes away (keepalive): browsers refuse a larger body there
 
 export interface DiffFile {
   key: string; // which file this is: a new key is another file
@@ -47,6 +46,8 @@ export function useDiffAutoSave(file: DiffFile | null): DiffSave {
   const [state, setState] = useState<{ unsaved: boolean; conflict: boolean; error: string | null }>({ unsaved: false, conflict: false, error: null });
   const conflictRef = useRef(state.conflict);
   conflictRef.current = state.conflict;
+  const errorRef = useRef(state.error);
+  errorRef.current = state.error;
 
   // another file, or this one read again (its sha moved): what is on disk is what was just read. Here, not in an effect:
   // the editor reports the text it is handed before the effects of this render run, and must find it already known.
@@ -64,7 +65,7 @@ export function useDiffAutoSave(file: DiffFile | null): DiffSave {
       const run = (async () => {
         try {
           const f = c.file;
-          const res = await api.writeFile(f.pid, { root: f.root, path: f.path, content: text, base_sha: c.sha, force: !!opts.force }, !!opts.keepalive && text.length < KEEPALIVE_MAX);
+          const res = await api.writeFile(f.pid, { root: f.root, path: f.path, content: text, base_sha: c.sha, force: !!opts.force }, !!opts.keepalive);
           c.saved = text;
           c.sha = res.sha;
           fails.current = 0;
@@ -79,8 +80,8 @@ export function useDiffAutoSave(file: DiffFile | null): DiffSave {
           fails.current += 1;
           if (!opts.quiet || fails.current === 1) toast(`${basename(c.file.path)} not saved: ${e.message}`, "error");
           if (cur.current === c) setState((s) => ({ ...s, error: e.message }));
-          // an auto-save tries again, later and later (the Save button shows meanwhile)
-          if (opts.quiet && !opts.keepalive && autoRef.current && cur.current === c)
+          // an auto-save tries again, later and later (the Save button shows meanwhile), one as the page was hidden too
+          if (opts.quiet && autoRef.current && cur.current === c)
             timer.current = window.setTimeout(() => void write(c, { quiet: true }), Math.min(RETRY_MS * 2 ** (fails.current - 1), 60_000));
           return false;
         }
@@ -104,6 +105,18 @@ export function useDiffAutoSave(file: DiffFile | null): DiffSave {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, write]);
+  // closing or reloading the page with typing that won't be saved on the way out (a change on disk, a failed save,
+  // auto-save off): the browser asks, as the Files editor has it
+  useEffect(() => {
+    const ask = (e: BeforeUnloadEvent) => {
+      const c = cur.current;
+      if (!c || c.text === c.saved || (autoRef.current && !conflictRef.current && !errorRef.current)) return;
+      e.preventDefault();
+      e.returnValue = ""; // what older WebKit asks by
+    };
+    window.addEventListener("beforeunload", ask);
+    return () => window.removeEventListener("beforeunload", ask);
+  }, []);
   // the page hidden or closed: at once, sent so that it survives the page
   useEffect(() => {
     const away = () => {

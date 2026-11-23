@@ -15,7 +15,6 @@ import { QuickOpen } from "../components/QuickOpen";
 import { OpenInEditor } from "../components/OpenInEditor";
 import { NO_SEARCH, SearchOptions, SearchView } from "../components/SearchView";
 import { editorBridge, useCompletionStatus, useEditorStatus } from "../editorStatus";
-import { applyTextEdits } from "../textEdits";
 
 interface OpenFile {
   key: string;
@@ -46,8 +45,6 @@ const RETRY_MS = 4000;
 // how often the open files are held against the disk while the panel shows, for what the file watch doesn't report: a
 // directory git ignores (left unwatched on Linux, watch.py), node_modules, another machine writing to a network disk
 const POLL_MS = 2000;
-// a save sent as the page goes away (keepalive): browsers refuse a larger body there
-const KEEPALIVE_MAX = 60_000;
 
 // shown as itself unless the text was asked for last time, for that kind of file (someone writing Markdown keeps its
 // source), or the file is opened at a line
@@ -315,7 +312,7 @@ export function FilesPanel() {
       const run = (async () => {
         try {
           const body = { root: f.root, path: f.path, content: text, base_sha: shas.current.get(key) ?? f.sha, force: !!opts.force };
-          const res = await api.writeFile(f.pid, body, !!opts.keepalive && text.length < KEEPALIVE_MAX);
+          const res = await api.writeFile(f.pid, body, !!opts.keepalive);
           fails.current.delete(key);
           patch(key, { saved: text, sha: res.sha, mtime: res.mtime, size: res.size, diskChanged: false, gone: false, error: undefined });
           if (!opts.quiet) toast(`Saved ${basename(f.path)}`, "ok");
@@ -329,8 +326,8 @@ export function FilesPanel() {
           fails.current.set(key, n);
           if (!opts.quiet || n === 1) toast(`${basename(f.path)} not saved: ${e.message}`, "error");
           patch(key, { error: e.message });
-          // an auto-save keeps trying (the Save button shows meanwhile)
-          if (opts.quiet && autoRef.current && !opts.keepalive)
+          // an auto-save keeps trying (the Save button shows meanwhile), one as the page was hidden too: it may come back
+          if (opts.quiet && autoRef.current)
             timers.current.set(key, window.setTimeout(() => void saveRef.current(key, { quiet: true }), Math.min(RETRY_MS * 2 ** (n - 1), 60_000)));
           return false;
         }
@@ -406,34 +403,43 @@ export function FilesPanel() {
     [reconcile, patch],
   );
 
-  // A language server's edits in a file the editor doesn't show (a rename, a quick fix: lsp/client.ts). An open tab
-  // takes them in its text, and auto-save writes it (without, it stays unsaved, to look at first); a file that isn't
-  // open is read, changed and written back, refused if it changed on disk meanwhile.
+  // A language server's edits in a file the editor doesn't show (a rename, a quick fix: lsp/client.ts), which reads
+  // the file here and puts the new text back. An open tab takes it in its text, and auto-save writes it (without, it
+  // stays unsaved, to look at first); a file that isn't open is written, refused if it changed on disk meanwhile.
   useEffect(() => {
-    editorBridge.editFile = async (abs, edits) => {
+    const where = (abs: string) => {
+      const owner = [...roots].sort((a, b) => b.path.length - a.path.length).find((r) => abs === r.path || abs.startsWith(r.path + "/"));
+      if (!owner) throw new Error("outside the project");
+      return { root: owner.path, rel: abs.slice(owner.path.length + 1) };
+    };
+    editorBridge.readFile = async (abs) => {
       const f = openRef.current.find((x) => x.abs === abs && !x.external);
       if (f) {
         if (f.binary) throw new Error("not a text file");
-        const next = applyTextEdits(textOf(f), edits);
-        texts.current.set(f.key, next);
-        setOpen((all) => all.map((x) => (x.key === f.key ? { ...x, content: next } : x)));
-        if (autoRef.current && !f.diskChanged && !f.gone) schedule(f.key);
-        return next;
+        return { text: textOf(f), tab: true, sha: null };
       }
-      const owner = [...roots].sort((a, b) => b.path.length - a.path.length).find((r) => abs === r.path || abs.startsWith(r.path + "/"));
-      if (!owner) throw new Error("outside the project");
-      const rel = abs.slice(owner.path.length + 1);
+      const { root, rel } = where(abs);
       // a file that isn't there yet is made (a refactor that moves code to a new file writes into it)
-      const d = await api.file(pid, rel, owner.path).catch((e) => {
+      const d = await api.file(pid, rel, root).catch((e) => {
         if (e instanceof ApiError && e.status === 404) return null;
         throw e;
       });
-      if (d && (d.binary || d.content == null)) throw new Error("not a text file");
-      const next = applyTextEdits(d?.content ?? "", edits);
-      await api.writeFile(pid, { root: owner.path, path: rel, content: next, base_sha: d?.sha ?? null });
-      return next;
+      if (!d) return null;
+      if (d.binary || d.content == null) throw new Error("not a text file");
+      return { text: d.content, tab: false, sha: d.sha };
     };
-    return () => void (editorBridge.editFile = undefined);
+    editorBridge.writeFile = async (abs, text, sha) => {
+      const f = openRef.current.find((x) => x.abs === abs && !x.external);
+      if (f) {
+        texts.current.set(f.key, text);
+        setOpen((all) => all.map((x) => (x.key === f.key ? { ...x, content: text } : x)));
+        if (autoRef.current && !f.diskChanged && !f.gone) schedule(f.key);
+        return null;
+      }
+      const { root, rel } = where(abs);
+      return (await api.writeFile(pid, { root, path: rel, content: text, base_sha: sha })).sha;
+    };
+    return () => void (editorBridge.readFile = editorBridge.writeFile = undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pid, roots]);
 

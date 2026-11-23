@@ -262,12 +262,12 @@ TODO；需要你处理时，它会报告等你。harness、模型和 effort 在 
 | `lsp.commands` | `{}` | 按语言指定服务器，代替自动找到的那个：写一个程序（名字或路径，不带参数），或参数列表，例如 `{"c": "clangd", "python": ["pyright-langserver", "--stdio"]}`。支持的语言：`python`、`c`、`cpp`、`go`、`rust`、`typescript`、`javascript`（同一个服务器读两者；只写 `typescript` 也会用于 JavaScript）。 |
 | `lsp.python.typeCheckingMode` | `"standard"` | `off`、`basic`、`standard`、`strict`、`recommended` 或 `all`。 |
 | `ui.theme` | `"system"` | 不会被读取：侧边栏主题开关的选择由浏览器记住。 |
-| `ui.auto_save` | `true` | Files 编辑器，以及 Changes 里 diff 可编辑的一侧（按 agent 看和 Working tree），在你停止输入片刻（1 秒）后自动保存；切换到别的文件或面板、关掉标签页、离开页面时立即保存。编辑器工具栏里锁旁边的开关改的就是它。`false`：用 ⌘S 或保存按钮保存。无论开关如何，文件在此期间如果已在磁盘上被改过，都不会被覆盖，编辑器会先问你。 |
+| `ui.auto_save` | `true` | Files 编辑器，以及 Changes 里 diff 可编辑的一侧（按 agent 看和 Working tree），在你停止输入片刻（1 秒）后自动保存；切换到别的文件或面板、关掉标签页、离开页面时立即保存。编辑器工具栏里锁旁边的开关改的就是它。`false`：用 ⌘S 或保存按钮保存。无论开关如何，文件在此期间如果已在磁盘上被改过，都不会被覆盖，编辑器会先问你。二进制文件和已删除的文件，在 diff 里那一侧是只读的。 |
 | `ui.completion` | `true` | Files 编辑器的行内补全（见下文），设了 `completion.model` 才有。编辑器工具栏里的 ✦ 开关改的就是它。 |
 | `completion.model` | `""` | 边打字边给出代码建议的模型，走 `/v1/chat/completions`。`""` = 没有行内补全。 |
 | `completion.base_url` | `""` | 它的服务器，带不带 `/v1` 都行，写法同 `voice.base_url`；不会沿用 `voice` 的设置，两者相同也要写上。 |
 | `completion.api_key` | `""` | 以 `Authorization: Bearer …` 发送，为空时不发。和服务器一样是它自己的，不用 `voice.api_key`。`/api/meta` 只说明是否已设置。 |
-| `completion.max_per_minute` | `40` | 每分钟最多向模型发多少个请求（`0`：不限）。要低于服务器允许的量：某个网关对每个模型、每个 key 限 50 次/分钟，而且和用同一模型、同一 key 的其它东西共用。用到四分之三后不再预取；到上限后一分钟内不再给建议。服务器自己回 429（请求太频繁）时，按它给的时间暂停，✦ 开关上会显示。 |
+| `completion.max_per_minute` | `40` | 每分钟最多向模型发多少个请求（`0`：不限）。要低于服务器允许的量：某个网关对每个模型、每个 key 限 50 次/分钟，而且和用同一模型、同一 key 的其它东西共用。打字停顿（0.3 秒）时才发请求，已经在路上、可能给出答案的请求没回来之前不再发新的；用到四分之三后不再预取；到上限后一分钟内不再给建议。服务器自己回 429（请求太频繁）时，按它给的时间暂停，✦ 开关上会显示。 |
 | `completion.effort` | `"none"` | 发送的 `reasoning_effort`：建议要在一两秒内出来，所以取模型接受的最低档（gpt-6-luna 用 `none`，有的模型用 `minimal`）。模型不接受时会去掉它重问；`""` 表示不发送。 |
 | `completion.next_edit` | `true` | 下一处修改（见下文）：改完一处后，模型预计的文件里别处的下一处修改，标在它所在的位置。用同一个模型和服务器，只在 `completion.max_per_minute` 还有富余时才请求。`false`：只有光标处的建议。 |
 
@@ -280,7 +280,9 @@ C++ 用 clangd；Go 用 gopls；Rust 用 rust-analyzer；TypeScript 和 JavaScri
 自带的 TypeScript 一次只看一个文件。服务器支持的功能会出现在编辑器里：⌘ 点击或 F12 跳到定义，⇧F12 列出引用，
 F2 在所有用到某个符号的文件里重命名它，⌘. 给出快速修复，⇧⌥F 格式化（要服务器支持格式化：clangd、gopls、
 rust-analyzer、TypeScript 的服务器支持，basedpyright 不支持），⇧⌘O 列出文件里的符号。重命名会直接写入没打开的
-文件；已打开的文件只改编辑器里的内容，由自动保存写入。
+文件；已打开的文件只改编辑器里的内容，由自动保存写入。它要么改全部文件，要么一个都不改：有文件写不进去，或者某个
+文件在语言服务器读过之后又被改过，就会停下（磁盘上的文件被 agent 或 Atrium 写过，文件监听看到后会告诉语言服务器）。
+在发起重命名的文件里按 ⌘Z，其它文件也一起撤回，重做也一样。
 
 Files 面板支持 VS Code 的快捷键（Mac 以外用 Ctrl 代替 ⌘）：⌘P 按名字打开文件，⌘⇧F 在文件中查找，⌘B 隐藏或显示
 文件树（树上自己的按钮也可以），⌘⇧E 显示它，⌘W 关闭标签页，⌘⇧T 重新打开最后关掉的那个，⌃Tab 按最近显示的顺序在

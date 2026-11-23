@@ -1,7 +1,6 @@
 // Editor ↔ app glue that must not pull in Monaco (FilesPanel lives in the main bundle):
 // per-file language-server status for the status line, and hooks the lazy LSP client fills in.
 import { create } from "zustand";
-import type { LspTextEdit } from "./textEdits";
 
 export interface LspFileStatus {
   state: "connecting" | "ready" | "unavailable";
@@ -34,12 +33,15 @@ export const useEditorStatus = create<EditorStatusState>((set) => ({
 export const useCompletionStatus = create<{ busy: number; error: string | null }>(() => ({ busy: 0, error: null }));
 
 /** Filled in once the editor bundle has loaded: by the LSP client, and by the Files editor (its selection, for ⌘⇧F);
- *  and by the Files panel: `editFile` makes a language server's edits (a rename, a quick fix) in a file the editor
- *  doesn't show — an open tab's text, or the file on disk — and resolves to its new text. */
+ *  and by the Files panel, for a language server's edits (a rename, a quick fix) in a file the editor doesn't show:
+ *  `readFile` gives its text as the panel has it (an open tab's, else the file on disk with its sha; null: no such
+ *  file yet), `writeFile` puts a new text where that was found (the tab, which auto-save writes; else the disk, over
+ *  `sha`: refused if the file changed since) and resolves to the sha written (null for a tab). */
 export const editorBridge: {
   closeFile?: (path: string) => void;
   selectedText?: () => string | undefined;
   cursor?: () => { line: number; column: number } | undefined; // where "Open in VS Code" goes
   trigger?: (action: string) => void; // runs one of the editor's actions in it (⌘⇧P: its command palette)
-  editFile?: (path: string, edits: LspTextEdit[]) => Promise<string>;
+  readFile?: (path: string) => Promise<{ text: string; tab: boolean; sha: string | null } | null>;
+  writeFile?: (path: string, text: string, sha: string | null) => Promise<string | null>;
 } = {};

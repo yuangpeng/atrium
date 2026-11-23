@@ -19,7 +19,9 @@ import { Related, relatedSnippets } from "./related";
 
 const BEFORE_CHARS = 6000; // of the file before the cursor sent, in whole lines (as much as complete.py takes)
 const AFTER_CHARS = 2000;
-const PAUSE = 100; // ms without typing before asking, on top of Monaco's own 50
+// ms without typing before asking, on top of Monaco's own 50: typing on at a usual pace (200–300 ms a key) asks at the
+// pauses, not at every key (each a request to the model, of completion.max_per_minute)
+const PAUSE = 250;
 const SKIP = new Set(["plaintext", "markdown"]); // prose
 const CLOSERS_ONLY = /^[\s)\]}>'"`;,.:]*$/; // what may follow the cursor on its line; else it is in the middle of the code
 // files that hold secrets, never sent to the model (as complete.py's SECRET_FILES)

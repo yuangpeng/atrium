@@ -5,6 +5,8 @@ import type * as Monaco from "monaco-editor";
 import { monaco } from "../monaco-setup";
 import { useApp } from "../store";
 import { editorBridge, useEditorStatus } from "../editorStatus";
+import { applyTextEdits } from "../textEdits";
+import { basename } from "../util";
 
 type Json = any; // LSP payloads, read defensively
 
@@ -377,36 +379,151 @@ function editsOf(edit: Json): FileEdits {
 const shownModel = (uri: string) =>
   [...fileEditors].map((e) => e.getModel()).find((m): m is Monaco.editor.ITextModel => !!m && !m.isDisposed() && m.uri.toString() === uri) ?? null;
 
-/** Makes a WorkspaceEdit: where the Files editor shows the file, in the editor (undo takes it back); else in the file
- *  itself, through the Files panel (an open tab's text, or the file on disk), and in any hidden copy of it (a peek,
- *  what the language server was told). `skip`: the file whose edits Monaco makes itself (the one a rename or a quick
- *  fix was asked in). `files`: the files changed. */
-async function applyEdit(edit: Json, skip?: string): Promise<{ applied: boolean; failureReason?: string; files: number }> {
+/** One file of a WorkspaceEdit: its text before and after, and where it is (shown in the editor; else as the Files
+ *  panel has it, its tab or the disk, `sha` what a write there goes over). */
+interface FileChange {
+  uri: string;
+  path: string;
+  model: Monaco.editor.ITextModel | null;
+  edits: Json[];
+  before: string;
+  after: string;
+  sha: string | null;
+}
+
+/** A model's text made `text`, as one edit of what differs (undo takes it back; the cursor stays where it can). */
+function setText(model: Monaco.editor.ITextModel, text: string) {
+  const old = model.getValue();
+  let a = 0;
+  while (a < old.length && a < text.length && old[a] === text[a]) a++;
+  let b = 0;
+  while (b < old.length - a && b < text.length - a && old[old.length - 1 - b] === text[text.length - 1 - b]) b++;
+  const range = monaco.Range.fromPositions(model.getPositionAt(a), model.getPositionAt(old.length - b));
+  model.pushEditOperations([], [{ range, text: text.slice(a, text.length - b), forceMoveMarkers: true }], () => null);
+}
+
+/** Puts a file's new text where it is; `exact`: the server's own edits, for the editor (they keep its cursor). Any
+ *  hidden copy of the file (a peek, what a server was told) follows. */
+async function putText(c: FileChange, text: string, exact?: Json[]) {
+  if (c.model) {
+    if (c.model.isDisposed()) throw new Error("its editor was closed");
+    if (exact) c.model.pushEditOperations([], exact.map((e) => ({ range: toRange(e.range), text: e.newText, forceMoveMarkers: true })), () => null);
+    else setText(c.model, text);
+    return;
+  }
+  if (!editorBridge.writeFile) throw new Error("the Files panel isn't open");
+  c.sha = await editorBridge.writeFile(c.path, text, c.sha);
+  const hidden = monaco.editor.getModel(monaco.Uri.parse(c.uri));
+  if (hidden && !hidden.isDisposed() && hidden.getValue() !== text) hidden.pushEditOperations([], [{ range: hidden.getFullModelRange(), text }], () => null);
+}
+
+/** The text a file has now, where `c` found it. */
+async function textNow(c: FileChange): Promise<string | null> {
+  if (c.model) return c.model.isDisposed() ? null : c.model.getValue();
+  const r = await editorBridge.readFile?.(c.path);
+  if (r && !r.tab) c.sha = r.sha;
+  return r ? r.text : null;
+}
+
+/** Makes a WorkspaceEdit, all of it or none: every file is read and its new text made first, then each is changed —
+ *  where the Files editor shows it, in the editor (undo takes it back); else through the Files panel (an open tab's
+ *  text, or the file on disk). A file that can't be changed takes back those changed before it.
+ *  `skip`: the file whose edits Monaco makes itself (the one a rename or a quick fix was asked in). `expect`: what
+ *  every edit replaces (a rename's old name); a file where it doesn't is one the server knows as it was, not as it is,
+ *  and nothing is changed. `changes`: the files changed. */
+async function applyEdit(edit: Json, skip?: string, expect?: string): Promise<{ applied: boolean; failureReason?: string; changes: FileChange[] }> {
   let byFile: FileEdits;
   try {
     byFile = editsOf(edit);
   } catch (e: any) {
-    return { applied: false, failureReason: e.message, files: 0 };
+    return { applied: false, failureReason: e.message, changes: [] };
   }
-  let files = 0;
+  const changes: FileChange[] = [];
   for (const [uri, es] of byFile) {
     if (uri === skip || !es.length) continue;
-    const u = monaco.Uri.parse(uri);
+    const path = monaco.Uri.parse(uri).path;
     try {
-      const shown = shownModel(uri);
-      if (shown) shown.pushEditOperations([], es.map((e) => ({ range: toRange(e.range), text: e.newText, forceMoveMarkers: true })), () => null);
+      const model = shownModel(uri);
+      let before = "";
+      let sha: string | null = null;
+      if (model) before = model.getValue();
       else {
-        if (!editorBridge.editFile) throw new Error("the Files panel isn't open");
-        const text = await editorBridge.editFile(u.path, es);
-        const hidden = monaco.editor.getModel(u);
-        if (hidden && !hidden.isDisposed() && hidden.getValue() !== text) hidden.pushEditOperations([], [{ range: hidden.getFullModelRange(), text }], () => null);
+        if (!editorBridge.readFile) throw new Error("the Files panel isn't open");
+        const r = await editorBridge.readFile(path);
+        before = r?.text ?? "";
+        sha = r && !r.tab ? r.sha : null;
       }
-      files++;
+      if (expect !== undefined && es.some((e: Json) => textIn(before, e.range) !== expect))
+        throw new Error("it changed since the language server last read it; try again in a moment");
+      changes.push({ uri, path, model, edits: es, before, after: applyTextEdits(before, es), sha });
     } catch (e: any) {
-      return { applied: false, failureReason: `${u.path}: ${e.message}`, files };
+      return { applied: false, failureReason: `${path}: ${e.message}; nothing was changed`, changes: [] };
     }
   }
-  return { applied: true, files };
+  const made: FileChange[] = [];
+  for (const c of changes) {
+    try {
+      await putText(c, c.after, c.edits);
+      if (c.model) c.after = c.model.getValue(); // as the editor made it (its line ends), what an undo looks for
+      made.push(c);
+    } catch (e: any) {
+      const kept = await moveTo(made, "before");
+      const left = kept.length ? `; ${kept.map((x) => basename(x.path)).join(", ")} kept the change (changed meanwhile)` : "; nothing was changed";
+      return { applied: false, failureReason: `${c.path}: ${e.message}${left}`, changes: [] };
+    }
+  }
+  return { applied: true, changes };
+}
+
+/** Files of an edit taken back (`before`) or made again (`after`), each only if it is as the edit left it (or found
+ *  it): the ones changed meanwhile are left as they are, and returned. */
+async function moveTo(changes: FileChange[], to: "before" | "after"): Promise<FileChange[]> {
+  const kept: FileChange[] = [];
+  for (const c of [...changes].reverse()) {
+    try {
+      const now = await textNow(c);
+      if (now === c[to]) continue;
+      if (now !== (to === "before" ? c.after : c.before)) throw new Error("changed meanwhile");
+      await putText(c, c[to]);
+    } catch {
+      kept.push(c);
+    }
+  }
+  return kept;
+}
+
+/** The text an LSP range covers in `text`. */
+function textIn(text: string, range: Json): string {
+  const marked = applyTextEdits(text, [{ range, newText: "\u0000" }]);
+  const at = marked.indexOf("\u0000");
+  return text.slice(at, at + (text.length - (marked.length - 1)));
+}
+
+// A rename's other files go back with an undo in the file it was made in, and come again with a redo (Monaco's undo
+// is the file's own: the rename's edit there is one step of it, the others follow that step).
+const renamed = new WeakMap<Monaco.editor.ITextModel, Monaco.IDisposable>();
+function linkUndo(model: Monaco.editor.ITextModel, changes: FileChange[]) {
+  renamed.get(model)?.dispose();
+  const before = model.getAlternativeVersionId();
+  let after: number | null = null;
+  const sub = model.onDidChangeContent((e) => {
+    const v = model.getAlternativeVersionId();
+    if (after === null) {
+      if (!e.isUndoing && !e.isRedoing) after = v; // the rename's own edit, as Monaco makes it
+      return;
+    }
+    const to = e.isUndoing && v === before ? "before" : e.isRedoing && v === after ? "after" : null;
+    if (!to) return;
+    void moveTo(changes, to).then((kept) => {
+      const n = changes.length - kept.length;
+      const what = to === "before" ? "Rename undone" : "Rename redone";
+      if (kept.length) useApp.getState().toast(`${what} in ${n + 1} files; ${kept.map((c) => basename(c.path)).join(", ")} changed meanwhile, left as it is`, "error");
+      else useApp.getState().toast(`${what} in ${n + 1} files`, "ok");
+    });
+  });
+  const gone = model.onWillDispose(() => link.dispose());
+  const link = { dispose: () => (sub.dispose(), gone.dispose(), renamed.delete(model)) };
+  renamed.set(model, link);
 }
 
 conn.onApplyEdit = (id, edit) => void applyEdit(edit).then(({ applied, failureReason }) => conn.answerEdit(id, { applied, failureReason }));
@@ -635,19 +752,25 @@ function registerProviders(language: string, first: Server) {
         if (!doc) return { edits: [], rejectReason: "No language server for this file" };
         const r = await conn.request(doc.server, "textDocument/rename", { ...docPos(doc, position), newName }, token);
         if (!r) return { edits: [], rejectReason: "Nothing to rename here" };
-        // the other files first (their tabs, or the files themselves); Monaco makes this one's edits, so undo has them
+        // the other files first (their tabs, or the files themselves), all or none; Monaco makes this one's edits, so
+        // undo has them, and takes the others back with them. Every edit replaces the old name: in a file the server
+        // knows as it was (written since, and not yet heard of), it wouldn't
         const uri = model.uri.toString();
-        const done = await applyEdit(r, uri);
-        if (!done.applied) {
-          useApp.getState().toast(`Rename stopped: ${done.failureReason}`, "error");
-          return { edits: [], rejectReason: done.failureReason };
-        }
-        if (done.files) useApp.getState().toast(`Renamed in ${done.files + 1} files`, "ok");
         let own: Json[] = [];
         try {
           own = editsOf(r).get(uri) ?? [];
         } catch {
-          /* told above */
+          /* told below */
+        }
+        const old = own.length ? model.getValueInRange(toRange(own[0].range)) : undefined;
+        const done = await applyEdit(r, uri, old && own.every((e) => model.getValueInRange(toRange(e.range)) === old) ? old : undefined);
+        if (!done.applied) {
+          useApp.getState().toast(`Rename stopped: ${done.failureReason}`, "error");
+          return { edits: [], rejectReason: done.failureReason };
+        }
+        if (done.changes.length) {
+          useApp.getState().toast(`Renamed in ${done.changes.length + 1} files`, "ok");
+          linkUndo(model, done.changes);
         }
         return { edits: own.map((e) => ({ resource: model.uri, versionId: undefined, textEdit: { range: toRange(e.range), text: e.newText } })) };
       },

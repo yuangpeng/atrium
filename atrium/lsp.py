@@ -18,6 +18,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import sys
 import time
@@ -153,6 +154,9 @@ CLIENT_CAPABILITIES: dict[str, Any] = {
         "workspaceEdit": {"documentChanges": True},
         "executeCommand": {},
         "didChangeConfiguration": {"dynamicRegistration": True},
+        # files changed on disk (an agent's writes, Atrium's own): a server that registers for them hears of them, so that
+        # what it knows of a file no editor has open is the file as it is (a rename across files is made from that)
+        "didChangeWatchedFiles": {"dynamicRegistration": True, "relativePatternSupport": True},
         "semanticTokens": {"refreshSupport": True},
     },
     "window": {"workDoneProgress": True},
@@ -218,6 +222,67 @@ CLIENT_CAPABILITIES: dict[str, Any] = {
 }
 
 
+def _glob_body(pattern: str) -> str:
+    out, i = [], 0
+    while i < len(pattern):
+        c = pattern[i]
+        if pattern.startswith("**/", i):
+            out.append("(?:.*/)?")
+            i += 3
+            continue
+        if pattern.startswith("**", i):
+            out.append(".*")
+            i += 2
+            continue
+        if c == "{" and (j := pattern.find("}", i)) > i:
+            out.append("(?:" + "|".join(_glob_body(a) for a in pattern[i + 1:j].split(",")) + ")")
+            i = j + 1
+            continue
+        if c == "[" and (j := pattern.find("]", i)) > i:
+            body = pattern[i + 1:j]
+            out.append("[" + ("^" + body[1:] if body.startswith("!") else body) + "]")
+            i = j + 1
+            continue
+        out.append("[^/]*" if c == "*" else "[^/]" if c == "?" else re.escape(c))
+        i += 1
+    return "".join(out)
+
+
+def _glob(pattern: str) -> re.Pattern[str]:
+    """An LSP glob (``**/*.{py,pyi}``): ``*`` and ``?`` within a path's segment, ``**`` across them, ``{a,b}``, ``[…]``."""
+    return re.compile(_glob_body(pattern) + r"\Z")
+
+
+Watcher = tuple[re.Pattern[str], "str | None", int]  # a glob, the folder it is relative to, the kinds (1 made, 2 changed, 4 deleted)
+
+
+def _watchers(watchers: list[Any], root: str) -> list[Watcher]:
+    """What a server registered for workspace/didChangeWatchedFiles: globs, plain or relative to a folder."""
+    out: list[Watcher] = []
+    for w in watchers:
+        g, base = w.get("globPattern"), None
+        if isinstance(g, dict):  # a RelativePattern: its baseUri is a URI or a workspace folder
+            b = g.get("baseUri")
+            b = b.get("uri") if isinstance(b, dict) else b
+            base = uri_to_path(b) if b else root
+            g = g.get("pattern")
+        if isinstance(g, str) and g:
+            out.append((_glob(g), base, int(w.get("kind") or 7)))
+    return out
+
+
+def _watched(watchers: list[Watcher], kind: int, path: str, root: str) -> bool:
+    for rx, base, kinds in watchers:
+        if not kinds & (1 << (kind - 1)):
+            continue
+        if base is not None:
+            if path.startswith(base + os.sep) and rx.match(path[len(base) + 1:]):
+                return True
+        elif rx.match(path) or (path.startswith(root + os.sep) and rx.match(path[len(root) + 1:])):
+            return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # one server process
 # ---------------------------------------------------------------------------
@@ -240,6 +305,7 @@ class LspServer:
         self._write_lock = asyncio.Lock()
         self._tasks: list[asyncio.Task] = []
         self._commander: "LspClient | None" = None  # the tab that last ran a command: its edits (applyEdit) go there
+        self._watched: dict[str, list[Watcher]] = {}  # registration id -> the files it wants to hear about
         self.last_used = time.time()
 
     @property
@@ -409,9 +475,15 @@ class LspServer:
         elif method == "workspace/semanticTokens/refresh":
             for c in list(self.clients):
                 c.post({"op": "refresh", "key": self.key})
-        elif method in ("window/workDoneProgress/create", "client/registerCapability", "client/unregisterCapability",
-                        "window/showMessageRequest", "workspace/diagnostic/refresh", "workspace/inlayHint/refresh",
-                        "workspace/codeLens/refresh"):
+        elif method == "client/registerCapability":
+            for reg in params.get("registrations") or []:
+                if reg.get("method") == "workspace/didChangeWatchedFiles":
+                    self._watched[str(reg.get("id"))] = _watchers((reg.get("registerOptions") or {}).get("watchers") or [], self.root)
+        elif method == "client/unregisterCapability":
+            for reg in params.get("unregisterations") or params.get("unregistrations") or []:  # (the spec's spelling)
+                self._watched.pop(str(reg.get("id")), None)
+        elif method in ("window/workDoneProgress/create", "window/showMessageRequest", "workspace/diagnostic/refresh",
+                        "workspace/inlayHint/refresh", "workspace/codeLens/refresh"):
             result = None
         else:
             error = {"code": -32601, "message": f"{method} is not supported"}
@@ -435,6 +507,18 @@ class LspServer:
                 c.post({"op": "rpc", "key": self.key, "msg": msg})
         elif method == "window/showMessage":
             log.info("%s: %s", self.key, (msg.get("params") or {}).get("message"))
+
+    async def files_changed(self, changes: list[tuple[int, str]]) -> None:
+        """Files changed on disk (1 made, 2 changed, 3 deleted): those the server registered for, under its root."""
+        watchers = [w for ws in self._watched.values() for w in ws]
+        if not self.alive or not watchers:
+            return
+        events = [{"uri": path_to_uri(path), "type": kind} for kind, path in changes if _watched(watchers, kind, path, self.root)]
+        if events:
+            try:
+                await self._write({"jsonrpc": "2.0", "method": "workspace/didChangeWatchedFiles", "params": {"changes": events}})
+            except ConnectionError:
+                pass
 
     # ---- from browser tabs ----------------------------------------------------
     async def from_client(self, client: "LspClient", msg: dict[str, Any]) -> None:
@@ -536,6 +620,11 @@ class LspRegistry:
     def forget(self, srv: LspServer) -> None:
         if self._servers.get(srv.key) is srv:
             del self._servers[srv.key]
+
+    async def files_changed(self, changes: list[tuple[int, str]]) -> None:
+        """Files changed on disk, as the watcher saw them or as Atrium wrote them: to the servers that asked."""
+        if changes:
+            await asyncio.gather(*(s.files_changed(changes) for s in list(self._servers.values())))
 
     async def _reap(self) -> None:
         while True:
