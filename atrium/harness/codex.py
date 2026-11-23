@@ -1014,7 +1014,8 @@ class CodexHarness(Harness):
         self._list_warned = False
         self._scanned: dict[str, list[dict[str, Any]]] = {}  # project -> the threads only a scan of every rollout found
         self._scan_lock = asyncio.Lock()
-        self._spawns_cache: dict[str, tuple[int, list[tuple[str, str]]]] = {}  # rollout -> (size, [(sub-agent thread, spawn call)])
+        self._spawns_cache: dict[str, _SpawnScan] = {}  # rollout -> what's read of it
+        self._spawns_lock = threading.Lock()
         self._thread_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}  # thread/read, briefly
         self._compaction_cache: dict[str, _CompactionScan] = {}  # rollout path -> what's read of it
         self._compaction_lock = threading.Lock()
@@ -1230,27 +1231,11 @@ class CodexHarness(Harness):
         return out
 
     def _spawns(self, path: str) -> list[tuple[str, str]]:
-        """(sub-agent thread, spawning call) for each sub-agent a rollout started, in order."""
-        try:
-            size = os.path.getsize(path)
-        except OSError:
-            return []
-        hit = self._spawns_cache.get(path)
-        if hit and hit[0] == size:
-            return hit[1]
-        out: list[tuple[str, str]] = []
-        with open(path, encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                if '"SubAgentActivity"' not in line:
-                    continue
-                try:
-                    it = (json.loads(line).get("payload") or {}).get("item") or {}
-                except (json.JSONDecodeError, AttributeError):
-                    continue
-                if it.get("type") == "SubAgentActivity" and it.get("kind") == "started" and it.get("agent_thread_id"):
-                    out.append((it["agent_thread_id"], it.get("id") or ""))
-        self._spawns_cache[path] = (size, out)
-        return out
+        """(sub-agent thread, spawning call) for each sub-agent a rollout started, in order: read on from where the last
+        listing stopped (a running thread's rollout grows between any two)."""
+        with self._spawns_lock:
+            scan = tail_scan(self._spawns_cache, Path(path), _SpawnScan)
+            return list(scan.found) if scan else []
 
     async def _read_thread(self, thread_id: str) -> dict[str, Any] | None:
         hit = self._thread_cache.get(thread_id)
@@ -1913,6 +1898,25 @@ def _epoch(v: Any) -> float | None:
 
 def _is_compact(it: Item) -> bool:
     return it["kind"] == "system" and it.get("subtype") == "compact"
+
+
+class _SpawnScan(TailScan):
+    """The sub-agents a rollout started, in order: (their thread, the spawning call)."""
+
+    def __init__(self, ino: int):
+        super().__init__(ino)
+        self.found: list[tuple[str, str]] = []
+
+    def needle(self) -> bytes | None:
+        return b'"SubAgentActivity"'
+
+    def line(self, raw: bytes) -> None:
+        try:
+            it = (json.loads(raw).get("payload") or {}).get("item") or {}
+        except (ValueError, AttributeError):
+            return
+        if it.get("type") == "SubAgentActivity" and it.get("kind") == "started" and it.get("agent_thread_id"):
+            self.found.append((it["agent_thread_id"], it.get("id") or ""))
 
 
 class _CompactionScan(TailScan):

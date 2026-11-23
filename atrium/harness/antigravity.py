@@ -2034,6 +2034,7 @@ class AntigravityHarness(Harness):
     def __init__(self) -> None:
         self._prompts: dict[str, str] = {}  # transcript -> its first message
         self._cwds: dict[str, str | None] = {}  # session id -> cwd (index)
+        self._indexes: dict[str, tuple[tuple[int, int, int], dict[str, Any]]] = {}  # index file -> (inode, size, mtime; what it says)
         self._runs: dict[str, dict[str, _Run]] = {}  # session id -> the latest runs of its runtime (RUNS_KEPT), by id
 
     def available(self) -> tuple[bool, str | None]:
@@ -2099,13 +2100,25 @@ class AntigravityHarness(Harness):
         return await asyncio.to_thread(self._list, roots)
 
     def _list(self, roots: list[str]) -> list[SessionSummary]:
+        # every project's sessions are indexed in one directory, listed for each project: an index is read again only
+        # once it changed, and each directory resolved once (hundreds of sessions, a dozen roots)
         real = [os.path.realpath(r) for r in roots]
+        reals: dict[str, str] = {}
+        before, now = self._indexes, {}
         out: list[SessionSummary] = []
         for f in (ag_home() / "sessions").glob("*.json"):
             sid = f.stem
-            meta = read_index(sid)
+            try:
+                fst = f.stat()
+            except OSError:
+                continue
+            sig = (fst.st_ino, fst.st_size, fst.st_mtime_ns)
+            hit = before.get(f.name)
+            meta = hit[1] if hit and hit[0] == sig else read_index(sid)
+            now[f.name] = (sig, meta)
             cwd = meta.get("cwd")
-            if not cwd or not any(_inside(cwd, r) for r in real):
+            rc = (reals.get(cwd) or reals.setdefault(cwd, os.path.realpath(cwd))) if cwd else ""
+            if not rc or not any(rc == r or rc.startswith(r.rstrip(os.sep) + os.sep) for r in real):
                 continue
             path = transcript_file(sid)
             try:
@@ -2119,6 +2132,7 @@ class AntigravityHarness(Harness):
                 id=sid, harness=self.id, title=meta.get("title") or short(prompt, 80) or "Untitled", updated_at=st.st_mtime,
                 created_at=meta.get("created_at"), first_prompt=prompt, cwd=cwd, size=st.st_size, transcript=str(path),
             ))
+        self._indexes = now
         return out
 
     def _first_prompt(self, path: Path) -> str:
