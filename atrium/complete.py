@@ -2,8 +2,9 @@
 Tab taking it.
 
 A model behind an OpenAI-compatible ``/v1/chat/completions`` (``completion`` in settings.json: its own server and key)
-gets the file around the cursor, the cursor marked, and writes the cursor's line from its start, completed, with the
-lines that should follow it. What it adds there is the suggestion (``suggestion``), cut
+gets the file around the cursor, the cursor marked, the human's recent edits in it, and the code of their other open
+files that looks like it (the page picks it, editor/related.ts), and writes the cursor's line from its start,
+completed, with the lines that should follow it. What it adds there is the suggestion (``suggestion``), cut
 where it has enough: at the end of the line when there is code after the cursor, else at the end of the statement or
 block the cursor is in (``MAX_LINES`` at most), and without what it repeats of the code after the cursor.
 
@@ -34,6 +35,7 @@ from typing import Any
 
 import httpx
 
+from .capture import CaptureContext, capture
 from .config import config
 from .voice import endpoint
 
@@ -49,6 +51,8 @@ MAX_JOBS = 16  # answers kept per file
 MAX_RUNNING = 3  # requests to the model at once per file: beyond, the oldest is stopped
 FIRST_GRACE = 0.15  # s: a suggestion's first line is sent alone when the rest isn't there this long after it
 CURSOR = "<|cursor|>"
+COMPLETION_SESSION = "completion"  # what its model calls are recorded under (capture.py), for the Requests tab's menu
+KEEP_CAPTURED = 300  # of those, the latest: it calls often and is looked at seldom, and would push the agents' calls out
 SKIP_LANGUAGES = {"plaintext", "markdown"}  # prose: no suggestions
 # files that hold secrets, never sent to the model (editor/completion.ts has the same)
 SECRET_FILES = re.compile(
@@ -91,6 +95,8 @@ _OPENS = re.compile(r"(?:[{(\[:]|=>|->|\bdo|\bthen|\belse|\\)\s*(?://.*|#.*)?$")
 # a line that goes on in the next: a comma, an operator, a dot
 _GOES_ON = re.compile(r"(?:[,=+\-*/%&|^<>?.]|\band|\bor|\bnot)\s*$")
 # a line that starts by closing one
+# a line that still goes on at the cursor: after an operator, a comma, a dot, a keyword that takes what follows
+_EXPECTS = re.compile(r"(?:[,=+\-*/%&|^<>?.!]|\b(?:and|or|not|is|in|of|return|await|yield|throw|new|typeof|instanceof|as|lambda|assert|raise|del)\b)\s*$")
 _CLOSES = re.compile(r"\s*(?:[)\]}]|end\b|fi\b|done\b|esac\b|</)")
 # what may follow the cursor on its line for a suggestion to go in before it: closing brackets, quotes, punctuation
 _CLOSERS_ONLY = re.compile(r"[\s)\]}>'\"`;,.:]*")
@@ -133,20 +139,48 @@ def _added(out: str, line_before: str, final: bool) -> str | None:
     if not lb:  # the cursor after indentation: the reply's own, less what is there already
         lead = len(out) - len(head)
         return out[min(lead, len(line_before)):]
-    # it didn't repeat the line: all of it is new. Indented, it is the next line's (a model that wrote only what follows
-    # a finished line): on a line of its own
-    return "\n" + out if re.match(r"(?: {2,}|\t)\S", out) else out
+    # it didn't repeat the line: all of it is new. Indented, after a finished line, it is the next line's (a model that
+    # wrote only what follows the line): on a line of its own. After one that goes on (`return `, `x = `, `f(a, `), it is
+    # that line's rest (a model that wrote the indentation of the line and not the line)
+    if re.match(r"(?: {2,}|\t)\S", out):
+        return out.lstrip(" \t") if _EXPECTS.search(line_before) else "\n" + out
+    return out
 
 
-def suggestion(out: str, line_before: str, after: str, final: bool) -> str | None:
+def _unquoted(body: str, line_before: str, done: bool) -> str:
+    """A reply whose first line is written as Markdown's inline code (`...`), as some models do: without the
+    backticks. Not a template literal: the cursor's line repeated in them, or a statement ended in them, gives it away."""
+    line, nl, rest = body.partition("\n")
+    s = line.strip()
+    if not (nl or done) or len(s) < 3 or s[0] != "`" or s[-1] != "`":
+        return body
+    inner, lb = s[1:-1], line_before.strip()
+    if (lb and inner.strip().startswith(lb)) or inner.rstrip().endswith(";"):
+        return inner + nl + rest
+    return body
+
+
+def _unrepeated(body: str, above: list[str]) -> str:
+    """The reply without the lines above the cursor's that it starts by writing again: a model that rewrites the
+    function from its signature on (gpt-4.1 and the like do, told not to). ``above``: the lines before the cursor's."""
+    lines = body.split("\n")
+    for k in range(min(len(above), len(lines) - 1), 0, -1):  # the longest run, complete lines only
+        head = [x.strip() for x in lines[:k]]
+        if any(head) and head == [x.strip() for x in above[-k:]]:
+            return "\n".join(lines[k:])
+    return body
+
+
+def suggestion(out: str, line_before: str, after: str, final: bool, above: list[str] | None = None) -> str | None:
     """The suggestion in the model's reply ``out`` so far, for a cursor with ``line_before`` before it on its line and
-    ``after`` after it; None while more of the reply is needed. ``final``: the reply is complete."""
+    ``after`` after it, ``above`` the lines before its line; None while more of the reply is needed. ``final``: the
+    reply is complete."""
     unfenced = _unfenced(out)
     if unfenced is None:
         return None if not final else ""
     body, closed = unfenced
     done = final or closed
-    added = _added(body, line_before, done)
+    added = _added(_unrepeated(_unquoted(body, line_before, done), above or []), line_before, done)
     if added is None:
         return None
     line_after, _, rest = after.partition("\n")
@@ -163,14 +197,14 @@ def suggestion(out: str, line_before: str, after: str, final: bool) -> str | Non
     return _block(added, line_before, rest, done)
 
 
-def first_line(out: str, line_before: str, after: str) -> str | None:
+def first_line(out: str, line_before: str, after: str, above: list[str] | None = None) -> str | None:
     """The suggestion's first line, once the reply has it whole, as long as more may follow: the reply's first line of
     code at the end of a line (the line's rest when it has one, else the next line). None: not yet, or none."""
     line_after, _, rest = after.partition("\n")
     unfenced = _unfenced(out)
     if line_after.strip() or unfenced is None:
         return None
-    added = _added(unfenced[0], line_before, unfenced[1])
+    added = _added(_unrepeated(_unquoted(unfenced[0], line_before, unfenced[1]), above or []), line_before, unfenced[1])
     if not added or "\n" not in added:
         return None
     lines = added.split("\n")[:-1]  # the complete ones
@@ -229,6 +263,44 @@ def _block(added: str, line_before: str, rest: str, done: bool) -> str | None:
             break
     text = "\n".join(out).rstrip()
     return text if text.strip() else ""
+
+
+RELATED_CHARS = 2500  # of code from other open files
+EVENTS_CHARS = 3000  # of the recent edits sent with a request
+
+
+def related_text(related: list[Any]) -> str:
+    """Code from the other files open in the editor that looks like the code at the cursor (the page picks it,
+    editor/related.ts), each under its name in the project."""
+    parts: list[str] = []
+    size = 0
+    for r in related[:2]:
+        text = str(r.get("text") or "") if isinstance(r, dict) else ""
+        label = str(r.get("label") or "") if isinstance(r, dict) else ""
+        if not text.strip() or SECRET_FILES.search(label.rsplit("/", 1)[-1]):
+            continue
+        text = text[: RELATED_CHARS - size]
+        size += len(text)
+        parts.append(f"--- {label}\n{text}")
+        if size >= RELATED_CHARS:
+            break
+    return "\n".join(parts)
+
+
+def events_text(events: list[Any]) -> str:
+    """The recent edits, as the page sends them ({line, old, new}: lines changed, from ``line``), oldest first, as
+    diffs: the latest kept whole when they are too long together."""
+    parts: list[str] = []
+    for ev in events[-6:]:
+        if not isinstance(ev, dict):
+            continue
+        old = [f"-{x}" for x in str(ev.get("old") or "").split("\n")][:20] if ev.get("old") else []
+        new = [f"+{x}" for x in str(ev.get("new") or "").split("\n")][:20] if ev.get("new") else []
+        if old or new:
+            parts.append(f"@@ line {int(ev.get('line') or 0)} @@\n" + "\n".join(old + new))
+    while parts and sum(len(p) + 1 for p in parts) > EVENTS_CHARS:
+        parts.pop(0)
+    return "\n".join(parts)
 
 
 # ---- the requests ------------------------------------------------------------------------------------------------
@@ -311,14 +383,50 @@ async def warm() -> None:
     if not (s.get("model") and s["base_url"]) or time.monotonic() - _used < WARM_SECONDS:
         return
     _used = time.monotonic()
+    url = endpoint(s["base_url"], "/models")
+    if await capture.warm(url, _auth(s)):  # the calls go out through the capture proxy: its connection is the one to open
+        return
     try:
-        await _http().head(endpoint(s["base_url"], "/models"), headers=_auth(s), timeout=10)
+        await _http().head(url, headers=_auth(s), timeout=10)
     except httpx.HTTPError:
         pass
 
 
-def _payload(s: dict[str, Any], label: str, language: str, before: str, after: str, line_rest: str) -> dict[str, Any]:
+_contexts: dict[str, CaptureContext] = {}  # project -> its route into the capture
+_trimmed: dict[str, float] = {}  # project -> when its recorded calls were last trimmed
+_trims: set[asyncio.Task[None]] = set()
+
+
+def _url(pid: str, s: dict[str, Any]) -> str:
+    """Where a request goes: through Atrium's capture proxy, recorded for the Requests tab (under COMPLETION_SESSION),
+    or, capture off, straight to the server."""
+    base = endpoint(s["base_url"], "")
+    context = _contexts.get(pid)
+    if context is None:
+        context = _contexts[pid] = CaptureContext(pid, lambda: COMPLETION_SESSION, lambda _sid: None, oneshot=True)
+    return (context.base_url("completion", base) or base) + "/chat/completions"
+
+
+def _trim(pid: str) -> None:
+    """Its recorded calls but the latest KEEP_CAPTURED gone, every half minute at most."""
+    now = time.monotonic()
+    if now - _trimmed.get(pid, 0.0) < 30:
+        return
+    _trimmed[pid] = now
+    task = asyncio.get_running_loop().create_task(capture.trim(pid, COMPLETION_SESSION, KEEP_CAPTURED))
+    _trims.add(task)
+    task.add_done_callback(_trims.discard)
+
+
+def _payload(s: dict[str, Any], label: str, language: str, before: str, after: str, line_rest: str, edits: str = "",
+             related: str = "") -> dict[str, Any]:
+    """``edits``: the human's recent edits in the file, as diffs: what they are doing (a name just changed is the one
+    to use). ``related``: code of the other files they have open, like the code at the cursor (the names it uses, the
+    way it does things). Both after the code, so that what comes before stays the same from one request to the next (a
+    server's prompt cache keeps it)."""
     tokens = 120 if line_rest.strip() else MAX_TOKENS
+    others = f"\n\nCode from other files open in the editor, which may help (not part of this file):\n{related}" if related else ""
+    recent = f"\n\nTheir recent edits in this file, oldest first:\n{edits}" if edits else ""
     p: dict[str, Any] = {
         "model": s["model"],
         "stream": True,
@@ -326,7 +434,7 @@ def _payload(s: dict[str, Any], label: str, language: str, before: str, after: s
         "max_completion_tokens": tokens,
         "messages": [
             {"role": "system", "content": SYSTEM},
-            {"role": "user", "content": f"File: {label}{f' ({language})' if language else ''}\n\n{before}{CURSOR}{after}"},
+            {"role": "user", "content": f"File: {label}{f' ({language})' if language else ''}\n\n{before}{CURSOR}{after}{others}{recent}"},
         ],
     }
     if s.get("effort"):
@@ -344,10 +452,11 @@ def _without(p: dict[str, Any], key: str) -> dict[str, Any]:
     return p
 
 
-async def _stream(s: dict[str, Any], payload: dict[str, Any]):
-    """The reply's text, piece by piece. A parameter the model refuses (a 400 naming it) is dropped, for good."""
+async def _stream(s: dict[str, Any], payload: dict[str, Any], url: str):
+    """The reply's text, piece by piece, from ``url`` (the capture's, or the server's own). A parameter the model
+    refuses (a 400 naming it) is dropped, for good."""
     global _used
-    url = endpoint(s["base_url"], "/chat/completions")
+    shown = endpoint(s["base_url"], "/chat/completions")  # in a message: the server's address, not the capture's
     headers = _auth(s)
     _used = time.monotonic()
     throttle = _throttle(s)
@@ -390,9 +499,9 @@ async def _stream(s: dict[str, Any], payload: dict[str, Any]):
                             yield piece
                 return
         except httpx.TimeoutException as e:
-            raise CompletionError(f"{s['model']}: no answer from {url} in time") from e
+            raise CompletionError(f"{s['model']}: no answer from {shown} in time") from e
         except httpx.TransportError as e:
-            raise CompletionError(f"{s['model']}: can't reach {url}: {e or type(e).__name__}") from e
+            raise CompletionError(f"{s['model']}: can't reach {shown}: {e or type(e).__name__}") from e
 
 
 class _Job:
@@ -400,29 +509,32 @@ class _Job:
     (the reply is read to its end all the same, which keeps the connection for the next request); ``first`` its first
     line, as soon as that is there ("": none came before the answer)."""
 
-    def __init__(self, s: dict[str, Any], label: str, language: str, before: str, after: str):
+    def __init__(self, pid: str, s: dict[str, Any], label: str, language: str, before: str, after: str, edits: str = "",
+                 related: str = ""):
+        self.pid = pid
         self.model = s["model"]
         self.before, self.after = before, after
         self.tail = before[-400:]  # what finds where it was, after typing
         self.line_before = before.rsplit("\n", 1)[-1]
+        self.above = before.split("\n")[-7:-1]  # the lines before the cursor's, which a reply may write again
         self.answer: asyncio.Future[str] = asyncio.get_running_loop().create_future()
         self.first: asyncio.Future[str] = asyncio.get_running_loop().create_future()
         self.started = time.monotonic()
         self.ended = 0.0
         line_rest = after.split("\n", 1)[0]
-        self.task = asyncio.create_task(self._run(s, _payload(s, label, language, before, after, line_rest)))
+        self.task = asyncio.create_task(self._run(s, _payload(s, label, language, before, after, line_rest, edits, related)))
 
     async def _run(self, s: dict[str, Any], payload: dict[str, Any]) -> None:
         out = ""
         try:
-            async for piece in _stream(s, payload):
+            async for piece in _stream(s, payload, _url(self.pid, s)):
                 out += piece
-                if not self.answer.done() and (text := suggestion(out, self.line_before, self.after, False)) is not None:
+                if not self.answer.done() and (text := suggestion(out, self.line_before, self.after, False, self.above)) is not None:
                     self.answer.set_result(text)
-                if not self.first.done() and (line := first_line(out, self.line_before, self.after)) is not None:
+                if not self.first.done() and (line := first_line(out, self.line_before, self.after, self.above)) is not None:
                     self.first.set_result(line)
             if not self.answer.done():
-                self.answer.set_result(suggestion(out, self.line_before, self.after, True) or "")
+                self.answer.set_result(suggestion(out, self.line_before, self.after, True, self.above) or "")
         except asyncio.CancelledError:
             if not self.answer.done():
                 self.answer.set_result("")
@@ -435,6 +547,7 @@ class _Job:
             if not self.first.done():
                 self.first.set_result("")
             self.ended = time.monotonic()
+            _trim(self.pid)
 
     def typed(self, before: str, after: str) -> str | None:
         """What was typed at the cursor since this request, if the request was for the same place: the file after the
@@ -472,7 +585,7 @@ def _tidy(jobs: list[_Job]) -> list[_Job]:
 
 
 async def complete(pid: str, path: str, label: str, language: str, before: str, after: str, speculative: bool = False,
-                   whole: bool = False) -> dict[str, Any]:
+                   whole: bool = False, events: list[Any] | None = None, related: list[Any] | None = None) -> dict[str, Any]:
     """The suggestion for a cursor with ``before`` and ``after`` around it in the file ``path`` (absolute; ``label``:
     its name for the model). ``speculative``: asked ahead (what comes after the suggestion shown): answered at once,
     the request left to run for the one that comes after Tab. A suggestion of several lines may come first as its
@@ -500,7 +613,7 @@ async def complete(pid: str, path: str, label: str, language: str, before: str, 
     throttle, limit = _throttle(s), _limit(s)
     if speculative:
         if not exact and throttle.spare(limit):
-            jobs.append(_Job(s, label, language, before, after))
+            jobs.append(_Job(pid, s, label, language, before, after, events_text(events or []), related_text(related or [])))
             _jobs[key] = _tidy(jobs)
         return {"text": "", "queued": True}
     own = None
@@ -508,7 +621,7 @@ async def complete(pid: str, path: str, label: str, language: str, before: str, 
         if wait := throttle.wait(limit):
             why = "rate limited by the server" if throttle.until > time.monotonic() else f"asked {limit} times in the last minute (completion.max_per_minute)"
             raise CompletionError(f"{s['model']}: {why}; suggestions resume in {wait:.0f} s", 429)
-        own = _Job(s, label, language, before, after)
+        own = _Job(pid, s, label, language, before, after, events_text(events or []), related_text(related or []))
         jobs.append(own)
         _jobs[key] = _tidy(jobs)
     # the first that fits: one on its way since before the typing, or this one's own; its first line, if the rest is slow

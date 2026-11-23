@@ -280,13 +280,14 @@ microphone; if that was denied, allow it in the browser's settings for the site.
 | `lsp.commands` | `{}` | A server per language instead of the one found automatically: a program (name or path, no arguments) or an argument list, e.g. `{"c": "clangd", "python": ["pyright-langserver", "--stdio"]}`. Languages: `python`, `c`, `cpp`, `go`, `rust`, `typescript`, `javascript` (one server reads both; a `typescript` entry serves JavaScript too). |
 | `lsp.python.typeCheckingMode` | `"standard"` | `off`, `basic`, `standard`, `strict`, `recommended` or `all`. |
 | `ui.theme` | `"system"` | Not read: the browser remembers the rail's theme switch. |
-| `ui.auto_save` | `true` | The Files editor saves a file a moment (1 s) after you stop typing, and at once when you switch to another file or panel, close its tab or leave the page. The toggle beside the lock in the editor's bar sets it. `false`: ⌘S or the Save button saves. Either way, a file that changed on disk meanwhile isn't overwritten: the editor asks. |
+| `ui.auto_save` | `true` | The Files editor, and the editable side of a diff in Changes (by agent, and the working tree), save a file a moment (1 s) after you stop typing, and at once when you switch to another file or panel, close its tab or leave the page. The toggle beside the lock in the editor's bar sets it. `false`: ⌘S or the Save button saves. Either way, a file that changed on disk meanwhile isn't overwritten: the editor asks. |
 | `ui.completion` | `true` | Inline completion in the Files editor (below), once `completion.model` is set. The ✦ switch in the editor's bar sets it. |
 | `completion.model` | `""` | The model that suggests code as you type, through `/v1/chat/completions`. `""` = no inline completion. |
 | `completion.base_url` | `""` | Its server, with or without `/v1`, as `voice.base_url`; nothing is taken from `voice`, so set it even when the two are the same. |
 | `completion.api_key` | `""` | Sent as `Authorization: Bearer …`; not sent when empty. Its own, like the server: `voice.api_key` isn't used. `/api/meta` only says whether it is set. |
 | `completion.max_per_minute` | `40` | Requests to the model a minute at most (`0`: no limit). Keep it under what the server allows: one gateway allows 50 a minute per model and key, shared with everything else that uses them. Past three quarters of it, nothing is asked for ahead; at the limit, no suggestions until a minute has passed. When the server itself says it is asked too often (429), none until the time it gives; the ✦ switch says so. |
 | `completion.effort` | `"none"` | The `reasoning_effort` sent: a suggestion has to come in a second or two, so the least the model takes (`none` for gpt-6-luna; `minimal` for some). A model that refuses it is asked again without it; `""` sends none. |
+| `completion.next_edit` | `true` | Next edit (below): after an edit, the next one the model expects elsewhere in the file, marked where it goes. Same model and server, asked only with room to spare under `completion.max_per_minute`. `false`: only the suggestion at the cursor. |
 
 `lsp` changes reach language servers started afterwards.
 
@@ -314,13 +315,27 @@ most). Tab takes it, ⌘→ (Ctrl+→) a word of it, Esc puts it away, typing wh
 after a pause in the typing, at the end of a line or before closing brackets only (not in the middle of code), in
 code (not plain text or Markdown), and never in a file that holds secrets (`.env*`, `.envrc`, keys and
 certificates, `.npmrc`, `.netrc`, `credentials`, `secrets.*`) or one open read-only. What it sends: the file's path
-in the project, up to 6,000 characters before the cursor and 2,000 after it. A model takes a second or two, so
+in the project, up to 6,000 characters before the cursor and 2,000 after it, your last edits in the file (up to six,
+each as the lines it changed), so that it follows what you are in the middle of, and the code of your other open files
+that looks most like the lines before the cursor (up to two snippets, 2,000 characters; files of the project in the
+same language, never one that holds secrets), so that it uses their names rather than making them up. A model takes a second or two, so
 Atrium hides what it can of that: the connection to the server is opened as an editor gets the focus, and kept open; while a suggestion shows, what comes
 after it is asked for, so that after Tab the next one is usually there at once; a suggestion of several lines shows
 its first line as soon as the model has written it; a request the typing left behind runs on, and its answer is
 used if what you typed since is how it begins. On a phone the suggestion has a bar with Accept, for there is no Tab
 key. With gpt-6-luna on one server a suggestion took 2–3 s, its first line about half a second sooner, the next one
 after Tab well under a second.
+
+**Next edit**, as Cursor's Tab after Tab: after you change something, the model reads your recent edits, the file (when
+it is longer than 6,000 characters, that much of it around the cursor, twice as much below as above) and the errors the
+language server reports in it, for what follows from them elsewhere: the same rename further down, an argument added
+at the other calls, an import the change needs. Such an edit is marked where it goes, the lines it
+changes struck through and what they become under them, and a hint at the cursor says where: Tab goes there, Tab
+again makes it, and the next one shows (up to three from one answer; after the last, the model is asked again). Esc
+puts them away, and so does typing. It is asked for 0.7 s after the typing pauses, in the files inline completion
+works in, and only when no suggestion shows at the cursor: that one comes first (one on its way is waited for), and
+Tab takes it. While the editor's list of suggestions is open, Tab is the list's: a next edit shows once it closes. On
+a phone the hint has a button for Tab (Go, then Accept) and one for Esc.
 
 An open file follows the disk wherever you didn't edit it: changes reach it through the file watch, and, while the
 Files panel shows, through a check of its size and modification time every 2 seconds. So a file the watch leaves out
@@ -353,7 +368,9 @@ they were.
 
 The tab follows the chat's agent. Its title opens a menu of Atrium's own agents, recorded like the others: the
 chat's agent's Code Review Agent, the Git Agent, and the Tracker (each of its runs a turn, on whichever harness
-`tracker.harness` names). Picking another agent in the chat goes back to following it.
+`tracker.harness` names); and Tab completion, the Files editor's calls to `completion.model` (suggestions and next edits), of which only
+the latest 300 are kept: it calls often, and would push the agents' calls out of `capture.max_mb`. Picking another agent
+in the chat goes back to following it.
 
 | Key | Default | |
 |---|---|---|

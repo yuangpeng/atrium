@@ -9,6 +9,7 @@ import { FileNav, FileTree, useFileTree } from "../components/FileTree";
 import { ReviewBadge, ReviewDrawer } from "../components/ReviewDrawer";
 import { LockToggle, useEditLock } from "../components/EditLock";
 import { Spinner, startColResize, useFullscreen } from "../components/ui";
+import { DiffSave, useDiffAutoSave } from "../diffAutoSave";
 
 const ST: Record<string, string> = { created: "A", modified: "M", deleted: "D", "created+deleted": "–" };
 const LIST_KEY = "atrium.changesListWidth";
@@ -81,7 +82,6 @@ function AgentChangesView() {
   const [cwd, setCwd] = useState("");
   const [sel, setSel] = useState<string | null>(null);
   const [detail, setDetail] = useState<ChangeDetail | null>(null);
-  const [edited, setEdited] = useState<string | null>(null);
   const tree = useFileTree(files, changePath);
   const locked = useEditLock((s) => s.locked);
   const list = useListWidth();
@@ -108,7 +108,6 @@ function AgentChangesView() {
     if (!sid || !sel) return setDetail(null);
     try {
       setDetail(await api.changeFile(pid, sid, sel));
-      setEdited(null);
     } catch {
       setDetail(null);
     }
@@ -186,18 +185,8 @@ function AgentChangesView() {
       toast(e.message, "error");
     }
   };
-  const saveEdit = async () => {
-    if (edited == null || !detail) return;
-    try {
-      await api.writeFile(pid, { path: detail.path, content: edited, base_sha: detail.sha });
-      toast(`Saved ${basename(detail.path)}`, "ok");
-      await loadDetail();
-      void loadFiles();
-    } catch (e: any) {
-      toast(e.status === 409 ? "File changed on disk — reloaded" : e.message, "error");
-      void loadDetail();
-    }
-  };
+  // the file as it is now, edited on the diff's right: saved as typed (ui.auto_save), the diff left as it is
+  const saver = useDiffAutoSave(detail && detail.exists && !detail.gone ? { key: `${sid}:${detail.path}`, pid, path: detail.path, text: detail.current ?? "", sha: detail.sha } : null);
 
   return (
     <div className="split stack">
@@ -290,11 +279,7 @@ function AgentChangesView() {
               <div className="r2">
                 <FileNav index={tree.order.indexOf(cur)} count={tree.order.length} onGo={(i) => pick(tree.order[i].path)} />
                 <span className="grow" />
-                {edited != null && (
-                  <button className="btn btn-sm btn-primary" onClick={() => void saveEdit()}>
-                    Save
-                  </button>
-                )}
+                <SaveButton saver={saver} />
                 {detail.exists && !detail.gone && <LockToggle />}
                 <button className="btn btn-sm" aria-label="Edit" data-tip="Open in the editor" onClick={() => openFile(cur.path, cwd)} disabled={!detail.exists || detail.gone}>
                   <ExternalLink size={12} /> <span className="lbl">Edit</span>
@@ -317,6 +302,7 @@ function AgentChangesView() {
                 <AlertTriangle size={13} /> The worktree this agent worked in has been removed: this is the file as the agent left it, read-only.
               </div>
             )}
+            <SaveConflict saver={saver} onReload={() => void loadDetail()} />
             {cur.drift && (
               <div className="banner">
                 <AlertTriangle size={13} /> The file has changed since this agent's last edit (you or another agent edited it). The diff shows everything since before the agent started.
@@ -344,7 +330,7 @@ function AgentChangesView() {
                     </>
                   ) : detail.exists ? (
                     <>
-                      <b>Now</b> on disk <span className="faint ellipsis">· {locked ? "locked" : "editable, ⌘S saves"}</span>
+                      <b>Now</b> on disk <span className="faint ellipsis">· {locked ? "locked" : saveHint(saver)}</span>
                     </>
                   ) : (
                     <>
@@ -352,8 +338,8 @@ function AgentChangesView() {
                     </>
                   ),
                 }}
-                onChange={(v) => setEdited(v === (detail.current ?? "") ? null : v)}
-                onSave={() => void saveEdit()}
+                onChange={saver.change}
+                onSave={() => void saver.save()}
                 reveal={reveal?.path === cur.path ? reveal : undefined}
               />
             </div>
@@ -372,14 +358,43 @@ function AgentChangesView() {
 }
 
 // ---------------------------------------------------------------- git working tree
+/** What the editable side of a diff says about saving. */
+const saveHint = (saver: DiffSave) => (saver.conflict ? "changed on disk" : saver.auto ? (saver.unsaved ? "editable, saving…" : "editable, saves as you type") : "editable, ⌘S saves");
+
+/** Save, where there is no ⌘S (a phone) or auto-save is off, and when an auto-save failed. */
+function SaveButton({ saver }: { saver: DiffSave }) {
+  if (!saver.unsaved || saver.conflict || (saver.auto && !saver.error)) return null;
+  return (
+    <button className="btn btn-sm btn-primary" onClick={() => void saver.save()}>
+      Save
+    </button>
+  );
+}
+
+/** The file changed on disk since it was read here: nothing is saved until the human chooses. */
+function SaveConflict({ saver, onReload }: { saver: DiffSave; onReload: () => void }) {
+  if (!saver.conflict) return null;
+  return (
+    <div className="banner">
+      <AlertTriangle size={13} />
+      <span className="grow">This file changed on disk since it was opened here (an agent may have edited it). Your edits aren't saved yet.</span>
+      <button className="btn btn-sm" onClick={onReload}>
+        Reload from disk
+      </button>
+      <button className="btn btn-sm" onClick={() => void saver.save({ force: true })}>
+        Keep mine & overwrite
+      </button>
+    </div>
+  );
+}
+
 function WorkingTreeView() {
   const { project, gitVersion, toast, openFile } = useAppState("project", "gitVersion", "toast", "openFile");
   const pid = project!.id;
   const [root, setRoot] = useState(project!.path);
   const [sum, setSum] = useState<GitSummary | null>(null);
   const [sel, setSel] = useState<{ path: string; staged: boolean } | null>(null);
-  const [diff, setDiff] = useState<{ original: string; current: string; editable: boolean } | null>(null);
-  const [edited, setEdited] = useState<string | null>(null);
+  const [diff, setDiff] = useState<{ original: string; current: string; editable: boolean; sha?: string | null } | null>(null);
   const [msg, setMsg] = useState("");
   const [amend, setAmend] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -392,16 +407,30 @@ function WorkingTreeView() {
   useEffect(() => {
     if (gitVersion) loadThrottled();
   }, [gitVersion, loadThrottled]);
-  const loadDiff = useCallback(async () => {
-    if (!sel) return setDiff(null);
-    try {
-      setDiff(await api.gitDiff(pid, sel.path, root, sel.staged));
-      setEdited(null);
-    } catch (e: any) {
-      toast(e.message, "error");
-    }
-  }, [pid, root, sel, toast]);
-  useEffect(() => void loadDiff(), [loadDiff, gitVersion]);
+  // the working tree's file, edited on the diff's right: saved as typed (ui.auto_save)
+  const saver = useDiffAutoSave(sel && diff?.editable ? { key: `${root}:${sel.path}`, pid, root, path: sel.path, text: diff.current, sha: diff.sha ?? null } : null);
+  const saverRef = useRef(saver);
+  saverRef.current = saver;
+  /** `fresh`: after a git change (a save of this view's own among them): not while there is typing to save, which
+   *  the file read now would undo in the editor; a change on disk then is the save's to find (409). */
+  const loadDiff = useCallback(
+    async (fresh = false) => {
+      if (!sel) return setDiff(null);
+      if (fresh && saverRef.current.busy()) return;
+      try {
+        const d = await api.gitDiff(pid, sel.path, root, sel.staged);
+        if (!(fresh && saverRef.current.busy())) setDiff(d);
+      } catch (e: any) {
+        toast(e.message, "error");
+      }
+    },
+    [pid, root, sel, toast],
+  );
+  useEffect(() => void loadDiff(), [loadDiff]);
+  useEffect(() => {
+    if (gitVersion) void loadDiff(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gitVersion]);
 
   const files = sum?.status?.files;
   const staged = useMemo(() => (files ?? []).filter((f) => f.index !== "." && f.index !== "?"), [files]);
@@ -496,16 +525,6 @@ function WorkingTreeView() {
       toast("Committed", "ok");
     });
 
-  const saveEdit = async () => {
-    if (edited == null || !sel) return;
-    try {
-      await api.writeFile(pid, { root, path: sel.path, content: edited });
-      toast(`Saved ${basename(sel.path)}`, "ok");
-      await loadDiff();
-    } catch (e: any) {
-      toast(e.message, "error");
-    }
-  };
 
   return (
     <div className="split stack">
@@ -572,16 +591,13 @@ function WorkingTreeView() {
               <span className="mono ellipsis grow" style={{ fontSize: 12.5 }} title={sel.path}>
                 {sel.path}
               </span>
-              {edited != null && (
-                <button className="btn btn-sm btn-primary" onClick={() => void saveEdit()}>
-                  Save
-                </button>
-              )}
+              <SaveButton saver={saver} />
               {diff.editable && <LockToggle />}
               <button className="btn btn-sm" aria-label="Edit" data-tip="Open in the editor" onClick={() => openFile(sel.path, root)}>
                 <ExternalLink size={12} /> <span className="lbl">Edit</span>
               </button>
             </div>
+            <SaveConflict saver={saver} onReload={() => void loadDiff()} />
             <div className="editor-host">
               <DiffEditor
                 id={`${root}:${sel.path}:${sel.staged}`}
@@ -597,12 +613,12 @@ function WorkingTreeView() {
                     </>
                   ) : (
                     <>
-                      <b>Working tree</b> <span className="faint ellipsis">· {diff.editable && locked ? "locked" : "editable, ⌘S saves"}</span>
+                      <b>Working tree</b> <span className="faint ellipsis">· {diff.editable && locked ? "locked" : saveHint(saver)}</span>
                     </>
                   ),
                 }}
-                onChange={(v) => setEdited(v === diff.current ? null : v)}
-                onSave={() => void saveEdit()}
+                onChange={saver.change}
+                onSave={() => void saver.save()}
               />
             </div>
           </>

@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.gzip import DEFAULT_EXCLUDED_CONTENT_TYPES, GZipMiddleware
 
-from . import __version__, changes, complete, configfiles, fs, gitops, lsp, search, snapshots, voice
+from . import __version__, changes, complete, configfiles, fs, gitops, lsp, next_edit, search, snapshots, voice
 from .auth import AUTH_PATH, AuthMiddleware, auth
 from .auth import router as auth_router
 from .board import pages as board_pages
@@ -1037,7 +1037,28 @@ async def complete_code(pid: str, request: Request, body: dict[str, Any] = Body(
     work = asyncio.ensure_future(complete.complete(
         pid, str(body.get("path") or ""), str(body.get("label") or ""), str(body.get("language") or ""),
         str(body.get("before") or "")[-complete.BEFORE_CHARS:], str(body.get("after") or "")[: complete.AFTER_CHARS],
-        speculative=bool(body.get("speculative")), whole=bool(body.get("whole"))))
+        speculative=bool(body.get("speculative")), whole=bool(body.get("whole")), events=list(body.get("events") or []),
+        related=list(body.get("related") or [])))
+    gone = asyncio.ensure_future(_disconnected(request))
+    try:
+        await asyncio.wait({work, gone}, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        gone.cancel()
+    if not work.done():
+        work.cancel()
+        return Response(status_code=204)
+    return work.result()
+
+
+@app.post("/api/p/{pid}/complete/next")
+async def complete_next(pid: str, request: Request, body: dict[str, Any] = Body(...)):
+    """The edits that follow the human's recent ones (next_edit.py): {edits: [{start, end, old, text}]}. A page that
+    gives up on it (the human typed on) stops it: its answer is for the code as it was."""
+    P(pid)
+    work = asyncio.ensure_future(next_edit.next_edit(
+        pid, str(body.get("path") or ""), str(body.get("label") or ""), str(body.get("language") or ""),
+        str(body.get("region") or "")[: next_edit.REGION_CHARS + 200], int(body.get("start") or 1), int(body.get("cursor") or 1),
+        list(body.get("events") or []), [str(x) for x in body.get("problems") or []]))
     gone = asyncio.ensure_future(_disconnected(request))
     try:
         await asyncio.wait({work, gone}, return_when=asyncio.FIRST_COMPLETED)
@@ -1152,12 +1173,15 @@ async def git_diff(pid: str, path: str, root: str | None = None, staged: bool = 
     p = P(pid)
     r = _git_root(p, root)
     original = await gitops.show_file_at(r, "HEAD", path) or ""
+    sha = None
     if staged:
         current = await gitops.show_file_at(r, "", path) or ""  # ":path" = index
     else:
         target = p.resolve(path, root=r)
-        current = fs.read_text(target) if target.exists() else ""
-    return {"path": path, "original": original, "current": current or "", "editable": not staged}
+        data = target.read_bytes() if target.is_file() else None
+        current = "" if data is None or b"\0" in data[:8192] else data.decode("utf-8", errors="replace")  # as fs.read_text
+        sha = fs.sha_of(data)  # what an edit there is saved over (409 when the file changed since)
+    return {"path": path, "original": original, "current": current or "", "editable": not staged, "sha": sha}
 
 
 @app.post("/api/p/{pid}/git/init")

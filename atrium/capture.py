@@ -756,6 +756,18 @@ class _Store:
         self.kept -= kept
         self.db.execute("PRAGMA incremental_vacuum")
 
+    def trim(self, project: str, session: str, keep: int) -> int:
+        """Delete a session's finished calls but its latest ``keep`` (and its kept ones). Returns how many went."""
+        assert self.db
+        old = self.db.execute("SELECT id, size FROM exchanges WHERE project = ? AND session = ? AND keep IS NULL AND state NOT IN ('pending', 'streaming') "
+                              "ORDER BY started DESC LIMIT -1 OFFSET ?", (project, session, keep)).fetchall()
+        for rid, size in old:
+            self.db.execute("DELETE FROM exchanges WHERE id = ?", (rid,))
+            self.total -= size
+        if old:
+            self.db.execute("PRAGMA incremental_vacuum")
+        return len(old)
+
     def prune(self, limit: int) -> int:
         """Delete the oldest calls that aren't kept until the rest take under 90% of ``limit`` bytes (kept ones don't
         count). Returns how many went."""
@@ -943,7 +955,9 @@ class Capture:
             c = httpx.AsyncClient(
                 proxy=proxy, verify=ssl_context(tls), trust_env=False, follow_redirects=False,
                 timeout=httpx.Timeout(connect=30, read=None, write=120, pool=None),  # the harness keeps its own time
-                limits=httpx.Limits(max_connections=None, max_keepalive_connections=32),
+                # a connection kept two minutes, not httpx's 5 s: a new one (TLS, through a proxy) holds a call up by about a
+                # second, which inline completion (complete.py) can't spare, nor an agent between two tool calls
+                limits=httpx.Limits(max_connections=None, max_keepalive_connections=32, keepalive_expiry=120),
             )
             for k in list(c.headers):  # nothing of httpx's own (User-Agent, Accept…): only what the harness sent
                 del c.headers[k]
@@ -1202,6 +1216,25 @@ class Capture:
         n = await self._db(self._store.release_gone, project, known, now - RELEASE_DAYS * 86400)
         if n:
             log.info("capture: %d sessions of %s are gone; their kept calls are pruned like the others from now on", n, project)
+
+    async def trim(self, project: str, session: str, keep: int) -> None:
+        """Keep only a session's latest ``keep`` calls: one that calls often and is looked at seldom (inline
+        completion), which would otherwise push everyone else's calls out of ``capture.max_mb``."""
+        if self._store.db:
+            await self._db(self._store.trim, project, session, keep)
+
+    async def warm(self, upstream: str, headers: Mapping[str, str], env: Mapping[str, str] | None = None) -> bool:
+        """Open a connection to ``upstream`` on the client its routes' calls go out on, before the first call needs one
+        (inline completion's warm-up): a HEAD, not recorded. False when there is no capture to go through."""
+        if not self.port or not self.enabled:
+            return False
+        env = os.environ if env is None else env
+        try:
+            client = self._client(outbound_proxy(upstream, env), tls_of(env) if upstream.startswith("https:") else Tls())
+            await client.head(upstream, headers=dict(headers), timeout=10)
+        except (httpx.HTTPError, OSError, ValueError, ssl.SSLError):
+            pass
+        return True
 
     async def forget(self, project: str, session: str) -> None:
         """Delete what was recorded of a session (it was deleted, or the human cleared it)."""

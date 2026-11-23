@@ -11,9 +11,11 @@
 //   (`follow`).
 import { monaco } from "../monaco-setup";
 import type * as Monaco from "monaco-editor";
-import { api } from "../api";
+import { api, EditEvent } from "../api";
 import { useApp } from "../store";
 import { useCompletionStatus } from "../editorStatus";
+import { recentEdits } from "./nextEdit";
+import { Related, relatedSnippets } from "./related";
 
 const BEFORE_CHARS = 6000; // of the file before the cursor sent, in whole lines (as much as complete.py takes)
 const AFTER_CHARS = 2000;
@@ -33,6 +35,8 @@ interface Batch extends Monaco.languages.InlineCompletions {
   language: string;
   before: string;
   after: string;
+  events: EditEvent[];
+  related: Related[];
 }
 
 /** The suggestion shown last: what was typed of it since tells what is left of it. */
@@ -90,6 +94,8 @@ const provider: Monaco.languages.InlineCompletionsProvider<Batch> = {
     if (SECRET_FILES.test(path.slice(path.lastIndexOf("/") + 1))) return;
     const { before, after } = around(model, position);
     if (!CLOSERS_ONLY.test(after.split("\n", 1)[0])) return;
+    let events: EditEvent[] = [];
+    let related: Related[] = [];
     const batch = (text: string, partial = false): Batch => ({
       items: [{ insertText: text, range: monaco.Range.fromPositions(position), command: { id: ACCEPTED, title: "" } }],
       partial,
@@ -98,6 +104,8 @@ const provider: Monaco.languages.InlineCompletionsProvider<Batch> = {
       language,
       before,
       after,
+      events,
+      related,
     });
     const typed = typedOf(uri, before, after);
     if (typed !== null && shown && typed.length < shown.text.length) return batch(shown.text.slice(typed.length));
@@ -111,7 +119,9 @@ const provider: Monaco.languages.InlineCompletionsProvider<Batch> = {
     const sub = token.onCancellationRequested(() => ctl.abort());
     useCompletionStatus.setState((s) => ({ busy: s.busy + 1 }));
     try {
-      const body = { path, label: labelOf(path), language, before, after };
+      events = recentEdits(model);
+      related = relatedSnippets(model, position.lineNumber);
+      const body = { path, label: labelOf(path), language, before, after, events, related };
       const r = await api.complete(pid, body, ctl.signal);
       useCompletionStatus.setState({ error: null });
       if (!r?.text || token.isCancellationRequested) return;
@@ -134,7 +144,7 @@ const provider: Monaco.languages.InlineCompletionsProvider<Batch> = {
     const key = `${b.path}\0${before.slice(-400)}\0${b.after}`;
     if (key === aheadKey) return;
     aheadKey = key;
-    api.complete(b.pid, { path: b.path, label: labelOf(b.path), language: b.language, before, after: b.after, speculative: true }).catch(() => undefined);
+    api.complete(b.pid, { path: b.path, label: labelOf(b.path), language: b.language, before, after: b.after, events: b.events, related: b.related, speculative: true }).catch(() => undefined);
   },
   freeInlineCompletions() {},
 };

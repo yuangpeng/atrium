@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode, RefObject } from "react";
 import {
   Activity, ArrowDownLeft, ArrowLeft, ArrowUpRight, Bot, Check, ChevronDown, ChevronRight, Code, Copy, ListTree, Maximize2, MessageSquareText, Minimize2, Pin,
-  RefreshCw, ScanSearch, Trash2,
+  RefreshCw, ScanSearch, Sparkles, Trash2,
 } from "lucide-react";
 import { api, CaptureBody, CaptureDetail, CaptureRow, CaptureUsage, SessionRow } from "../api";
 import { useApp, useAppState } from "../store";
@@ -14,7 +14,8 @@ import { Answer, fmtBytes, fmtSeconds, fmtTokens, Message, parseAnswer, parseReq
 
 // The Requests tab: what the selected agent sent to its model API, call by call, and what came back — recorded by
 // Atrium's capture proxy (capture.py). A list grouped by the user message each turn answers, beside the call picked.
-// The title's menu picks one of Atrium's own agents instead: the chat's agent's reviewer, the Git Agent, the Tracker.
+// The title's menu picks one of Atrium's own agents instead: the chat's agent's reviewer, the Git Agent, the Tracker,
+// and the Files editor's inline completion.
 
 type Tab = "overview" | "request" | "response" | "raw";
 const TAB_KEY = "atrium.requestsTab";
@@ -34,6 +35,8 @@ const KEEP: Record<string, string> = {
 };
 const LIVE = new Set(["pending", "streaming"]);
 const TRACKER = "tracker"; // what the Tracker's calls are recorded under (tracker.py's TRACKER_SESSION), each run a turn
+const COMPLETION = "completion"; // the inline completion's calls (complete.py's COMPLETION_SESSION), its latest 300
+const OWN: Record<string, string> = { [TRACKER]: "Tracker Agent", [COMPLETION]: "Tab completion" };
 
 /** The calls looked at last, finished ones only (they don't change). A few: each holds a whole conversation. */
 class Recent {
@@ -171,7 +174,7 @@ export function RequestsPanel() {
           trigger={(open, toggle) => (
             // styled as the Board's page picker
             <button className={clsx("page-pick", open && "on")} onClick={toggle} aria-expanded={open} aria-label="Whose model calls" data-tip="Whose model calls: the chat's agent, or one of Atrium's own">
-              <span className="title">{sid === TRACKER ? "Tracker Agent" : agent ? displayName(agent) : "Requests"}</span>
+              <span className="title">{(sid && OWN[sid]) || (agent ? displayName(agent) : "Requests")}</span>
               <ChevronDown size={13} />
             </button>
           )}
@@ -199,7 +202,7 @@ export function RequestsPanel() {
         <div className="banner subtle">Capture is off (capture.enabled in Atrium's settings): agents started from now on aren't recorded.</div>
       )}
       {!sid ? (
-        <div className="req-empty muted">Pick an agent: the calls it makes to its model show here. Atrium's own agents (the Tracker, the Git Agent) are in the menu above.</div>
+        <div className="req-empty muted">Pick an agent: the calls it makes to its model show here. Atrium's own (the Tracker, the Git Agent, Tab completion) are in the menu above.</div>
       ) : (
         <div className="split req-split">
           {showList && (
@@ -265,6 +268,7 @@ function Targets({ sessionId, sid, sessions, onPick }: { sessionId: string | nul
       {reviewers.map((r) => item(r.id, <ScanSearch size={15} />, displayName(r), `Reviews ${chat ? displayName(chat) : "it"} · ${timeAgo(r.updated_at)}`))}
       {git && item(git.id, <Bot size={15} />, displayName(git), "Answers about the history, drives the Git tab's graph")}
       {item(TRACKER, <Activity size={15} />, "Tracker Agent", "Reads what the agents did and updates the board")}
+      {item(COMPLETION, <Sparkles size={15} />, "Tab completion", "What the Files editor's inline completion asks its model: the latest 300")}
     </div>
   );
 }

@@ -42,6 +42,14 @@ export interface HarnessDefaults {
   binary?: string;
 }
 
+/** An edit of the human's in a file, as the next edit's model and the inline completion's get it: lines changed from
+ *  `line`, what they were and what they are (editor/nextEdit.ts). */
+export interface EditEvent {
+  line: number;
+  old: string;
+  new: string;
+}
+
 /** ~/.atrium/settings.json (secrets reduced to booleans). Edited as a raw file in Settings. */
 export interface Settings {
   defaults: { harness: string };
@@ -53,8 +61,8 @@ export interface Settings {
   web: { serper_api_key: boolean; jina_api_key: boolean; replace_builtin_web_tools: boolean };
   // the composer's mic (chat/Voice.tsx): on once base_url and asr_model are set
   voice?: { base_url: string; api_key: boolean; asr_model: string; refine_model: string; refine_effort: string };
-  // the Files editor's inline completion (editor/completion.ts): there once a model is set
-  completion?: { model: string; base_url: string; api_key: boolean; effort: string };
+  // the Files editor's inline completion (editor/completion.ts): there once a model is set; next_edit: its next edits too
+  completion?: { model: string; base_url: string; api_key: boolean; effort: string; max_per_minute?: number; next_edit?: boolean };
   // auto_save: the Files editor saves by itself (FilesPanel), as it is told by the toggle in its bar; completion: its
   // inline completion on (the switch beside it)
   ui: { theme: "system" | "light" | "dark"; auto_save?: boolean; completion?: boolean };
@@ -852,14 +860,30 @@ export const api = {
     req<{ files: Record<string, { root: string; path: string } | null> }>("POST", `/api/p/${pid}/file/resolve`, { cwd, paths, fresh }),
   writeFile: (pid: string, body: { root?: string; path: string; content: string; base_sha?: string | null; force?: boolean }, keepalive = false) =>
     req<{ path: string; sha: string; mtime: number; size: number }>("PUT", `/api/p/${pid}/file`, body, undefined, keepalive),
-  /** a checkout's files, for quick open (search.list_files) */
   /** Inline completion at the cursor (complete.py). 204 (no body): the page went before the answer came. */
   complete: (
     pid: string,
-    body: { path: string; label: string; language: string; before: string; after: string; speculative?: boolean; whole?: boolean },
+    body: {
+      path: string;
+      label: string;
+      language: string;
+      before: string;
+      after: string;
+      speculative?: boolean;
+      whole?: boolean;
+      events?: EditEvent[];
+      related?: { label: string; text: string }[];
+    },
     signal?: AbortSignal,
   ) => req<{ text: string; partial?: boolean; cached?: boolean; queued?: boolean; ms?: number } | null>("POST", `/api/p/${pid}/complete`, body, signal),
+  /** The edits that follow the recent ones (next_edit.py): lines `start` to `end` (excluded) become `text`. 204: given up. */
+  completeNext: (
+    pid: string,
+    body: { path: string; label: string; language: string; region: string; start: number; cursor: number; events: EditEvent[]; problems?: string[] },
+    signal?: AbortSignal,
+  ) => req<{ edits: { start: number; end: number; old: string; text: string }[]; ms?: number } | null>("POST", `/api/p/${pid}/complete/next`, body, signal),
   completeWarm: (pid: string) => req<{ ok: boolean }>("POST", `/api/p/${pid}/complete/warm`),
+  /** a checkout's files, for quick open (search.list_files) */
   allFiles: (pid: string, root?: string) => req<{ root: string; files: string[]; truncated: boolean }>("GET", `/api/p/${pid}/files/all${q({ root })}`),
   /** Find in Files; `page`: this page's id, whose previous search the server stops */
   search: (
@@ -885,8 +909,9 @@ export const api = {
       "GET",
       `/api/p/${pid}/git/commit/${sha}/file${q({ path, orig })}`,
     ),
+  /** `sha`: the working tree's file as read (null when staged, or there is none), a save's base */
   gitDiff: (pid: string, path: string, root?: string, staged = false) =>
-    req<{ path: string; original: string; current: string; editable: boolean }>(
+    req<{ path: string; original: string; current: string; editable: boolean; sha?: string | null }>(
       "GET",
       `/api/p/${pid}/git/diff${q({ path, root, staged })}`,
     ),

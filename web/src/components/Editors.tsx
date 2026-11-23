@@ -8,6 +8,7 @@ import { useApp } from "../store";
 import { useCompact, useLayout } from "../layout";
 import { trackEditor } from "../lsp/client";
 import { serveCompletion } from "../editor/completion";
+import { serveNextEdit } from "../editor/nextEdit";
 import { editorBridge } from "../editorStatus";
 import { useDiffPrefs } from "./DiffOptions";
 
@@ -98,6 +99,7 @@ export function CodeEditor({
   const edRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
   const tracking = useRef<Monaco.IDisposable | null>(null);
   const completing = useRef<Monaco.IDisposable | null>(null);
+  const nextEdits = useRef<Monaco.IDisposable | null>(null);
   const selected = useRef<() => string | undefined>(undefined);
   const cursor = useRef<() => { line: number; column: number } | undefined>(undefined);
   const trigger = useRef<(action: string) => void>(undefined);
@@ -107,6 +109,7 @@ export function CodeEditor({
     if (filePath) {
       tracking.current = trackEditor(editor);
       completing.current = serveCompletion(editor);
+      nextEdits.current = serveNextEdit(editor);
       // what ⌘⇧F looks for, and where "Open in VS Code" goes
       selected.current = editorBridge.selectedText = () => {
         const sel = editor.getSelection();
@@ -127,6 +130,7 @@ export function CodeEditor({
     () => () => {
       tracking.current?.dispose();
       completing.current?.dispose();
+      nextEdits.current?.dispose();
       if (editorBridge.selectedText === selected.current) editorBridge.selectedText = undefined;
       if (editorBridge.cursor === cursor.current) editorBridge.cursor = undefined;
       if (editorBridge.trigger === trigger.current) editorBridge.trigger = undefined;

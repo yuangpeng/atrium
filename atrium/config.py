@@ -120,8 +120,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # own: nothing is taken from voice's); model "" = none: off. effort: the reasoning_effort sent ("" = none): a
     # suggestion has to come in a second or two, so the least the model has. max_per_minute: requests to the model a
     # minute at most (0: no limit), under what the server allows (one gateway: 50 per model and key, shared with
-    # whatever else uses them). ui.completion is its switch.
-    "completion": {"model": "", "base_url": "", "api_key": "", "effort": "none", "max_per_minute": 40},
+    # whatever else uses them). next_edit: after an edit, the edits that follow from it elsewhere, marked (Tab goes there,
+    # Tab again makes it), asked of the same model. ui.completion is its switch.
+    "completion": {"model": "", "base_url": "", "api_key": "", "effort": "none", "max_per_minute": 40, "next_edit": True},
     # Language servers behind the editor (semantic highlighting, go to definition, hover, …).
     # commands: {"python": ["pyright-langserver", "--stdio"]} overrides the auto-detected server.
     "lsp": {
