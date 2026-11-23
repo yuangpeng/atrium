@@ -281,6 +281,11 @@ microphone; if that was denied, allow it in the browser's settings for the site.
 | `lsp.python.typeCheckingMode` | `"standard"` | `off`, `basic`, `standard`, `strict`, `recommended` or `all`. |
 | `ui.theme` | `"system"` | Not read: the browser remembers the rail's theme switch. |
 | `ui.auto_save` | `true` | The Files editor saves a file a moment (1 s) after you stop typing, and at once when you switch to another file or panel, close its tab or leave the page. The toggle beside the lock in the editor's bar sets it. `false`: ⌘S or the Save button saves. Either way, a file that changed on disk meanwhile isn't overwritten: the editor asks. |
+| `ui.completion` | `true` | Inline completion in the Files editor (below), once `completion.model` is set. The ✦ switch in the editor's bar sets it. |
+| `completion.model` | `""` | The model that suggests code as you type, through `/v1/chat/completions`. `""` = no inline completion. |
+| `completion.base_url` | `""` | Its server, as `voice.base_url`; `""` = `voice.base_url`. |
+| `completion.api_key` | `""` | Its key, as `voice.api_key`; `""` = `voice.api_key`. `/api/meta` only says whether it is set. |
+| `completion.effort` | `"none"` | The `reasoning_effort` sent: a suggestion has to come in a second or two, so the least the model takes (`none` for gpt-6-luna; `minimal` for some). A model that refuses it is asked again without it; `""` sends none. |
 
 `lsp` changes reach language servers started afterwards.
 
@@ -293,6 +298,28 @@ offers shows in the editor: ⌘-click and F12 go to a definition, ⇧F12 lists r
 file that uses it, ⌘. offers quick fixes, ⇧⌥F formats (where the server formats: clangd, gopls, rust-analyzer,
 TypeScript's; not basedpyright), ⇧⌘O lists the file's symbols. A rename writes the files that aren't open; in open
 ones it changes the text, which auto-save then writes.
+
+The Files panel takes VS Code's keys (Ctrl for ⌘ off the Mac): ⌘P opens a file by name, ⌘⇧F finds in files, ⌘B
+hides or shows the file tree (its own button does too), ⌘⇧E shows it, ⌘W closes a tab, ⌘⇧T opens the last one closed
+again, ⌃Tab goes back through the tabs by when they were shown, ⌘⌥← ⌘⌥→ or ⌘⇧[ ⌘⇧] (Ctrl+PageUp/PageDown) to the
+previous or next, ⌃1…⌃9 (Alt+1…9) to one by its place, ⌘N makes a file, ⌘⇧P opens the editor's command palette. The
+browser keeps ⌘W, ⌘T, ⌘N and ⌃Tab for itself, except in the panel's full screen in Chrome or Edge: there the page
+takes them (Keyboard Lock), and Esc, held, leaves full screen. Drag the tree's edge to widen it; a double click
+gives it its own width back.
+
+**Inline completion**, as Cursor's Tab: as you type, the model's guess at what comes next shows in grey after the
+cursor — the rest of the line, or the next lines (a block's body, the statements after a finished one, 12 lines at
+most). Tab takes it, ⌘→ (Ctrl+→) a word of it, Esc puts it away, typing what it says keeps the rest of it up. It asks
+after a pause in the typing, at the end of a line or before closing brackets only (not in the middle of code), in
+code (not plain text or Markdown), and never in a file that holds secrets (`.env*`, `.envrc`, keys and
+certificates, `.npmrc`, `.netrc`, `credentials`, `secrets.*`) or one open read-only. What it sends: the file's path
+in the project, up to 6,000 characters before the cursor and 2,000 after it. A model takes a second or two, so
+Atrium hides what it can of that: the connection to the server is kept open; while a suggestion shows, what comes
+after it is asked for, so that after Tab the next one is usually there at once; a suggestion of several lines shows
+its first line as soon as the model has written it; a request the typing left behind runs on, and its answer is
+used if what you typed since is how it begins. On a phone the suggestion has a bar with Accept, for there is no Tab
+key. With gpt-6-luna on one server a suggestion took 2–3 s, its first line about half a second sooner, the next one
+after Tab well under a second.
 
 An open file follows the disk wherever you didn't edit it: changes reach it through the file watch, and, while the
 Files panel shows, through a check of its size and modification time every 2 seconds. So a file the watch leaves out

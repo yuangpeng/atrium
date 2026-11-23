@@ -115,6 +115,11 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # conversation has them, filler dropped, English fixed. No asr_model = no mic; no refine_model = the
     # transcript as heard. refine_effort "" = none sent (models without reasoning).
     "voice": {"base_url": "", "api_key": "", "asr_model": "", "refine_model": "", "refine_effort": "low"},
+    # Inline completion in the Files editor, as Cursor's Tab: what comes next at the cursor, in grey as you type; Tab takes
+    # it, ⌘→ a word of it. From a model behind an OpenAI-compatible /v1/chat/completions (model "" = none: off), on
+    # voice's server with voice's key unless base_url / api_key are given. effort: the reasoning_effort sent ("" = none):
+    # a suggestion has to come in a second or two, so the least the model has. ui.completion is its switch.
+    "completion": {"model": "", "base_url": "", "api_key": "", "effort": "none"},
     # Language servers behind the editor (semantic highlighting, go to definition, hover, …).
     # commands: {"python": ["pyright-langserver", "--stdio"]} overrides the auto-detected server.
     "lsp": {
@@ -132,12 +137,13 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # agent's last call before each aside: they hold the whole conversation a compaction replaced, and stay.
     "capture": {"enabled": True, "max_mb": 1024},
     # auto_save: the Files editor saves a file a moment after you stop typing, and when you leave it (its toggle in the
-    # editor's bar sets this). False: ⌘S or the Save button.
-    "ui": {"theme": "system", "auto_save": True},
+    # editor's bar sets this). False: ⌘S or the Save button. completion: its inline completion on (`completion`; the
+    # switch beside that one).
+    "ui": {"theme": "system", "auto_save": True, "completion": True},
 }
 
 _ENV_SECRETS = {("web", "serper_api_key"): "SERPER_API_KEY", ("web", "jina_api_key"): "JINA_API_KEY"}
-_SECRETS = (*_ENV_SECRETS, ("voice", "api_key"))  # public_settings says only whether they're set (⚙ Settings shows the raw file)
+_SECRETS = (*_ENV_SECRETS, ("voice", "api_key"), ("completion", "api_key"))  # public_settings says only whether they're set (⚙ Settings shows the raw file)
 
 # flat keys of the first version → nested paths
 _LEGACY_KEYS = {

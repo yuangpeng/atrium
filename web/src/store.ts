@@ -95,6 +95,7 @@ interface AppState {
   setChatFloor: (w: number) => void;
   setTheme: (t: Theme) => void;
   setAutoSave: (on: boolean) => void; // the Files editor's auto-save (settings.json ui.auto_save)
+  setCompletion: (on: boolean) => void; // the Files editor's inline completion (settings.json ui.completion)
   setShowArchived: (v: boolean) => void;
   setPickerOpen: (v: false | "open" | "create") => void;
   setUnsaved: (names: string[]) => void;
@@ -381,6 +382,14 @@ export const useApp = create<AppState>((set, get) => {
       const put = (v: boolean) => set((s) => (s.meta ? { meta: { ...s.meta, settings: { ...s.meta.settings, ui: { ...s.meta.settings.ui, auto_save: v } } } } : {}));
       put(on);
       api.patchSetting("ui.auto_save", on).catch((e: Error) => {
+        put(!on);
+        get().toast(e.message, "error");
+      });
+    },
+    setCompletion: (on) => {
+      const put = (v: boolean) => set((s) => (s.meta ? { meta: { ...s.meta, settings: { ...s.meta.settings, ui: { ...s.meta.settings.ui, completion: v } } } } : {}));
+      put(on);
+      api.patchSetting("ui.completion", on).catch((e: Error) => {
         put(!on);
         get().toast(e.message, "error");
       });

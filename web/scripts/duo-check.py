@@ -289,10 +289,11 @@ async def main() -> int:
                         await page.locator('.editor-acts button[aria-label="Full screen"]').tap()
                         await page.wait_for_timeout(800)
                         await audit(page, pose, "files-fs", inset)
-                        await page.locator(".tree-toggle").tap()
+                        # beside the tree its own button hides it, the bar's brings it back; stacked, the bar's does both
+                        await page.locator(".tree-hide:visible, .tree-toggle:visible").first.tap()
                         await page.wait_for_timeout(400)
                         await audit(page, pose, "files-fs-notree", inset)
-                        await page.locator(".tree-toggle").tap()
+                        await page.locator(".tree-toggle:visible").first.tap()
                         await page.locator('.editor-acts button[aria-label="Exit full screen"]').tap()
                         await page.wait_for_timeout(400)
                 if tab == "Changes":  # the review full screen: on a phone it fills the window itself (ui.tsx)

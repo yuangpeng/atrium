@@ -53,8 +53,11 @@ export interface Settings {
   web: { serper_api_key: boolean; jina_api_key: boolean; replace_builtin_web_tools: boolean };
   // the composer's mic (chat/Voice.tsx): on once base_url and asr_model are set
   voice?: { base_url: string; api_key: boolean; asr_model: string; refine_model: string; refine_effort: string };
-  // auto_save: the Files editor saves by itself (FilesPanel), as it is told by the toggle in its bar
-  ui: { theme: "system" | "light" | "dark"; auto_save?: boolean };
+  // the Files editor's inline completion (editor/completion.ts): there once a model is set
+  completion?: { model: string; base_url: string; api_key: boolean; effort: string };
+  // auto_save: the Files editor saves by itself (FilesPanel), as it is told by the toggle in its bar; completion: its
+  // inline completion on (the switch beside it)
+  ui: { theme: "system" | "light" | "dark"; auto_save?: boolean; completion?: boolean };
   _error?: string | null;
 }
 
@@ -850,6 +853,12 @@ export const api = {
   writeFile: (pid: string, body: { root?: string; path: string; content: string; base_sha?: string | null; force?: boolean }, keepalive = false) =>
     req<{ path: string; sha: string; mtime: number; size: number }>("PUT", `/api/p/${pid}/file`, body, undefined, keepalive),
   /** a checkout's files, for quick open (search.list_files) */
+  /** Inline completion at the cursor (complete.py). 204 (no body): the page went before the answer came. */
+  complete: (
+    pid: string,
+    body: { path: string; label: string; language: string; before: string; after: string; speculative?: boolean; whole?: boolean },
+    signal?: AbortSignal,
+  ) => req<{ text: string; partial?: boolean; cached?: boolean; queued?: boolean; ms?: number } | null>("POST", `/api/p/${pid}/complete`, body, signal),
   allFiles: (pid: string, root?: string) => req<{ root: string; files: string[]; truncated: boolean }>("GET", `/api/p/${pid}/files/all${q({ root })}`),
   /** Find in Files; `page`: this page's id, whose previous search the server stops */
   search: (

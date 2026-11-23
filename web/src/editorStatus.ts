@@ -30,6 +30,9 @@ export const useEditorStatus = create<EditorStatusState>((set) => ({
     }),
 }));
 
+/** The Files editor's inline completion (editor/completion.ts), for its switch: requests on their way, the last failure. */
+export const useCompletionStatus = create<{ busy: number; error: string | null }>(() => ({ busy: 0, error: null }));
+
 /** Filled in once the editor bundle has loaded: by the LSP client, and by the Files editor (its selection, for ⌘⇧F);
  *  and by the Files panel: `editFile` makes a language server's edits (a rename, a quick fix) in a file the editor
  *  doesn't show — an open tab's text, or the file on disk — and resolves to its new text. */
@@ -37,5 +40,6 @@ export const editorBridge: {
   closeFile?: (path: string) => void;
   selectedText?: () => string | undefined;
   cursor?: () => { line: number; column: number } | undefined; // where "Open in VS Code" goes
+  trigger?: (action: string) => void; // runs one of the editor's actions in it (⌘⇧P: its command palette)
   editFile?: (path: string, edits: LspTextEdit[]) => Promise<string>;
 } = {};

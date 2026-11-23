@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.gzip import DEFAULT_EXCLUDED_CONTENT_TYPES, GZipMiddleware
 
-from . import __version__, changes, configfiles, fs, gitops, lsp, search, snapshots, voice
+from . import __version__, changes, complete, configfiles, fs, gitops, lsp, search, snapshots, voice
 from .auth import AUTH_PATH, AuthMiddleware, auth
 from .auth import router as auth_router
 from .board import pages as board_pages
@@ -164,6 +164,11 @@ async def _cfg_invalid(_r: Request, e: configfiles.ConfigInvalid):
 
 @app.exception_handler(voice.VoiceError)
 async def _voice(_r: Request, e: voice.VoiceError):
+    return JSONResponse({"error": str(e)}, status_code=e.status)
+
+
+@app.exception_handler(complete.CompletionError)
+async def _completion(_r: Request, e: complete.CompletionError):
     return JSONResponse({"error": str(e)}, status_code=e.status)
 
 
@@ -1022,6 +1027,32 @@ async def search_files(pid: str, body: dict[str, Any] = Body(...)):
     return await search.search(P(pid), body.get("root") or None, str(body.get("query") or ""), include=str(body.get("include") or ""),
                                exclude=str(body.get("exclude") or ""), limit=int(body.get("limit") or 1000), page=str(body.get("page") or "") or None,
                                **flags)
+
+
+@app.post("/api/p/{pid}/complete")
+async def complete_code(pid: str, request: Request, body: dict[str, Any] = Body(...)):
+    """Inline completion at the cursor (complete.py): {text}, what to suggest after it. A page that gives up on it (the
+    human typed on) leaves the request to the model running: what it gets back is kept for the requests to come."""
+    P(pid)
+    work = asyncio.ensure_future(complete.complete(
+        pid, str(body.get("path") or ""), str(body.get("label") or ""), str(body.get("language") or ""),
+        str(body.get("before") or "")[-complete.BEFORE_CHARS:], str(body.get("after") or "")[: complete.AFTER_CHARS],
+        speculative=bool(body.get("speculative")), whole=bool(body.get("whole"))))
+    gone = asyncio.ensure_future(_disconnected(request))
+    try:
+        await asyncio.wait({work, gone}, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        gone.cancel()
+    if not work.done():
+        work.cancel()
+        return Response(status_code=204)
+    return work.result()
+
+
+async def _disconnected(request: Request) -> None:
+    """Returns when the page that sent ``request`` (its body read) is gone."""
+    while (await request.receive())["type"] != "http.disconnect":
+        pass
 
 
 @app.get("/api/site/{key}/{path:path}")

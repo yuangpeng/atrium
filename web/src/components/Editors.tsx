@@ -7,6 +7,7 @@ import { ArrowDown, ArrowUp } from "lucide-react";
 import { useApp } from "../store";
 import { useCompact, useLayout } from "../layout";
 import { trackEditor } from "../lsp/client";
+import { serveCompletion } from "../editor/completion";
 import { editorBridge } from "../editorStatus";
 import { useDiffPrefs } from "./DiffOptions";
 
@@ -34,11 +35,13 @@ const baseOptions: Monaco.editor.IStandaloneEditorConstructionOptions = {
 // a phone-sized screen (layout.ts): code a size smaller, like the rest of the type there
 const compactOptions: Monaco.editor.IStandaloneEditorConstructionOptions = { fontSize: 11.5, lineHeight: 17 };
 
-// files on disk: ⌘-click jumps straight to the definition (peek for several references)
+// files on disk: ⌘-click jumps straight to the definition (peek for several references); inline completion
+// (editor/completion.ts), whose bar of buttons a finger needs (a phone has no Tab key)
 const fileOptions: Monaco.editor.IStandaloneEditorConstructionOptions = {
   gotoLocation: { multipleDefinitions: "goto", multipleTypeDefinitions: "goto", multipleDeclarations: "goto", multipleImplementations: "peek", multipleReferences: "peek" },
   definitionLinkOpensInPeek: false,
   hover: { delay: 350 },
+  inlineSuggest: { enabled: true, showToolbar: matchMedia("(pointer: coarse)").matches ? "always" : "onHover" },
 };
 
 export interface Reveal {
@@ -94,13 +97,16 @@ export function CodeEditor({
   const handleChange = useCallback((v?: string) => changeRef.current?.(v ?? ""), []);
   const edRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
   const tracking = useRef<Monaco.IDisposable | null>(null);
+  const completing = useRef<Monaco.IDisposable | null>(null);
   const selected = useRef<() => string | undefined>(undefined);
   const cursor = useRef<() => { line: number; column: number } | undefined>(undefined);
+  const trigger = useRef<(action: string) => void>(undefined);
   const onMount: OnMount = (editor, m) => {
     edRef.current = editor;
     addSave(editor, m, saveRef);
     if (filePath) {
       tracking.current = trackEditor(editor);
+      completing.current = serveCompletion(editor);
       // what ⌘⇧F looks for, and where "Open in VS Code" goes
       selected.current = editorBridge.selectedText = () => {
         const sel = editor.getSelection();
@@ -110,14 +116,20 @@ export function CodeEditor({
         const p = editor.getPosition();
         return p ? { line: p.lineNumber, column: p.column } : undefined;
       };
+      trigger.current = editorBridge.trigger = (action) => {
+        editor.focus();
+        editor.trigger("keyboard", action, null);
+      };
     }
     if (reveal) revealIn(editor, reveal);
   };
   useEffect(
     () => () => {
       tracking.current?.dispose();
+      completing.current?.dispose();
       if (editorBridge.selectedText === selected.current) editorBridge.selectedText = undefined;
       if (editorBridge.cursor === cursor.current) editorBridge.cursor = undefined;
+      if (editorBridge.trigger === trigger.current) editorBridge.trigger = undefined;
     },
     [],
   );

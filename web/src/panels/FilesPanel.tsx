@@ -2,7 +2,7 @@ import type { JSX } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronDown, ChevronRight, CircleAlert, Code, Ellipsis, ExternalLink, Eye, EyeOff, File, FilePlus, FileSearch, Folder, FolderOpen, FolderPlus, FolderTree, Lock,
-  Maximize2, Minimize2, PanelLeftClose, PanelLeftOpen, PanelTopClose, PanelTopOpen, Pencil, RefreshCw, Save, SaveAll, SaveOff, Search, Trash2, TriangleAlert, X,
+  Maximize2, Minimize2, PanelLeftClose, PanelLeftOpen, PanelTopClose, PanelTopOpen, Pencil, RefreshCw, Save, SaveAll, SaveOff, Search, Sparkles, Trash2, TriangleAlert, X,
 } from "lucide-react";
 import { api, ApiError, DirEntry, FileData } from "../api";
 import { FileTarget, useApp, useAppState } from "../store";
@@ -10,11 +10,11 @@ import { basename, clsx, isMac, languageFor, MEDIA_KINDS, previewKind, shortPath
 import { CodeEditor, FilePreview } from "../components/LazyEditors";
 import type { Reveal } from "../components/Editors";
 import { LockToggle, useEditLock } from "../components/EditLock";
-import { Popover, useFullscreen, usePanelShown } from "../components/ui";
+import { canLockKeys, Popover, startColResize, useAsk, useFullscreen, usePanelShown } from "../components/ui";
 import { QuickOpen } from "../components/QuickOpen";
 import { OpenInEditor } from "../components/OpenInEditor";
 import { NO_SEARCH, SearchOptions, SearchView } from "../components/SearchView";
-import { editorBridge, useEditorStatus } from "../editorStatus";
+import { editorBridge, useCompletionStatus, useEditorStatus } from "../editorStatus";
 import { applyTextEdits } from "../textEdits";
 
 interface OpenFile {
@@ -64,6 +64,7 @@ const views = (): Record<string, OpenFile["view"]> => {
 const TREE_KEY = "atrium.filesTree";
 // what the side shows: the tree, or Find in Files
 const SIDE_KEY = "atrium.filesSide";
+const SIDE_W_KEY = "atrium.filesSideWidth"; // the tree's (and search's) width, as last dragged
 // the files opened lately, per project ({root, path}), the latest first: quick open lists them before anything is typed
 const RECENT_MAX = 50;
 const recentKey = (pid: string) => `atrium.recentFiles.${pid}`;
@@ -75,6 +76,11 @@ function loadRecent(pid: string): { root: string; path: string }[] {
     return [];
   }
 }
+// full screen, the page takes these from the browser (Keyboard Lock, ui.tsx) for VS Code's own uses of them: ⌘W closes
+// a tab, ⌘N makes a file, ⌘T / ⌘⇧T, ⌘⇧[ ⌘⇧] and ⌘⌥← ⌘⌥→ go through the tabs, Esc closes the editor's widgets. Tab
+// for ⌃Tab on the Mac only: elsewhere it would take Alt+Tab from the system too.
+const FULLSCREEN_KEYS = ["Escape", "KeyW", "KeyN", "KeyT", "BracketLeft", "BracketRight", "ArrowLeft", "ArrowRight", "PageUp", "PageDown", ...(isMac ? ["Tab"] : [])];
+
 /** ⌘P / ⌘⇧F (Ctrl off the Mac): Ctrl+P and Ctrl+Shift+F in a terminal are the shell's. */
 function shortcut(e: KeyboardEvent, key: string, shift: boolean): boolean {
   if (e.key.toLowerCase() !== key || e.shiftKey !== shift || e.altKey || !(isMac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey)) return false;
@@ -105,6 +111,33 @@ function useSiteUrl(pid: string, f: OpenFile | null): string | null | undefined 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pid, key]);
   return !want ? null : site?.key === key ? site.url : undefined;
+}
+
+/** The inline completion's switch (editor/completion.ts), once a model is set: on, it shows when it is asking, and why
+ *  its last request failed. */
+function CompletionToggle() {
+  const model = useApp((s) => s.meta?.settings.completion?.model);
+  const on = useApp((s) => s.meta?.settings.ui.completion !== false);
+  const setCompletion = useApp((s) => s.setCompletion);
+  const busy = useCompletionStatus((s) => s.busy > 0);
+  const error = useCompletionStatus((s) => s.error);
+  if (!model) return null;
+  const tip = !on
+    ? `AI completion off — tap to have ${model} suggest code as you type`
+    : error
+      ? `AI completion failed: ${error}`
+      : `AI completion on (${model}): Tab takes a suggestion, ${isMac ? "⌘→" : "Ctrl+→"} a word of it, Esc puts it away — tap to turn it off`;
+  return (
+    <button
+      className={clsx("icon-btn sm completion-toggle", on && "active", on && busy && "busy", on && error && "err")}
+      aria-pressed={on}
+      aria-label={on ? "AI completion on" : "AI completion off"}
+      data-tip={tip}
+      onClick={() => setCompletion(!on)}
+    >
+      <Sparkles size={14} />
+    </button>
+  );
 }
 
 /** Language server state + problem counts for the open file. */
@@ -147,14 +180,26 @@ export function FilesPanel() {
   const setAutoSave = useApp((s) => s.setAutoSave);
   // full screen takes the tree along, to switch files from
   const panelRef = useRef<HTMLDivElement>(null);
-  const [full, toggleFull] = useFullscreen(panelRef);
+  const [full, toggleFull] = useFullscreen(panelRef, FULLSCREEN_KEYS);
+  const [ask, asking] = useAsk(); // not prompt() / confirm(): Chrome leaves full screen for them
   const [treeShown, setTreeShown] = useState(() => localStorage.getItem(TREE_KEY) !== "0");
   const toggleTree = () =>
     setTreeShown((on) => {
       localStorage.setItem(TREE_KEY, on ? "0" : "1");
       return !on;
     });
+  // the tabs by when they were last shown, the latest first (⌃Tab goes back through them, as in VS Code), and the files
+  // whose tabs were closed (⌘⇧T opens them again)
+  const mru = useRef<string[]>([]);
+  const closed = useRef<{ root: string; path: string }[]>([]);
+  const cycle = useRef<{ list: string[]; at: number } | null>(null); // ⌃Tab held: where it is in the list as it was
   const pid = project?.id ?? "";
+  const sideRef = useRef<HTMLDivElement>(null);
+  const [sideW, setSideW] = useState(() => Number(localStorage.getItem(SIDE_W_KEY)) || 0);
+  useEffect(() => {
+    if (sideW) localStorage.setItem(SIDE_W_KEY, String(sideW));
+    else localStorage.removeItem(SIDE_W_KEY);
+  }, [sideW]);
   const [side, setSideState] = useState<"tree" | "search">(() => (localStorage.getItem(SIDE_KEY) === "search" ? "search" : "tree"));
   const setSide = (v: "tree" | "search") => {
     localStorage.setItem(SIDE_KEY, v);
@@ -591,17 +636,106 @@ export function FilesPanel() {
     if (f && dirty(f)) {
       // with auto-save, closing saves it; what can't be saved is asked about, as without
       const kept = autoRef.current && !f.diskChanged && !f.gone && (await save(key, { quiet: true }));
-      if (!kept && !confirm(`Discard unsaved changes to ${basename(f.path)}?`)) return;
+      if (!kept && (await ask({ title: `Discard unsaved changes to ${basename(f.path)}?`, ok: "Discard", danger: true })) === null) return;
     }
     untrack(key);
     const rest = openRef.current.filter((x) => x.key !== key);
+    if (f && !f.external) closed.current = [{ root: f.root, path: f.path }, ...closed.current.filter((c) => !(c.root === f.root && c.path === f.path))].slice(0, 20);
+    mru.current = mru.current.filter((k) => k !== key);
+    // the tab shown before it takes its place, as in VS Code
+    const next = mru.current.find((k) => rest.some((x) => x.key === k)) ?? rest[rest.length - 1]?.key ?? null;
     setOpen((all) => all.filter((x) => x.key !== key));
-    setActive((a) => (a === key ? rest[rest.length - 1]?.key ?? null : a));
+    setActive((a) => (a === key ? next : a));
     if (f) editorBridge.closeFile?.(f.abs);
   };
 
+  // ---- VS Code's keys for its editors
+  const activeRef = useRef(active);
+  activeRef.current = active;
+  useEffect(() => {
+    if (active && !cycle.current) mru.current = [active, ...mru.current.filter((k) => k !== active)];
+  }, [active]);
+  /** ⌃Tab / ⌃⇧Tab: back (forward) through the tabs by when they were shown, while Control is held; let go, the one
+   *  landed on counts as picked. */
+  const cycleTabs = (dir: 1 | -1) => {
+    if (!cycle.current) cycle.current = { list: mru.current.filter((k) => openRef.current.some((f) => f.key === k)), at: 0 };
+    const c = cycle.current;
+    if (c.list.length < 2) return;
+    c.at = (c.at + dir + c.list.length) % c.list.length;
+    setActive(c.list[c.at]);
+  };
+  useEffect(() => {
+    const done = () => {
+      if (!cycle.current) return;
+      cycle.current = null;
+      const a = activeRef.current;
+      if (a) mru.current = [a, ...mru.current.filter((k) => k !== a)];
+    };
+    const up = (e: KeyboardEvent) => e.key === "Control" && done();
+    window.addEventListener("keyup", up);
+    window.addEventListener("blur", done);
+    return () => {
+      window.removeEventListener("keyup", up);
+      window.removeEventListener("blur", done);
+    };
+  }, []);
+  const stepTab = (dir: number) => {
+    const all = openRef.current;
+    const at = all.findIndex((f) => f.key === activeRef.current);
+    if (all.length > 1 && at >= 0) setActive(all[(at + dir + all.length) % all.length].key);
+  };
+  const tabAt = (n: number) => {
+    const all = openRef.current;
+    const f = n === 9 ? all[all.length - 1] : all[n - 1];
+    if (f) setActive(f.key);
+  };
+  const reopen = () => {
+    const c = closed.current.shift();
+    if (c) void openFile(c.root, c.path);
+  };
+  /** VS Code's keys, while this panel is the one shown and the focus is in it (its fields too, as VS Code's side bar) or
+   *  nowhere: not from the chat's box, a terminal (Ctrl+W is the shell's off the Mac) or a dialog (quick open, a name
+   *  asked for). The browser keeps ⌘W, ⌘T, ⌘N, ⌃Tab for itself, except in full screen with Keyboard Lock. */
+  const editorKeys = (e: KeyboardEvent) => {
+    if (e.defaultPrevented || !shown || !project) return;
+    const t = e.target as HTMLElement | null;
+    if (t && t !== document.body && !panelRef.current?.contains(t)) return;
+    if (t?.closest?.(".xterm, [role='dialog']")) return;
+    const mod = isMac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
+    const plain = mod && !e.altKey && !e.shiftKey;
+    const shifted = mod && !e.altKey && e.shiftKey;
+    const k = e.key.toLowerCase();
+    const run = (f: () => void) => {
+      e.preventDefault();
+      f();
+    };
+    if (plain && k === "b") return run(() => open.length > 0 && toggleTree()); // the side bar
+    if (shifted && k === "e") return run(() => (setSide("tree"), !treeShown && toggleTree())); // the explorer
+    if (plain && k === "w") return run(() => cur && void close(cur.key));
+    if (shifted && k === "t") return run(reopen);
+    if (plain && k === "n") return run(() => void create(cur && !cur.external && cur.root === root && cur.path.includes("/") ? cur.path.slice(0, cur.path.lastIndexOf("/")) : ".", "file"));
+    if (shifted && k === "p") return run(() => editorBridge.trigger?.("editor.action.quickCommand")); // the command palette
+    if (plain && k === "s") return run(() => cur && void save(cur.key, { quiet: autoRef.current })); // the editor isn't focused
+    if (e.ctrlKey && !e.metaKey && !e.altKey && e.key === "Tab") return run(() => cycleTabs(e.shiftKey ? -1 : 1));
+    // the next / previous tab: ⌘⌥→ ⌘⌥← and ⌘⇧] ⌘⇧[ on the Mac, Ctrl+PageDown / PageUp elsewhere
+    const step = isMac
+      ? e.metaKey && !e.ctrlKey && ((e.altKey && !e.shiftKey && { ArrowRight: 1, ArrowLeft: -1 }[e.key]) || (e.shiftKey && !e.altKey && { BracketRight: 1, BracketLeft: -1 }[e.code]))
+      : e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && { PageDown: 1, PageUp: -1 }[e.key];
+    if (step) return run(() => stepTab(step));
+    // a tab by its place: ⌃1…⌃9 on the Mac, Alt+1…9 elsewhere (9: the last)
+    const n = /^Digit([1-9])$/.exec(e.code)?.[1];
+    if (n && !e.shiftKey && (isMac ? e.ctrlKey && !e.metaKey && !e.altKey : e.altKey && !e.ctrlKey && !e.metaKey)) return run(() => tabAt(Number(n)));
+  };
+  const editorKeysRef = useRef(editorKeys);
+  editorKeysRef.current = editorKeys;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => editorKeysRef.current(e);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   const create = async (dir: string, kind: "file" | "dir") => {
-    const name = prompt(kind === "file" ? "New file name" : "New folder name");
+    const name = await ask({ title: `New ${kind === "file" ? "file" : "folder"} in ${dir === "." ? rootLabel : `${dir}/`}`, ok: "Create", text: true, placeholder: kind === "file" ? "name.ext, or a/path/name.ext" : "name, or a/path" });
     if (!name) return;
     const path = dir === "." ? name : `${dir}/${name}`;
     try {
@@ -614,7 +748,7 @@ export function FilesPanel() {
     }
   };
   const rename = async (entry: DirEntry) => {
-    const dst = prompt("Rename to", entry.path);
+    const dst = await ask({ title: `Rename ${entry.name} to`, ok: "Rename", text: true, value: entry.path });
     if (!dst || dst === entry.path) return;
     try {
       await api.renameFile(pid, { root, src: entry.path, dst });
@@ -624,7 +758,7 @@ export function FilesPanel() {
     }
   };
   const remove = async (entry: DirEntry) => {
-    if (!confirm(`Move ${entry.path} to .atrium/trash?`)) return;
+    if ((await ask({ title: `Move ${entry.path} to .atrium/trash?`, ok: "Move to trash", danger: true })) === null) return;
     try {
       await api.deleteFile(pid, { root, path: entry.path });
       refreshTree();
@@ -687,6 +821,7 @@ export function FilesPanel() {
   const rootLabel = roots.find((r) => r.path === root)?.label ?? project.name;
   return (
     <div ref={panelRef} className="panel-body fs-host">
+      {asking}
       {quick && (
         <QuickOpen
           pid={pid}
@@ -701,7 +836,7 @@ export function FilesPanel() {
       )}
       {/* with no file open there is nothing to make room for, and no bar to bring the tree back from */}
       <div className={clsx("split stack-files", open.length > 0 && !treeShown && "tree-off")}>
-        <div className={clsx("side", side === "search" && "searching")}>
+        <div ref={sideRef} className={clsx("side", side === "search" && "searching")} style={sideW ? ({ "--side-w": `${sideW}px` } as React.CSSProperties) : undefined}>
           <div className="toolbar files-bar" style={{ padding: "6px 8px", gap: 2, flexWrap: "nowrap" }}>
             <div className="seg icons">
               <button className={clsx(side === "tree" && "on")} aria-label="File tree" aria-pressed={side === "tree"} data-tip="File tree" onClick={() => setSide("tree")}>
@@ -755,6 +890,12 @@ export function FilesPanel() {
                 </Popover>
               </>
             )}
+            {/* put away, to give the open files the room (⌘B); with none open there is nothing to give it to */}
+            {open.length > 0 && (
+              <button className="icon-btn sm tree-hide" aria-label="Hide the files" data-tip="Hide the files (⌘B)" onClick={toggleTree}>
+                <PanelLeftClose size={14} />
+              </button>
+            )}
           </div>
           {side === "tree" && <div className="tree">{renderDir(".", 0)}</div>}
           {/* kept while the tree shows: its query and results stay */}
@@ -769,12 +910,14 @@ export function FilesPanel() {
             />
           </div>
         </div>
+        {/* drag to widen, as VS Code's side bar; a double click goes back to the width it had */}
+        <div className="col-resizer" onPointerDown={(e) => startColResize(e, sideRef, setSideW, 160, 240)} onDoubleClick={() => setSideW(0)} />
         <div className="content">
           {open.length > 0 && (
             <div className="editor-bar">
               {/* beside the open files the tree is on their left; over them, on a narrow panel, above (CSS) */}
               <div className="editor-lead">
-                <button className="icon-btn sm tree-toggle" aria-label={treeShown ? "Hide the files" : "Show the files"} data-tip={treeShown ? "Hide the files" : "Show the files"} onClick={toggleTree}>
+                <button className="icon-btn sm tree-toggle" aria-label={treeShown ? "Hide the files" : "Show the files"} data-tip={treeShown ? "Hide the files (⌘B)" : "Show the files (⌘B)"} onClick={toggleTree}>
                   {treeShown ? <PanelLeftClose size={14} className="beside" /> : <PanelLeftOpen size={14} className="beside" />}
                   {treeShown ? <PanelTopClose size={14} className="above" /> : <PanelTopOpen size={14} className="above" />}
                 </button>
@@ -820,6 +963,7 @@ export function FilesPanel() {
                     {autoSave ? <SaveAll size={14} /> : <SaveOff size={14} />}
                   </button>
                 )}
+                {editable && !previewing && <CompletionToggle />}
                 {editable && !previewing && <LockToggle />}
                 {cur && !cur.binary && <OpenInEditor abs={cur.abs} />}
                 {newTab && (
@@ -827,7 +971,7 @@ export function FilesPanel() {
                     <ExternalLink size={14} />
                   </a>
                 )}
-                <button className={clsx("icon-btn sm", full && "active")} aria-label={full ? "Exit full screen" : "Full screen"} data-tip={full ? "Exit full screen (Esc)" : "Full screen"} onClick={toggleFull}>
+                <button className={clsx("icon-btn sm", full && "active")} aria-label={full ? "Exit full screen" : "Full screen"} data-tip={full ? `Exit full screen (${canLockKeys ? "hold Esc" : "Esc"})` : canLockKeys ? "Full screen: VS Code's keys (⌘W, ⌃Tab…) work there" : "Full screen"} onClick={toggleFull}>
                   {full ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
                 </button>
               </div>

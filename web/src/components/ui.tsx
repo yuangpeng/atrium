@@ -1,4 +1,4 @@
-import { memo, ReactNode, RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { memo, ReactNode, RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import ReactMarkdown, { type Components, type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -28,6 +28,79 @@ export function Modal({ title, onClose, children, footer, wide, xl, bodyClass }:
         <div className={clsx("modal-body", bodyClass)}>{children}</div>
         {footer && <div className="modal-foot">{footer}</div>}
       </div>
+    </div>
+  );
+}
+
+export type AskOptions = { title: string; ok: string; text?: boolean; value?: string; placeholder?: string; danger?: boolean };
+
+/** A question asked in the page where prompt() or confirm() would do: Chrome leaves full screen for those. `text`: it
+ *  takes a line of text, which the promise gets (null: cancelled); else OK gives "". Shown in the element that is
+ *  fullscreen, if any, to be seen there; render the node it returns. */
+export function useAsk(): [(o: AskOptions) => Promise<string | null>, ReactNode] {
+  const [q, setQ] = useState<AskOptions | null>(null);
+  const resolver = useRef<((v: string | null) => void) | null>(null);
+  const fullscreen = useFullscreenElement();
+  const ask = useCallback((o: AskOptions) => {
+    resolver.current?.(null);
+    setQ(o);
+    return new Promise<string | null>((resolve) => (resolver.current = resolve));
+  }, []);
+  const answer = (v: string | null) => {
+    const r = resolver.current;
+    resolver.current = null;
+    setQ(null);
+    r?.(v);
+  };
+  useEffect(() => () => resolver.current?.(null), []);
+  return [ask, q && createPortal(<AskBox q={q} onAnswer={answer} />, fullscreen ?? document.body)];
+}
+
+function AskBox({ q, onAnswer }: { q: AskOptions; onAnswer: (v: string | null) => void }) {
+  const [text, setText] = useState(q.value ?? "");
+  const input = useRef<HTMLInputElement>(null);
+  const okRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    const el = input.current;
+    if (!el) return void okRef.current?.focus();
+    el.focus();
+    // a path: its name selected, without the extension, as VS Code does
+    const v = el.value;
+    const start = v.lastIndexOf("/") + 1;
+    const dot = v.lastIndexOf(".");
+    el.setSelectionRange(start, dot > start ? dot : v.length);
+  }, []);
+  const ok = () => (q.text ? text.trim() && onAnswer(text.trim()) : onAnswer(""));
+  return (
+    <div
+      className="ask-backdrop"
+      onMouseDown={(e) => e.target === e.currentTarget && onAnswer(null)}
+      onKeyDown={(e) => {
+        if (e.key !== "Escape") return;
+        e.stopPropagation(); // not the window's: it would leave a full screen that fills the window
+        onAnswer(null);
+      }}
+    >
+      <form
+        className="ask-box"
+        role="dialog"
+        aria-label={q.title}
+        onSubmit={(e) => {
+          e.preventDefault();
+          ok();
+        }}
+      >
+        <div className="ask-title">{q.title}</div>
+        {q.text && <input ref={input} value={text} placeholder={q.placeholder} onChange={(e) => setText(e.target.value)} spellCheck={false} autoCapitalize="off" autoCorrect="off" />}
+        <div className="ask-actions">
+          <button type="button" className="btn btn-sm" onClick={() => onAnswer(null)}>
+            Cancel
+          </button>
+          <button ref={okRef} type="submit" className={clsx("btn btn-sm", q.danger ? "btn-danger" : "btn-primary")} disabled={q.text && !text.trim()}>
+            {q.ok}
+          </button>
+        </div>
+      </form>
     </div>
   );
 }
@@ -433,9 +506,16 @@ export function useFullscreenElement(): Element | null {
   return el;
 }
 
+// Keyboard Lock (Chrome, Edge; a secure page): in the browser's fullscreen, keys it keeps for itself (⌘W, ⌘T, ⌃Tab,
+// Esc…) go to the page, as in an app. Esc then leaves fullscreen when held, and the browser says so.
+const keyboard = (navigator as Navigator & { keyboard?: { lock?: (codes?: string[]) => Promise<void>; unlock?: () => void } }).keyboard;
+export const canLockKeys = typeof keyboard?.lock === "function";
+document.addEventListener("fullscreenchange", () => !document.fullscreenElement && keyboard?.unlock?.());
+
 /** Fullscreen for one element (Esc leaves it): the browser's where it has one, else the element fills the window.
- *  Give the element the `fs-host` class. */
-export function useFullscreen(ref: RefObject<HTMLElement | null>): [boolean, () => void] {
+ *  Give the element the `fs-host` class. `keys`: KeyboardEvent codes the page takes from the browser while it is
+ *  fullscreen (where Keyboard Lock is), held Esc leaving it then. */
+export function useFullscreen(ref: RefObject<HTMLElement | null>, keys?: string[]): [boolean, () => void] {
   const el = useFullscreenElement();
   useEffect(() => {
     const node = ref.current;
@@ -446,7 +526,11 @@ export function useFullscreen(ref: RefObject<HTMLElement | null>): [boolean, () 
     if (filled) return setFilled(null);
     const target = ref.current;
     if (!target) return;
-    if (document.fullscreenEnabled && target.requestFullscreen) void target.requestFullscreen().catch(() => setFilled(target));
+    if (document.fullscreenEnabled && target.requestFullscreen)
+      void target.requestFullscreen().then(
+        () => void (keys && keyboard?.lock?.(keys).catch(() => undefined)),
+        () => setFilled(target),
+      );
     else setFilled(target);
   };
   return [!!el && el === ref.current, toggle];
