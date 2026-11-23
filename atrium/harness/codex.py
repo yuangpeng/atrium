@@ -1012,7 +1012,7 @@ class CodexHarness(Harness):
         self._cwd_cache: dict[str, str | None] = {}
         self._models: tuple[float, list[dict[str, Any]]] | None = None
         self._list_warned = False
-        self._scanned: dict[str, list[dict[str, Any]]] = {}  # project -> the threads only a scan of every rollout found
+        self._scanned: dict[str, list[dict[str, Any]] | None] = {}  # project -> the threads only a scan of every rollout found (None: scanning)
         self._scan_lock = asyncio.Lock()
         self._spawns_cache: dict[str, _SpawnScan] = {}  # rollout -> what's read of it
         self._spawns_lock = threading.Lock()
@@ -1145,20 +1145,15 @@ class CodexHarness(Harness):
     async def _list_threads(self, cwds: list[str], scan: bool = False) -> list[dict[str, Any]]:
         """Every page of thread/list for ``cwds``, from Codex's SQLite index (milliseconds). ``scan``: Codex reads the
         start of every rollout under ~/.codex/sessions instead, seconds where there are thousands, and finds those the
-        index doesn't list: an older Codex's threads (no preview there), rollouts another program put there."""
+        index doesn't list: an older Codex's threads (no preview there), rollouts another program put there. Raises if
+        thread/list fails."""
         threads: list[dict[str, Any]] = []
         cursor = None
         for _ in range(10):
             params: dict[str, Any] = {"cwd": cwds, "sourceKinds": SOURCE_KINDS, "limit": 100, "useStateDbOnly": not scan}
             if cursor:
                 params["cursor"] = cursor
-            try:
-                res = await self.client.request("thread/list", params, timeout=120 if scan else 30)
-            except Exception as e:
-                if not self._list_warned:
-                    log.warning("codex thread/list failed: %s", e)
-                    self._list_warned = True
-                break
+            res = await self.client.request("thread/list", params, timeout=120 if scan else 30)
             threads += res.get("data") or []
             cursor = res.get("nextCursor")
             if not cursor:
@@ -1166,21 +1161,38 @@ class CodexHarness(Harness):
         return threads
 
     async def _scan_rollouts(self, project_dir: str, cwds: list[str]) -> None:
-        async with self._scan_lock:  # one at a time: each reads every rollout
-            found = await self._list_threads(cwds, scan=True)
-        listed = {t["id"] for t in await self._list_threads(cwds)}
+        try:
+            async with self._scan_lock:  # one at a time: each reads every rollout
+                found = await self._list_threads(cwds, scan=True)
+            listed = {t["id"] for t in await self._list_threads(cwds)}
+        except Exception as e:
+            log.warning("codex: reading every rollout for %s failed (again in a minute): %s", project_dir, e)
+            await asyncio.sleep(60)
+            self._scanned.pop(project_dir, None)  # the next listing starts another
+            return
         self._scanned[project_dir] = [t for t in found if t["id"] not in listed]
+        if self._scanned[project_dir] and self.on_listing_changed:  # the listings since lacked them
+            self.on_listing_changed(project_dir)
+
+    def listing_incomplete(self, project_dir: str) -> bool:
+        return self.available()[0] and self._scanned.get(project_dir) is None
 
     async def list_sessions(self, project_dir: str, roots: list[str]) -> list[SessionSummary]:
         if not self.available()[0]:
             return []
         cwds = _thread_cwds(roots)
         if project_dir not in self._scanned:  # what only a scan finds was written before Atrium started: one scan, in the background
-            self._scanned[project_dir] = []
+            self._scanned[project_dir] = None
             asyncio.get_running_loop().create_task(self._scan_rollouts(project_dir, cwds))
-        threads = await self._list_threads(cwds)
+        try:
+            threads = await self._list_threads(cwds)
+        except Exception as e:
+            if not self._list_warned:
+                log.warning("codex thread/list failed: %s", e)
+                self._list_warned = True
+            threads = []
         listed = {t["id"] for t in threads}
-        threads += [t for t in self._scanned[project_dir] if t["id"] not in listed and _on_disk(t)]  # (not deleted since)
+        threads += [t for t in self._scanned.get(project_dir) or [] if t["id"] not in listed and _on_disk(t)]  # (not deleted since)
         # thread/revert (an edit) carries a thread on in a new rollout: the index gives the thread as made then, a scan
         # lists each rollout. One row, the newest's, made when its id was (the first rollout's time)
         by_id: dict[str, dict[str, Any]] = {}
@@ -1193,14 +1205,14 @@ class CodexHarness(Harness):
         # list_sessions gives [] when thread/list fails: that's "can't tell", not "none"
         if not self.available()[0]:
             return False  # none that Atrium would list
+        params = {"cwd": _thread_cwds([directory]), "sourceKinds": SOURCE_KINDS, "limit": 1, "useStateDbOnly": True}
         try:
-            for scan in (False, True):  # the index, then (none there) every rollout: what the index misses, as above
-                params = {"cwd": _thread_cwds([directory]), "sourceKinds": SOURCE_KINDS, "limit": 1, "useStateDbOnly": not scan}
-                if (await self.client.request("thread/list", params, timeout=30)).get("data"):
-                    return True
+            res = await self.client.request("thread/list", params, timeout=30)
         except Exception:
             return None
-        return False
+        # asked of a chat as it is left (the page waits for the answer): a folder Atrium made, where an older Codex's
+        # threads can't be. So the index, and what a listing's scan found there, not seconds of reading every rollout
+        return bool(res.get("data") or self._scanned.get(directory))
 
     async def list_subagents(self, sessions: list[SessionSummary], roots: list[str]) -> dict[str, list[SubagentSummary]]:
         # thread/list doesn't return sub-agent threads: follow each thread's own spawn events instead

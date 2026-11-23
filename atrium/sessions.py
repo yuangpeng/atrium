@@ -21,7 +21,7 @@ from .board.prompts import (
 )
 from .board.tools import BOARD_SERVER, board_toolset
 from .capture import CaptureContext, capture
-from .config import UPLOADS_DIR, config
+from .config import UPLOADS_DIR, config, project_id_for
 from .events import hub
 from .gitagent import GIT_AGENT_ALLOWED_TOOLS, GIT_SERVER, git_toolset
 from .harness import all_harnesses, get_harness
@@ -113,6 +113,8 @@ class SessionManager:
         self._reaper: asyncio.Task | None = None
         self._summary_cache: dict[str, tuple[float, list[SessionSummary]]] = {}
         self._summary_inflight: dict[str, asyncio.Task] = {}
+        for h in all_harnesses():
+            h.on_listing_changed = self._listing_changed
 
     # ---- lifecycle ---------------------------------------------------------
     def start_background(self) -> None:
@@ -348,13 +350,20 @@ class SessionManager:
                 out += r
         found = {os.path.realpath(s.cwd) for s in out if s.cwd}
         stale = [p for p, e in seen.items() if e.get("gone") and time.time() - e["gone"] > FORGET_EMPTY_WORKTREES and p not in found]
-        if stale:  # removed long ago and no session worked there
+        # removed long ago and no session worked there: as far as every harness can tell yet (Codex's first scan)
+        if stale and not any(isinstance(r, BaseException) or h.listing_incomplete(project.path) for h, r in zip(all_harnesses(), results)):
             project.forget_worktrees(stale)
         self._summary_cache[project.id] = (time.time(), out)
         return out
 
     def invalidate(self, project: Project) -> None:
         self._summary_cache.pop(project.id, None)
+
+    def _listing_changed(self, project_dir: str) -> None:
+        """A harness finds more of the project's sessions than it gave last time (Codex, once its scan is done)."""
+        pid = project_id_for(project_dir)
+        self._summary_cache.pop(pid, None)
+        hub.publish(f"project:{pid}", {"type": "sessions_changed", "source": "scan"})
 
     async def find_summary(self, project: Project, sid: str) -> SessionSummary | None:
         for s in await self.summaries(project, stale_ok=True):  # where it is and which harness: as when it was found

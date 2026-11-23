@@ -287,6 +287,8 @@ class Harness(ABC):
     efforts: list[str] = []  # reasoning-effort levels when a model does not list its own
     can_fork: bool = True  # implements fork_point / fork_session
     can_edit: bool = False  # implements edit_point / rewind_session: a sent message can be changed
+    # set by the session manager: called with a project's directory when list_sessions would now find more there
+    on_listing_changed: Callable[[str], None] | None = None
 
     def available(self) -> tuple[bool, str | None]:
         """Whether the harness can run here (binary installed, enabled in settings…)."""
@@ -300,6 +302,10 @@ class Harness(ABC):
     async def has_sessions(self, directory: str) -> bool | None:
         """Whether a session of this harness ran in ``directory``, from Atrium or not; None: it can't tell."""
         return bool(await self.list_sessions(directory, [directory]))
+
+    def listing_incomplete(self, project_dir: str) -> bool:
+        """Whether ``list_sessions`` may not have given every session of the project yet (part of its search still runs)."""
+        return False
 
     @abstractmethod
     def transcript_path(self, session_id: str, cwd: str) -> Path | None: ...
