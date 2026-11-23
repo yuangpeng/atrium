@@ -15,11 +15,17 @@ A model answers in a second or two, slow for this. What makes up for it here (th
   since is how one of them starts, the rest of it is the answer, at once or as soon as it comes;
 - ``speculative``: what comes after the suggestion shown is asked for while it shows, so that Tab after Tab finds the
   next one waiting.
+
+A server limits how often it is asked (one gateway: 50 requests a minute per model and key, shared with whatever else
+uses them). Completion keeps under ``completion.max_per_minute`` itself, the requests it can do without (asked ahead,
+or a second one for a place already being asked about) going first, and when the server says it is asked too often
+(429), it waits as long as the server says before asking again (``_Throttle``).
 """
 
 from __future__ import annotations
 
 import asyncio
+import collections
 import json
 import logging
 import re
@@ -229,6 +235,59 @@ def _block(added: str, line_before: str, rest: str, done: bool) -> str | None:
 _client: httpx.AsyncClient | None = None
 _omit: dict[tuple[str, str], set[str]] = {}  # (server, model) -> what it refused, sent no more: reasoning_effort, …
 _used = 0.0  # when the model's server was last asked (time.monotonic)
+SPARE = 0.75  # of max_per_minute: past it, only the requests a suggestion can't do without
+
+
+class _Throttle:
+    """How often a model is asked, per server: the requests of the last minute, and when the server, rate limiting,
+    said to ask again."""
+
+    def __init__(self) -> None:
+        self.sent: collections.deque[float] = collections.deque()
+        self.until = 0.0
+
+    def used(self) -> int:
+        now = time.monotonic()
+        while self.sent and now - self.sent[0] >= 60:
+            self.sent.popleft()
+        return len(self.sent)
+
+    def wait(self, limit: int) -> float:
+        """Seconds before this model may be asked again (0: now), by the server's word or by ``limit`` a minute."""
+        now = time.monotonic()
+        if self.until > now:
+            return self.until - now
+        if limit and self.used() >= limit:
+            return 60 - (now - self.sent[0])
+        return 0.0
+
+    def spare(self, limit: int) -> bool:
+        """Whether there is room for a request a suggestion can do without."""
+        return not self.wait(limit) and (not limit or self.used() < limit * SPARE)
+
+
+_throttles: dict[tuple[str, str], _Throttle] = {}
+
+
+def _throttle(s: dict[str, Any]) -> _Throttle:
+    return _throttles.setdefault((s["base_url"], s["model"]), _Throttle())
+
+
+def _limit(s: dict[str, Any]) -> int:
+    try:
+        return max(0, int(s.get("max_per_minute") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _retry_after(headers: httpx.Headers) -> float:
+    """The server's "ask again in": Retry-After (seconds), or X-Retry-After-Ms; 10 s when it says nothing."""
+    for name, scale in (("x-retry-after-ms", 0.001), ("retry-after", 1.0)):
+        try:
+            return max(1.0, float(headers.get(name, "")) * scale)
+        except ValueError:
+            continue
+    return 10.0
 WARM_SECONDS = 60  # warm() does nothing this long after the server was asked
 
 
@@ -291,7 +350,9 @@ async def _stream(s: dict[str, Any], payload: dict[str, Any]):
     url = endpoint(s["base_url"], "/chat/completions")
     headers = _auth(s)
     _used = time.monotonic()
+    throttle = _throttle(s)
     for _ in range(3):
+        throttle.sent.append(time.monotonic())
         try:
             async with _http().stream("POST", url, json=payload, headers=headers) as r:
                 if r.status_code >= 400:
@@ -307,6 +368,10 @@ async def _stream(s: dict[str, Any], payload: dict[str, Any]):
                         log.info("%s refused %s: asked again without it", s["model"], refused)
                         payload = _without(payload, refused)
                         continue
+                    if r.status_code == 429:  # asked too often: not again before the server says
+                        wait = _retry_after(r.headers)
+                        throttle.until = time.monotonic() + wait
+                        raise CompletionError(f"{s['model']} is rate limited by the server ({msg[:200]}): suggestions resume in {wait:.0f} s", 429)
                     raise CompletionError(f"{s['model']} ({r.status_code}): {msg[:300]}")
                 # read to the end of the body, past [DONE]: a response left unread closes the connection
                 async for line in r.aiter_lines():
@@ -432,13 +497,17 @@ async def complete(pid: str, path: str, label: str, language: str, before: str, 
         elif len(fits) < 2:
             fits.append((j, typed))
     exact = any(typed == "" for _, typed in fits)
+    throttle, limit = _throttle(s), _limit(s)
     if speculative:
-        if not exact:
+        if not exact and throttle.spare(limit):
             jobs.append(_Job(s, label, language, before, after))
             _jobs[key] = _tidy(jobs)
         return {"text": "", "queued": True}
     own = None
-    if not exact:
+    if not exact and (not fits or throttle.spare(limit)):  # a second request for this place only when there is room
+        if wait := throttle.wait(limit):
+            why = "rate limited by the server" if throttle.until > time.monotonic() else f"asked {limit} times in the last minute (completion.max_per_minute)"
+            raise CompletionError(f"{s['model']}: {why}; suggestions resume in {wait:.0f} s", 429)
         own = _Job(s, label, language, before, after)
         jobs.append(own)
         _jobs[key] = _tidy(jobs)

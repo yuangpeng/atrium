@@ -267,6 +267,7 @@ TODO；需要你处理时，它会报告等你。harness、模型和 effort 在 
 | `completion.model` | `""` | 边打字边给出代码建议的模型，走 `/v1/chat/completions`。`""` = 没有行内补全。 |
 | `completion.base_url` | `""` | 它的服务器，带不带 `/v1` 都行，写法同 `voice.base_url`；不会沿用 `voice` 的设置，两者相同也要写上。 |
 | `completion.api_key` | `""` | 以 `Authorization: Bearer …` 发送，为空时不发。和服务器一样是它自己的，不用 `voice.api_key`。`/api/meta` 只说明是否已设置。 |
+| `completion.max_per_minute` | `40` | 每分钟最多向模型发多少个请求（`0`：不限）。要低于服务器允许的量：某个网关对每个模型、每个 key 限 50 次/分钟，而且和用同一模型、同一 key 的其它东西共用。用到四分之三后不再预取；到上限后一分钟内不再给建议。服务器自己回 429（请求太频繁）时，按它给的时间暂停，✦ 开关上会显示。 |
 | `completion.effort` | `"none"` | 发送的 `reasoning_effort`：建议要在一两秒内出来，所以取模型接受的最低档（gpt-6-luna 用 `none`，有的模型用 `minimal`）。模型不接受时会去掉它重问；`""` 表示不发送。 |
 
 `lsp` 的修改对之后启动的语言服务器生效。

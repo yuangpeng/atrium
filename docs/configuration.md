@@ -285,6 +285,7 @@ microphone; if that was denied, allow it in the browser's settings for the site.
 | `completion.model` | `""` | The model that suggests code as you type, through `/v1/chat/completions`. `""` = no inline completion. |
 | `completion.base_url` | `""` | Its server, with or without `/v1`, as `voice.base_url`; nothing is taken from `voice`, so set it even when the two are the same. |
 | `completion.api_key` | `""` | Sent as `Authorization: Bearer …`; not sent when empty. Its own, like the server: `voice.api_key` isn't used. `/api/meta` only says whether it is set. |
+| `completion.max_per_minute` | `40` | Requests to the model a minute at most (`0`: no limit). Keep it under what the server allows: one gateway allows 50 a minute per model and key, shared with everything else that uses them. Past three quarters of it, nothing is asked for ahead; at the limit, no suggestions until a minute has passed. When the server itself says it is asked too often (429), none until the time it gives; the ✦ switch says so. |
 | `completion.effort` | `"none"` | The `reasoning_effort` sent: a suggestion has to come in a second or two, so the least the model takes (`none` for gpt-6-luna; `minimal` for some). A model that refuses it is asked again without it; `""` sends none. |
 
 `lsp` changes reach language servers started afterwards.

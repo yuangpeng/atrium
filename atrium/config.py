@@ -118,8 +118,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # Inline completion in the Files editor, as Cursor's Tab: what comes next at the cursor, in grey as you type; Tab takes
     # it, ⌘→ a word of it. From a model behind an OpenAI-compatible /v1/chat/completions at base_url, with api_key (its
     # own: nothing is taken from voice's); model "" = none: off. effort: the reasoning_effort sent ("" = none): a
-    # suggestion has to come in a second or two, so the least the model has. ui.completion is its switch.
-    "completion": {"model": "", "base_url": "", "api_key": "", "effort": "none"},
+    # suggestion has to come in a second or two, so the least the model has. max_per_minute: requests to the model a
+    # minute at most (0: no limit), under what the server allows (one gateway: 50 per model and key, shared with
+    # whatever else uses them). ui.completion is its switch.
+    "completion": {"model": "", "base_url": "", "api_key": "", "effort": "none", "max_per_minute": 40},
     # Language servers behind the editor (semantic highlighting, go to definition, hover, …).
     # commands: {"python": ["pyright-langserver", "--stdio"]} overrides the auto-detected server.
     "lsp": {
