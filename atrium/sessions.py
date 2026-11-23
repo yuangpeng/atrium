@@ -315,7 +315,7 @@ class SessionManager:
     # ---- discovery ---------------------------------------------------------
     async def summaries(self, project: Project, max_age: float = 3.0, stale_ok: bool = False) -> list[SessionSummary]:
         """``stale_ok``: what was found last time, older or not, while it is looked for again (a chat opening a session
-        it knows: listing every harness's sessions takes a tenth of a second, Codex's most of it)."""
+        it knows: listing every harness's sessions takes a tenth of a second)."""
         cached = self._summary_cache.get(project.id)
         if cached and time.time() - cached[0] < max_age:
             return cached[1]

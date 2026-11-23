@@ -1012,6 +1012,8 @@ class CodexHarness(Harness):
         self._cwd_cache: dict[str, str | None] = {}
         self._models: tuple[float, list[dict[str, Any]]] | None = None
         self._list_warned = False
+        self._scanned: dict[str, list[dict[str, Any]]] = {}  # project -> the threads only a scan of every rollout found
+        self._scan_lock = asyncio.Lock()
         self._spawns_cache: dict[str, tuple[int, list[tuple[str, str]]]] = {}  # rollout -> (size, [(sub-agent thread, spawn call)])
         self._thread_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}  # thread/read, briefly
         self._compaction_cache: dict[str, _CompactionScan] = {}  # rollout path -> what's read of it
@@ -1139,17 +1141,18 @@ class CodexHarness(Harness):
         return self._models[1]
 
     # ---- discovery ---------------------------------------------------------
-    async def list_sessions(self, project_dir: str, roots: list[str]) -> list[SessionSummary]:
-        if not self.available()[0]:
-            return []
+    async def _list_threads(self, cwds: list[str], scan: bool = False) -> list[dict[str, Any]]:
+        """Every page of thread/list for ``cwds``, from Codex's SQLite index (milliseconds). ``scan``: Codex reads the
+        start of every rollout under ~/.codex/sessions instead, seconds where there are thousands, and finds those the
+        index doesn't list: an older Codex's threads (no preview there), rollouts another program put there."""
         threads: list[dict[str, Any]] = []
         cursor = None
         for _ in range(10):
-            params: dict[str, Any] = {"cwd": _thread_cwds(roots), "sourceKinds": SOURCE_KINDS, "limit": 100}
+            params: dict[str, Any] = {"cwd": cwds, "sourceKinds": SOURCE_KINDS, "limit": 100, "useStateDbOnly": not scan}
             if cursor:
                 params["cursor"] = cursor
             try:
-                res = await self.client.request("thread/list", params, timeout=30)
+                res = await self.client.request("thread/list", params, timeout=120 if scan else 30)
             except Exception as e:
                 if not self._list_warned:
                     log.warning("codex thread/list failed: %s", e)
@@ -1159,10 +1162,29 @@ class CodexHarness(Harness):
             cursor = res.get("nextCursor")
             if not cursor:
                 break
-        # thread/revert (an edit) carries a thread on in a new rollout, and each is listed: one row, the newest's
+        return threads
+
+    async def _scan_rollouts(self, project_dir: str, cwds: list[str]) -> None:
+        async with self._scan_lock:  # one at a time: each reads every rollout
+            found = await self._list_threads(cwds, scan=True)
+        listed = {t["id"] for t in await self._list_threads(cwds)}
+        self._scanned[project_dir] = [t for t in found if t["id"] not in listed]
+
+    async def list_sessions(self, project_dir: str, roots: list[str]) -> list[SessionSummary]:
+        if not self.available()[0]:
+            return []
+        cwds = _thread_cwds(roots)
+        if project_dir not in self._scanned:  # what only a scan finds was written before Atrium started: one scan, in the background
+            self._scanned[project_dir] = []
+            asyncio.get_running_loop().create_task(self._scan_rollouts(project_dir, cwds))
+        threads = await self._list_threads(cwds)
+        listed = {t["id"] for t in threads}
+        threads += [t for t in self._scanned[project_dir] if t["id"] not in listed and _on_disk(t)]  # (not deleted since)
+        # thread/revert (an edit) carries a thread on in a new rollout: the index gives the thread as made then, a scan
+        # lists each rollout. One row, the newest's, made when its id was (the first rollout's time)
         by_id: dict[str, dict[str, Any]] = {}
         for t in sorted(threads, key=lambda t: t.get("updatedAt") or 0):
-            created = [x for x in (t.get("createdAt"), by_id.get(t["id"], {}).get("createdAt")) if x]
+            created = [x for x in (t.get("createdAt"), by_id.get(t["id"], {}).get("createdAt"), _id_time(t["id"])) if x]
             by_id[t["id"]] = {**t, "createdAt": min(created) if created else None}
         return [self._summary(t) for t in by_id.values()]
 
@@ -1171,10 +1193,13 @@ class CodexHarness(Harness):
         if not self.available()[0]:
             return False  # none that Atrium would list
         try:
-            res = await self.client.request("thread/list", {"cwd": _thread_cwds([directory]), "sourceKinds": SOURCE_KINDS, "limit": 1}, timeout=30)
+            for scan in (False, True):  # the index, then (none there) every rollout: what the index misses, as above
+                params = {"cwd": _thread_cwds([directory]), "sourceKinds": SOURCE_KINDS, "limit": 1, "useStateDbOnly": not scan}
+                if (await self.client.request("thread/list", params, timeout=30)).get("data"):
+                    return True
         except Exception:
             return None
-        return bool(res.get("data"))
+        return False
 
     async def list_subagents(self, sessions: list[SessionSummary], roots: list[str]) -> dict[str, list[SubagentSummary]]:
         # thread/list doesn't return sub-agent threads: follow each thread's own spawn events instead
@@ -1814,6 +1839,22 @@ def _uuid7() -> str:
     b[6] = 0x70 | (b[6] & 0x0F)
     b[8] = 0x80 | (b[8] & 0x3F)
     return str(uuid.UUID(bytes=bytes(b)))
+
+
+def _id_time(thread_id: str) -> float | None:
+    """When a UUID version 7 id was made (``_uuid7``); None for another kind."""
+    if len(thread_id) != 36 or thread_id[14] != "7":
+        return None
+    try:
+        return int(thread_id[:8] + thread_id[9:13], 16) / 1000
+    except ValueError:
+        return None
+
+
+def _on_disk(t: dict[str, Any]) -> bool:
+    """Whether a listed thread's rollout is there, or compressed next to where it was (Codex lists the .jsonl then)."""
+    p = t.get("path")
+    return not p or os.path.exists(p) or os.path.exists(p + ".zst")
 
 
 async def _settled(path: Path) -> None:
