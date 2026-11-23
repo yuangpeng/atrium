@@ -116,9 +116,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # transcript as heard. refine_effort "" = none sent (models without reasoning).
     "voice": {"base_url": "", "api_key": "", "asr_model": "", "refine_model": "", "refine_effort": "low"},
     # Inline completion in the Files editor, as Cursor's Tab: what comes next at the cursor, in grey as you type; Tab takes
-    # it, ⌘→ a word of it. From a model behind an OpenAI-compatible /v1/chat/completions (model "" = none: off), on
-    # voice's server with voice's key unless base_url / api_key are given. effort: the reasoning_effort sent ("" = none):
-    # a suggestion has to come in a second or two, so the least the model has. ui.completion is its switch.
+    # it, ⌘→ a word of it. From a model behind an OpenAI-compatible /v1/chat/completions at base_url, with api_key (its
+    # own: nothing is taken from voice's); model "" = none: off. effort: the reasoning_effort sent ("" = none): a
+    # suggestion has to come in a second or two, so the least the model has. ui.completion is its switch.
     "completion": {"model": "", "base_url": "", "api_key": "", "effort": "none"},
     # Language servers behind the editor (semantic highlighting, go to definition, hover, …).
     # commands: {"python": ["pyright-langserver", "--stdio"]} overrides the auto-detected server.

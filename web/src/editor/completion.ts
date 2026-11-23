@@ -156,9 +156,20 @@ function follow(editor: Monaco.editor.ICodeEditor, pid: string, body: Parameters
 monaco.languages.registerInlineCompletionsProvider("*", provider);
 monaco.editor.registerCommand(ACCEPTED, () => void (acceptedAt = Date.now()));
 
+/** The connection to the model's server, opened as an editor gets the focus: the first suggestion doesn't wait for it
+ *  (the server skips it when it was asked lately). */
+let warmedAt = 0;
+function warm() {
+  const { meta, project } = useApp.getState();
+  if (!project || meta?.settings.ui.completion === false || !meta?.settings.completion?.model || Date.now() - warmedAt < 60_000) return;
+  warmedAt = Date.now();
+  api.completeWarm(project.id).catch(() => undefined);
+}
+
 /** Inline completion for a Files editor, while it is mounted. */
 export function serveCompletion(editor: Monaco.editor.ICodeEditor): Monaco.IDisposable {
   served.add(editor);
+  const focus = editor.onDidFocusEditorText(warm);
   const gone = editor.onDidDispose(() => served.delete(editor));
-  return { dispose: () => (served.delete(editor), gone.dispose()) };
+  return { dispose: () => (served.delete(editor), focus.dispose(), gone.dispose()) };
 }

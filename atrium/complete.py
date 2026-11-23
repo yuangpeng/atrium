@@ -1,9 +1,9 @@
 """Inline completion in the Files editor, as Cursor's Tab: what comes next at the cursor, shown in grey while one types,
 Tab taking it.
 
-A model behind an OpenAI-compatible ``/v1/chat/completions`` (``completion`` in settings.json; the server and key are
-``voice``'s unless given) gets the file around the cursor, the cursor marked, and writes the cursor's line from its
-start, completed, with the lines that should follow it. What it adds there is the suggestion (``suggestion``), cut
+A model behind an OpenAI-compatible ``/v1/chat/completions`` (``completion`` in settings.json: its own server and key)
+gets the file around the cursor, the cursor marked, and writes the cursor's line from its start, completed, with the
+lines that should follow it. What it adds there is the suggestion (``suggestion``), cut
 where it has enough: at the end of the line when there is code after the cursor, else at the end of the statement or
 block the cursor is in (``MAX_LINES`` at most), and without what it repeats of the code after the cursor.
 
@@ -74,9 +74,8 @@ class CompletionError(Exception):
 
 def settings() -> dict[str, Any]:
     s = dict(config.get("completion") or {})
-    voice = config.get("voice") or {}
-    s["base_url"] = str(s.get("base_url") or voice.get("base_url") or "")
-    s["api_key"] = str(s.get("api_key") or voice.get("api_key") or "")
+    s["base_url"] = str(s.get("base_url") or "")
+    s["api_key"] = str(s.get("api_key") or "")
     return s
 
 
@@ -229,6 +228,8 @@ def _block(added: str, line_before: str, rest: str, done: bool) -> str | None:
 # ---- the requests ------------------------------------------------------------------------------------------------
 _client: httpx.AsyncClient | None = None
 _omit: dict[tuple[str, str], set[str]] = {}  # (server, model) -> what it refused, sent no more: reasoning_effort, …
+_used = 0.0  # when the model's server was last asked (time.monotonic)
+WARM_SECONDS = 60  # warm() does nothing this long after the server was asked
 
 
 def _http() -> httpx.AsyncClient:
@@ -236,6 +237,25 @@ def _http() -> httpx.AsyncClient:
     if _client is None:
         _client = httpx.AsyncClient(timeout=TIMEOUT, limits=httpx.Limits(max_connections=32, max_keepalive_connections=8, keepalive_expiry=120))
     return _client
+
+
+def _auth(s: dict[str, Any]) -> dict[str, str]:
+    return {"Authorization": f"Bearer {s['api_key']}"} if s.get("api_key") else {}
+
+
+async def warm() -> None:
+    """The connection to the model's server, opened before the first suggestion needs it (the page asks when an editor
+    gets the focus): a new one, TLS through a proxy, holds a suggestion up by about a second. Nothing when the server was
+    asked lately, or when completion isn't set up; what the server answers doesn't matter."""
+    global _used
+    s = settings()
+    if not (s.get("model") and s["base_url"]) or time.monotonic() - _used < WARM_SECONDS:
+        return
+    _used = time.monotonic()
+    try:
+        await _http().head(endpoint(s["base_url"], "/models"), headers=_auth(s), timeout=10)
+    except httpx.HTTPError:
+        pass
 
 
 def _payload(s: dict[str, Any], label: str, language: str, before: str, after: str, line_rest: str) -> dict[str, Any]:
@@ -267,8 +287,10 @@ def _without(p: dict[str, Any], key: str) -> dict[str, Any]:
 
 async def _stream(s: dict[str, Any], payload: dict[str, Any]):
     """The reply's text, piece by piece. A parameter the model refuses (a 400 naming it) is dropped, for good."""
+    global _used
     url = endpoint(s["base_url"], "/chat/completions")
-    headers = {"Authorization": f"Bearer {s['api_key']}"} if s.get("api_key") else {}
+    headers = _auth(s)
+    _used = time.monotonic()
     for _ in range(3):
         try:
             async with _http().stream("POST", url, json=payload, headers=headers) as r:
@@ -394,7 +416,7 @@ async def complete(pid: str, path: str, label: str, language: str, before: str, 
     if not s.get("model"):
         raise CompletionError("Inline completion has no model: set completion.model in Atrium's settings", 400)
     if not s["base_url"]:
-        raise CompletionError("Inline completion has no server: set completion.base_url (or voice.base_url)", 400)
+        raise CompletionError("Inline completion has no server: set completion.base_url in Atrium's settings", 400)
     if not wanted(after.split("\n", 1)[0], language) or SECRET_FILES.search(path.rsplit("/", 1)[-1]):
         return {"text": ""}
     key = f"{pid}\0{path}"

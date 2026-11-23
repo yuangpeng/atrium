@@ -1049,6 +1049,14 @@ async def complete_code(pid: str, request: Request, body: dict[str, Any] = Body(
     return work.result()
 
 
+@app.post("/api/p/{pid}/complete/warm")
+async def complete_warm(pid: str):
+    """Opens the connection to the completion model's server before the first suggestion needs it (complete.warm)."""
+    P(pid)
+    await complete.warm()
+    return {"ok": True}
+
+
 async def _disconnected(request: Request) -> None:
     """Returns when the page that sent ``request`` (its body read) is gone."""
     while (await request.receive())["type"] != "http.disconnect":

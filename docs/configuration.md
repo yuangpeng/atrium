@@ -283,8 +283,8 @@ microphone; if that was denied, allow it in the browser's settings for the site.
 | `ui.auto_save` | `true` | The Files editor saves a file a moment (1 s) after you stop typing, and at once when you switch to another file or panel, close its tab or leave the page. The toggle beside the lock in the editor's bar sets it. `false`: ⌘S or the Save button saves. Either way, a file that changed on disk meanwhile isn't overwritten: the editor asks. |
 | `ui.completion` | `true` | Inline completion in the Files editor (below), once `completion.model` is set. The ✦ switch in the editor's bar sets it. |
 | `completion.model` | `""` | The model that suggests code as you type, through `/v1/chat/completions`. `""` = no inline completion. |
-| `completion.base_url` | `""` | Its server, as `voice.base_url`; `""` = `voice.base_url`. |
-| `completion.api_key` | `""` | Its key, as `voice.api_key`; `""` = `voice.api_key`. `/api/meta` only says whether it is set. |
+| `completion.base_url` | `""` | Its server, with or without `/v1`, as `voice.base_url`; nothing is taken from `voice`, so set it even when the two are the same. |
+| `completion.api_key` | `""` | Sent as `Authorization: Bearer …`; not sent when empty. Its own, like the server: `voice.api_key` isn't used. `/api/meta` only says whether it is set. |
 | `completion.effort` | `"none"` | The `reasoning_effort` sent: a suggestion has to come in a second or two, so the least the model takes (`none` for gpt-6-luna; `minimal` for some). A model that refuses it is asked again without it; `""` sends none. |
 
 `lsp` changes reach language servers started afterwards.
@@ -314,7 +314,7 @@ after a pause in the typing, at the end of a line or before closing brackets onl
 code (not plain text or Markdown), and never in a file that holds secrets (`.env*`, `.envrc`, keys and
 certificates, `.npmrc`, `.netrc`, `credentials`, `secrets.*`) or one open read-only. What it sends: the file's path
 in the project, up to 6,000 characters before the cursor and 2,000 after it. A model takes a second or two, so
-Atrium hides what it can of that: the connection to the server is kept open; while a suggestion shows, what comes
+Atrium hides what it can of that: the connection to the server is opened as an editor gets the focus, and kept open; while a suggestion shows, what comes
 after it is asked for, so that after Tab the next one is usually there at once; a suggestion of several lines shows
 its first line as soon as the model has written it; a request the typing left behind runs on, and its answer is
 used if what you typed since is how it begins. On a phone the suggestion has a bar with Accept, for there is no Tab

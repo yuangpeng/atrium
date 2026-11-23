@@ -859,6 +859,7 @@ export const api = {
     body: { path: string; label: string; language: string; before: string; after: string; speculative?: boolean; whole?: boolean },
     signal?: AbortSignal,
   ) => req<{ text: string; partial?: boolean; cached?: boolean; queued?: boolean; ms?: number } | null>("POST", `/api/p/${pid}/complete`, body, signal),
+  completeWarm: (pid: string) => req<{ ok: boolean }>("POST", `/api/p/${pid}/complete/warm`),
   allFiles: (pid: string, root?: string) => req<{ root: string; files: string[]; truncated: boolean }>("GET", `/api/p/${pid}/files/all${q({ root })}`),
   /** Find in Files; `page`: this page's id, whose previous search the server stops */
   search: (
