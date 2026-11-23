@@ -82,9 +82,15 @@ class ServerSpec:
     candidates: tuple[tuple[str, ...], ...]  # argv candidates, first found wins
     settings: Callable[[str, str, str], Any] = lambda _section, _root, _project: None
     init_options: dict[str, Any] = field(default_factory=dict)
+    share: str = ""  # one process for the languages that name the same (TypeScript's server reads JavaScript too)
+
+    @property
+    def group(self) -> str:
+        return self.share or self.language
 
     def argv(self) -> list[str] | None:
-        override = (config.get("lsp.commands") or {}).get(self.language)
+        commands = config.get("lsp.commands") or {}
+        override = commands.get(self.language) or (commands.get(self.share) if self.share else None)
         if override:
             argv = [override] if isinstance(override, str) else list(override)
             exe = _find(argv[0])
@@ -115,6 +121,13 @@ SERVERS: dict[str, ServerSpec] = {
     "cpp": ServerSpec("cpp", (("clangd",),)),
     "go": ServerSpec("go", (("gopls",),)),
     "rust": ServerSpec("rust", (("rust-analyzer",),)),
+    # the project's own TypeScript (its node_modules), as VS Code reads it; while one runs, Monaco's built-in
+    # TypeScript (one file at a time) stands down
+    **{
+        lang: ServerSpec(lang, (("typescript-language-server", "--stdio"), ("vtsls", "--stdio")), share="typescript",
+                         init_options={"hostInfo": "atrium"})
+        for lang in ("typescript", "javascript")
+    },
 }
 
 
@@ -135,6 +148,10 @@ CLIENT_CAPABILITIES: dict[str, Any] = {
     "workspace": {
         "configuration": True,
         "workspaceFolders": True,
+        # edits the server makes (a rename, a quick fix, a command's result) are applied in the page: text edits only
+        "applyEdit": True,
+        "workspaceEdit": {"documentChanges": True},
+        "executeCommand": {},
         "didChangeConfiguration": {"dynamicRegistration": True},
         "semanticTokens": {"refreshSupport": True},
     },
@@ -148,6 +165,20 @@ CLIENT_CAPABILITIES: dict[str, Any] = {
         "implementation": {"linkSupport": True},
         "references": {},
         "documentHighlight": {},
+        "rename": {"prepareSupport": True},
+        "formatting": {},
+        "rangeFormatting": {},
+        "documentSymbol": {"hierarchicalDocumentSymbolSupport": True, "symbolKind": {"valueSet": list(range(1, 27))}},
+        "codeAction": {
+            "codeActionLiteralSupport": {"codeActionKind": {"valueSet": [
+                "", "quickfix", "refactor", "refactor.extract", "refactor.inline", "refactor.rewrite", "source",
+                "source.organizeImports", "source.fixAll",
+            ]}},
+            "isPreferredSupport": True,
+            "disabledSupport": True,
+            "dataSupport": True,
+            "resolveSupport": {"properties": ["edit"]},
+        },
         "signatureHelp": {
             "signatureInformation": {
                 "documentationFormat": ["markdown", "plaintext"],
@@ -196,7 +227,7 @@ class LspServer:
         self.argv = argv
         self.root = root
         self.project_dir = project_dir
-        self.key = f"{spec.language}:{root}"
+        self.key = f"{spec.group}:{root}"
         self.proc: asyncio.subprocess.Process | None = None
         self.capabilities: dict[str, Any] = {}
         self.ready = asyncio.Event()
@@ -208,6 +239,7 @@ class LspServer:
         self._by_client: dict[tuple[int, Any], int] = {}
         self._write_lock = asyncio.Lock()
         self._tasks: list[asyncio.Task] = []
+        self._commander: "LspClient | None" = None  # the tab that last ran a command: its edits (applyEdit) go there
         self.last_used = time.time()
 
     @property
@@ -330,6 +362,9 @@ class LspServer:
 
     async def _dispatch(self, msg: dict[str, Any]) -> None:
         if "method" in msg and "id" in msg:
+            if msg["method"] == "workspace/applyEdit":  # the page answers it: the reader goes on meanwhile
+                self._tasks.append(asyncio.create_task(self._apply_edit(msg)))
+                return
             await self._answer_server_request(msg)
         elif "method" in msg:
             self._on_notification(msg)
@@ -350,6 +385,19 @@ class LspServer:
                 client.allow_locations(msg["result"])
             client.post({"op": "rpc", "key": self.key, "msg": {**msg, "id": cid}})
 
+    async def _apply_edit(self, msg: dict[str, Any]) -> None:
+        """A WorkspaceEdit the server wants made (after a command, mostly): made by the tab that ran the command,
+        which has the files open and saves them; refused when there is none."""
+        client = self._commander if self._commander in self.clients else None
+        if client is None:
+            result = {"applied": False, "failureReason": "no editor open to make the change in"}
+        else:
+            result = await client.apply_edit(self.key, (msg.get("params") or {}).get("edit") or {})
+        try:
+            await self._write({"jsonrpc": "2.0", "id": msg["id"], "result": result})
+        except ConnectionError:
+            pass
+
     async def _answer_server_request(self, msg: dict[str, Any]) -> None:
         method, params = msg["method"], msg.get("params") or {}
         result: Any = None
@@ -361,8 +409,6 @@ class LspServer:
         elif method == "workspace/semanticTokens/refresh":
             for c in list(self.clients):
                 c.post({"op": "refresh", "key": self.key})
-        elif method == "workspace/applyEdit":
-            result = {"applied": False, "failureReason": "not supported by Atrium"}
         elif method in ("window/workDoneProgress/create", "client/registerCapability", "client/unregisterCapability",
                         "window/showMessageRequest", "workspace/diagnostic/refresh", "workspace/inlayHint/refresh",
                         "workspace/codeLens/refresh"):
@@ -407,6 +453,8 @@ class LspServer:
             if sid is not None:
                 await self._write({"jsonrpc": "2.0", "method": "$/cancelRequest", "params": {"id": sid}})
         elif "id" in msg and method:
+            if method == "workspace/executeCommand":
+                self._commander = client
             self._next_id += 1
             sid = self._next_id
             self._pending[sid] = (client, msg["id"], method, None)
@@ -470,7 +518,7 @@ class LspRegistry:
         spec = SERVERS.get(language)
         if not spec or not config.get("lsp.enabled"):
             return None
-        key = f"{language}:{root}"
+        key = f"{spec.group}:{root}"
         async with self._lock:
             srv = self._servers.get(key)
             if srv and (srv.alive or not srv.ready.is_set()):
@@ -518,6 +566,22 @@ class LspClient:
         self.servers: dict[str, LspServer] = {}
         self._roots = roots  # -> [(root, project_dir)] of every loaded project
         self._allowed: set[str] = set()
+        self._edits: dict[int, asyncio.Future[dict[str, Any]]] = {}  # applyEdit requests waiting for the page's answer
+        self._next_edit = 0
+
+    async def apply_edit(self, key: str, edit: dict[str, Any]) -> dict[str, Any]:
+        """Has the page make ``edit`` (it applies it to the open files and writes the others) and waits for the outcome."""
+        self._next_edit += 1
+        eid = self._next_edit
+        fut: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+        self._edits[eid] = fut
+        self.post({"op": "applyEdit", "key": key, "id": eid, "edit": edit})
+        try:
+            return await asyncio.wait_for(fut, 60)
+        except asyncio.TimeoutError:
+            return {"applied": False, "failureReason": "the editor didn't answer"}
+        finally:
+            self._edits.pop(eid, None)
 
     def post(self, msg: dict[str, Any]) -> None:
         self.queue.put_nowait(msg)
@@ -552,6 +616,10 @@ class LspClient:
                     self.post({"op": "exit", "key": srv.key})
         elif op == "read":
             self.post({"op": "read", "id": msg.get("id"), **self._read(msg.get("uri") or "")})
+        elif op == "applied":  # the page's answer to an applyEdit
+            fut = self._edits.get(msg.get("id") or 0)
+            if fut and not fut.done():
+                fut.set_result({"applied": bool(msg.get("applied")), **({"failureReason": str(msg["failureReason"])} if msg.get("failureReason") else {})})
 
     async def _attach(self, language: str, root: str) -> None:
         reply = {"op": "attached", "language": language, "root": root}
@@ -584,6 +652,9 @@ class LspClient:
             return {"error": str(e)}
 
     async def close(self) -> None:
+        for fut in self._edits.values():
+            if not fut.done():
+                fut.set_result({"applied": False, "failureReason": "the editor went away"})
         for srv in list(self.servers.values()):
             await srv.detach(self)
         self.servers.clear()

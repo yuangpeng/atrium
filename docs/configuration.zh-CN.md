@@ -90,7 +90,7 @@ Atrium 只有一个属于自己的配置文件：`~/.atrium/settings.json`。其
   "lsp": {"enabled": true, "commands": {}, "python": {"typeCheckingMode": "standard"}},
   "terminal": {"enabled": true, "shell": ""},
   "capture": {"enabled": true, "max_mb": 1024},
-  "ui": {"theme": "system"}
+  "ui": {"theme": "system", "auto_save": true}
 }
 ```
 
@@ -259,11 +259,25 @@ TODO；需要你处理时，它会报告等你。harness、模型和 effort 在 
 | Key | 默认值 | 说明 |
 |---|---|---|
 | `lsp.enabled` | `true` | 编辑器背后的语言服务器。 |
-| `lsp.commands` | `{}` | 按语言指定服务器，代替自动找到的那个：写一个程序（名字或路径，不带参数），或参数列表，例如 `{"c": "clangd", "python": ["pyright-langserver", "--stdio"]}`。支持的语言：`python`、`c`、`cpp`、`go`、`rust`。 |
+| `lsp.commands` | `{}` | 按语言指定服务器，代替自动找到的那个：写一个程序（名字或路径，不带参数），或参数列表，例如 `{"c": "clangd", "python": ["pyright-langserver", "--stdio"]}`。支持的语言：`python`、`c`、`cpp`、`go`、`rust`、`typescript`、`javascript`（同一个服务器读两者；只写 `typescript` 也会用于 JavaScript）。 |
 | `lsp.python.typeCheckingMode` | `"standard"` | `off`、`basic`、`standard`、`strict`、`recommended` 或 `all`。 |
 | `ui.theme` | `"system"` | 不会被读取：侧边栏主题开关的选择由浏览器记住。 |
+| `ui.auto_save` | `true` | Files 编辑器在你停止输入片刻（1 秒）后自动保存；切换到别的文件或面板、关掉标签页、离开页面时立即保存。编辑器工具栏里锁旁边的开关改的就是它。`false`：用 ⌘S 或保存按钮保存。无论开关如何，文件在此期间如果已在磁盘上被改过，都不会被覆盖，编辑器会先问你。 |
 
 `lsp` 的修改对之后启动的语言服务器生效。
+
+自动查找的服务器（在 Atrium 的环境或 `PATH` 里）：Python 用 basedpyright（随 Atrium 安装）、pyright 或 pylsp；C 和
+C++ 用 clangd；Go 用 gopls；Rust 用 rust-analyzer；TypeScript 和 JavaScript 用 `typescript-language-server` 或
+`vtsls`（`npm install -g typescript-language-server typescript`，或 `npm install -g @vtsls/language-server`）。
+装了其中之一，TypeScript 会像 VS Code 一样读整个项目（它的 `tsconfig.json` 和 `node_modules`）；没装时，编辑器
+自带的 TypeScript 一次只看一个文件。服务器支持的功能会出现在编辑器里：⌘ 点击或 F12 跳到定义，⇧F12 列出引用，
+F2 在所有用到某个符号的文件里重命名它，⌘. 给出快速修复，⇧⌥F 格式化（要服务器支持格式化：clangd、gopls、
+rust-analyzer、TypeScript 的服务器支持，basedpyright 不支持），⇧⌘O 列出文件里的符号。重命名会直接写入没打开的
+文件；已打开的文件只改编辑器里的内容，由自动保存写入。
+
+打开着的文件，只要你没改过，就会跟着磁盘更新：变化来自文件监听；Files 面板显示时，每 2 秒还会检查一次文件的大小和
+修改时间。所以监听覆盖不到的文件也能跟上：`.gitignore` 列出的目录里的文件（Linux 上的监听会跳过这些目录）、
+`node_modules` 里的，以及网络盘上由其它机器写入的。
 
 ### 终端
 

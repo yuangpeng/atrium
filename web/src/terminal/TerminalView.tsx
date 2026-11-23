@@ -2,9 +2,10 @@
 // described there). In a chunk of its own, loaded when the Terminal panel first shows a terminal.
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
-import { ClipboardPaste } from "lucide-react";
+import { ArrowDown, ArrowUp, CaseSensitive, ClipboardPaste, Regex, WholeWord, X } from "lucide-react";
 import { type ITheme, Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { SearchAddon, type ISearchOptions } from "@xterm/addon-search";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
@@ -35,6 +36,20 @@ function theme(el: HTMLElement): ITheme {
     scrollbarSliderActiveBackground: "rgba(255, 255, 255, 0.34)",
   };
 }
+
+// find in the terminal: every match marked, the current one in Atrium's accent (xterm wants #RRGGBB here)
+const FIND_MARKS: ISearchOptions["decorations"] = {
+  matchBackground: "#5c4a24",
+  matchBorder: "#8a6d33",
+  matchOverviewRuler: "#c9a24a",
+  activeMatchBackground: "#b4553a",
+  activeMatchBorder: "#d97757",
+  activeMatchColorOverviewRuler: "#d97757",
+};
+
+/** ⌘F, or Ctrl+Shift+F off the Mac: there Ctrl+F is the shell's (a character forward). */
+const isFindKey = (e: KeyboardEvent) =>
+  e.type === "keydown" && e.key.toLowerCase() === "f" && !e.altKey && (isMac ? e.metaKey && !e.ctrlKey && !e.shiftKey : e.ctrlKey && e.shiftKey && !e.metaKey);
 
 /** Control + a key, for the key row's sticky Ctrl: what a keyboard's Control key sends. */
 function withCtrl(data: string): string {
@@ -116,6 +131,7 @@ function touchScroll(host: HTMLElement, term: Terminal): () => void {
 /** The terminal and its socket, outside React: reconnects, replays, and keeps the shell's size. */
 class Session {
   readonly term: Terminal;
+  readonly search = new SearchAddon({ highlightLimit: 2000 });
   private readonly fit = new FitAddon();
   private ws: WebSocket | null = null;
   private opened = false; // xterm is in the page (waits until its box has a size: it measures the font then)
@@ -131,6 +147,7 @@ class Session {
   ctrl = false; // the key row's Ctrl: applies to the next key typed
   onCtrl: (on: boolean) => void = () => {};
   onExit: (code: number | null) => void = () => {};
+  onFindKey: () => void = () => {};
   private readonly onFocus = () => this.takeCharge();
 
   constructor(
@@ -150,6 +167,7 @@ class Session {
       theme: theme(host),
     });
     this.term.loadAddon(this.fit);
+    this.term.loadAddon(this.search);
     this.term.loadAddon(new Unicode11Addon());
     this.term.unicode.activeVersion = "11"; // emoji and CJK widths as today's shells and editors count them
     this.term.onTitleChange(onTitle);
@@ -174,6 +192,11 @@ class Session {
     // a page being used takes charge: before xterm's own focus handler, which may report the focus to the program
     this.host.addEventListener("focus", this.onFocus, true);
     this.term.attachCustomKeyEventHandler((e) => {
+      if (isFindKey(e)) {
+        e.preventDefault(); // not the browser's find, which can't see what xterm draws
+        this.onFindKey();
+        return false;
+      }
       if (!isMac || e.type !== "keydown" || e.ctrlKey) return true;
       if (e.metaKey && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "k") {
         e.preventDefault(); // ⌘K clears, as in Terminal.app (elsewhere in Atrium it searches projects)
@@ -335,19 +358,40 @@ const KEYS: { label: ReactNode; title: string; seq?: string | ((app: boolean) =>
 export interface TerminalViewProps {
   pid: string;
   tid: string;
-  active: boolean; // its tab is the open one and the panel is shown: it fits, takes the size and (with a mouse) the focus
+  shown: boolean; // in a pane of the panel, which is shown: it fits and takes the size
+  active: boolean; // the pane in use (the only one unless split): it takes the focus with a mouse, and finds
+  findAsk: number; // the panel's find button (a new value): the find bar opens on the active terminal
   onTitle: (title: string) => void;
   onEnd: () => void; // closed elsewhere, or its shell exited with 0
+  onFocus: () => void; // clicked or typed into: the pane in use now
 }
 
-export default function TerminalView({ pid, tid, active, onTitle, onEnd }: TerminalViewProps) {
+export default function TerminalView({ pid, tid, shown, active, findAsk, onTitle, onEnd, onFocus }: TerminalViewProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const session = useRef<Session | null>(null);
-  const callbacks = useRef({ onTitle, onEnd });
-  callbacks.current = { onTitle, onEnd };
+  const callbacks = useRef({ onTitle, onEnd, onFocus });
+  callbacks.current = { onTitle, onEnd, onFocus };
   const [ctrl, setCtrl] = useState(false);
   const [exited, setExited] = useState(false);
   const [touch, setTouch] = useState(coarse.matches);
+  // find in the terminal's buffer (scrollback included), as typed
+  const [find, setFind] = useState<{ open: boolean; text: string; caseSensitive: boolean; wholeWord: boolean; regex: boolean }>({
+    open: false, text: "", caseSensitive: false, wholeWord: false, regex: false,
+  });
+  const [found, setFound] = useState<{ index: number; count: number } | null>(null);
+  const findInput = useRef<HTMLInputElement>(null);
+  const [findFocus, setFindFocus] = useState(0);
+  // the field takes the focus once the bar is in the page: ⌘F comes from xterm's own handler, outside React, whose
+  // render may come after the next frame
+  const openFind = () => {
+    setFind((f) => ({ ...f, open: true }));
+    setFindFocus((n) => n + 1);
+  };
+  useEffect(() => {
+    if (!findFocus) return;
+    findInput.current?.focus();
+    findInput.current?.select();
+  }, [findFocus]);
 
   useEffect(() => {
     const host = hostRef.current!;
@@ -355,6 +399,10 @@ export default function TerminalView({ pid, tid, active, onTitle, onEnd }: Termi
     const s = new Session(url, host, (t) => callbacks.current.onTitle(t), () => callbacks.current.onEnd());
     s.onCtrl = setCtrl;
     s.onExit = (code) => setExited(code !== null);
+    s.onFindKey = () => openFind();
+    const results = s.search.onDidChangeResults((r) => setFound({ index: r.resultIndex, count: r.resultCount }));
+    const focused = () => callbacks.current.onFocus();
+    host.addEventListener("focusin", focused);
     session.current = s;
     const ro = new ResizeObserver(() => requestAnimationFrame(() => s.layout())); // not inside the observer's own callback
     ro.observe(host);
@@ -365,6 +413,8 @@ export default function TerminalView({ pid, tid, active, onTitle, onEnd }: Termi
     const onPointer = () => setTouch(coarse.matches);
     coarse.addEventListener("change", onPointer);
     return () => {
+      results.dispose();
+      host.removeEventListener("focusin", focused);
       ro.disconnect();
       unTouch();
       document.removeEventListener("visibilitychange", wake);
@@ -376,11 +426,52 @@ export default function TerminalView({ pid, tid, active, onTitle, onEnd }: Termi
   }, [pid, tid]);
 
   useEffect(() => {
-    if (!active) return;
-    const s = session.current;
-    s?.layout();
-    if (!coarse.matches) s?.focus(); // on a phone that would bring the keyboard up for a look at the output
+    if (shown) session.current?.layout();
+  }, [shown]);
+  useEffect(() => {
+    if (active && !coarse.matches) session.current?.focus(); // on a phone that would bring the keyboard up for a look at the output
   }, [active]);
+  // the panel's find button
+  useEffect(() => {
+    if (findAsk && active) openFind();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [findAsk]);
+  // as typed: the first match from where it was, every match marked
+  const findOpts = (incremental: boolean): ISearchOptions => ({
+    caseSensitive: find.caseSensitive, wholeWord: find.wholeWord, regex: find.regex, incremental, decorations: FIND_MARKS,
+  });
+  useEffect(() => {
+    const s = session.current;
+    if (!s || !find.open) return;
+    if (!find.text) {
+      s.search.clearDecorations();
+      setFound(null);
+      return;
+    }
+    try {
+      s.search.findNext(find.text, findOpts(true));
+    } catch {
+      setFound({ index: -1, count: 0 }); // a regular expression being typed
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [find.open, find.text, find.caseSensitive, find.wholeWord, find.regex]);
+  const step = (back: boolean) => {
+    const s = session.current;
+    if (!s || !find.text) return;
+    try {
+      if (back) s.search.findPrevious(find.text, findOpts(false));
+      else s.search.findNext(find.text, findOpts(false));
+    } catch {
+      /* not a valid regular expression yet */
+    }
+  };
+  const closeFind = () => {
+    session.current?.search.clearDecorations();
+    session.current?.term.clearSelection();
+    setFind((f) => ({ ...f, open: false }));
+    setFound(null);
+    if (!coarse.matches) session.current?.focus();
+  };
 
   // A phone's keyboard covers the bottom of the page without making it shorter (iOS keeps the layout as it is), and
   // the key row went under it. While the terminal has the focus on a touch screen, the app is as tall as what can be
@@ -417,8 +508,47 @@ export default function TerminalView({ pid, tid, active, onTitle, onEnd }: Termi
   // the key row keeps the focus where it is, so the keyboard stays up while its keys are tapped: mousedown, not
   // pointerdown (WebKit drops the click of a tap whose pointerdown was cancelled)
   const keep = (e: React.MouseEvent) => e.preventDefault();
+  const toggle = (k: "caseSensitive" | "wholeWord" | "regex") => setFind((f) => ({ ...f, [k]: !f[k] }));
   return (
     <div className="term-view">
+      {find.open && (
+        // outside the terminal's own box: typing here doesn't put this page in charge of the terminal
+        <div className="term-find" role="search">
+          <input
+            ref={findInput}
+            value={find.text}
+            placeholder="Find"
+            aria-label="Find in the terminal"
+            spellCheck={false}
+            autoCapitalize="off"
+            autoCorrect="off"
+            onChange={(e) => setFind((f) => ({ ...f, text: e.target.value }))}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") (e.preventDefault(), step(e.shiftKey));
+              else if (e.key === "Escape") (e.preventDefault(), e.stopPropagation(), closeFind());
+            }}
+          />
+          <span className="term-find-n">{!find.text || !found ? "" : found.count === 0 ? "No results" : found.index < 0 ? `${found.count}+` : `${found.index + 1} of ${found.count}`}</span>
+          <button className={clsx("icon-btn sm opt", find.caseSensitive && "active")} aria-pressed={find.caseSensitive} aria-label="Match case" data-tip="Match case" onClick={() => toggle("caseSensitive")}>
+            <CaseSensitive size={15} />
+          </button>
+          <button className={clsx("icon-btn sm opt", find.wholeWord && "active")} aria-pressed={find.wholeWord} aria-label="Whole word" data-tip="Whole word" onClick={() => toggle("wholeWord")}>
+            <WholeWord size={15} />
+          </button>
+          <button className={clsx("icon-btn sm opt", find.regex && "active")} aria-pressed={find.regex} aria-label="Regular expression" data-tip="Regular expression" onClick={() => toggle("regex")}>
+            <Regex size={14} />
+          </button>
+          <button className="icon-btn sm" aria-label="Previous match" data-tip="Previous (⇧Enter)" onClick={() => step(true)}>
+            <ArrowUp size={14} />
+          </button>
+          <button className="icon-btn sm" aria-label="Next match" data-tip="Next (Enter)" onClick={() => step(false)}>
+            <ArrowDown size={14} />
+          </button>
+          <button className="icon-btn sm" aria-label="Close find" data-tip="Close (Esc)" onClick={closeFind}>
+            <X size={14} />
+          </button>
+        </div>
+      )}
       <div className="term-host" ref={hostRef} />
       {touch && !exited && (
         <div className="term-keys">

@@ -669,6 +669,11 @@ body.col-resizing iframe { pointer-events: none; } /* the board's would take the
 @container (max-width: 640px) {
   .split.stack-files { flex-direction: column; }
   .split.stack-files > .side { width: auto; max-height: 32%; border-right: 0; border-bottom: 1px solid var(--border); flex: none; padding-bottom: 0; }
+  /* over the open files, Find in Files takes more of the height: its results are what is read */
+  .split.stack-files > .side.searching { width: auto; height: 55%; max-height: 55%; }
+  /* nothing open yet: all of it (the empty editor's hint can wait) */
+  .split.stack-files:not(:has(.editor-bar)) > .side.searching { height: auto; max-height: none; flex: 1; border-bottom: 0; }
+  .split.stack-files:not(:has(.editor-bar)):has(> .side.searching) > .content { display: none; }
   .stack-files .tree-toggle .beside { display: none; }
   .stack-files .tree-toggle .above { display: inline; }
 }
@@ -707,6 +712,51 @@ a.icon-btn.disabled { opacity: 0.4; pointer-events: none; }
 .tree-row .g.M { color: var(--warn); } .tree-row .g.A, .tree-row .g.\? { color: var(--ok); } .tree-row .g.D { color: var(--err); } .tree-row .g.• { color: var(--warn); }
 .tree-row .hover-actions { display: none; gap: 0; }
 @media (hover: hover) { .tree-row:hover .hover-actions { display: flex; } }
+/* the side's head: the tree or Find in Files, the checkout, quick open, and the tree's own actions */
+.files-bar .seg { flex: none; margin-right: 2px; }
+/* Find in Files (SearchView.tsx), in the side in the tree's place: a little wider, its box fixed and its results scrolling */
+.split > .side.searching { width: 300px; overflow: hidden; }
+.search-slot { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.search-slot[hidden] { display: none; }
+.search-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.search-box { flex: none; display: flex; flex-direction: column; gap: 6px; padding: 8px 8px 8px; border-bottom: 1px solid var(--border); }
+.search-box > .input { height: 28px; font-size: 12.5px; }
+.search-field { position: relative; }
+.search-field .input { width: 100%; height: 30px; padding-right: 30px; font-size: 13px; }
+.search-clear { position: absolute; right: 3px; top: 3px; }
+.search-opts { display: flex; align-items: center; gap: 2px; }
+.search-summary { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; color: var(--muted); }
+.search-summary.err { color: var(--err); }
+.search-results { flex: 1; min-height: 0; overflow: auto; padding: 4px 4px 20px; font-size: 12.5px; }
+.search-file-head { display: flex; align-items: center; gap: 4px; min-height: 24px; padding: 0 4px; border-radius: 6px; cursor: pointer; user-select: none; }
+.search-file-head:hover { background: var(--hover); }
+/* the file's name gives way only once its folder (beside it) is gone */
+.search-file-head .nm { flex: 0 1 auto; min-width: 40px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.search-file-head .dir { flex: 1 1 0; min-width: 0; font-size: 11.5px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.search-file-head .n { flex: none; padding: 0 6px; border-radius: 8px; background: var(--surface-2); font-size: 10.5px; color: var(--muted); }
+.search-hit { display: flex; align-items: baseline; gap: 6px; min-height: 20px; padding: 1px 4px 1px 22px; border-radius: 6px; cursor: pointer; }
+.search-hit:hover { background: var(--hover); }
+.search-hit .ln { flex: none; min-width: 2.5em; text-align: right; font: 10.5px var(--font-mono); color: var(--faint); }
+.search-hit .tx { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre; font: 12px var(--font-mono); }
+.search-hit mark { background: color-mix(in srgb, var(--warn) 32%, transparent); color: inherit; border-radius: 2px; }
+.search-more { padding: 1px 4px 4px 22px; font-size: 11.5px; color: var(--faint); }
+/* quick open (QuickOpen.tsx): over everything (the rail's drawer and flyout too), under the tips */
+.qo-backdrop {
+  position: fixed; inset: 0; z-index: 72; display: flex; justify-content: center; align-items: flex-start; background: rgba(20, 20, 19, 0.18); animation: fade 0.12s;
+  padding: calc(56px + env(safe-area-inset-top)) calc(12px + env(safe-area-inset-right)) 12px calc(12px + env(safe-area-inset-left)); /* clear of the clock's column, on a phone's Home Screen app */
+}
+.qo-box { width: min(640px, 100%); max-height: min(520px, calc(100dvh - 90px)); display: flex; flex-direction: column; overflow: hidden; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow-lg); }
+.qo-input { flex: none; display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 12px; border-bottom: 1px solid var(--border); }
+.qo-input input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text); font-size: 14px; }
+.qo-list { overflow-y: auto; overscroll-behavior: contain; padding: 4px; }
+.qo-row { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 10px; border-radius: 7px; cursor: pointer; font-size: 13px; min-width: 0; }
+.qo-row.on { background: var(--active); }
+.qo-row > svg { flex: none; }
+.qo-name { flex: none; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qo-dir { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--faint); }
+:is(.qo-name, .qo-dir) b { color: var(--accent-strong); font-weight: 700; }
+.qo-tag { flex: none; font-size: 10.5px; color: var(--faint); }
+.qo-note { padding: 10px 12px; font-size: 12.5px; color: var(--muted); }
 .editor-tabs { display: flex; overflow-x: auto; border-bottom: 1px solid var(--border); flex: none; background: var(--sidebar); min-height: 35px; }
 /* the open files, then what acts on the one shown: save, lock, full screen */
 .editor-bar { display: flex; flex: none; border-bottom: 1px solid var(--border); background: var(--sidebar); }
@@ -717,9 +767,15 @@ a.icon-btn.disabled { opacity: 0.4; pointer-events: none; }
 .tree-toggle .above { display: none; }
 .split.tree-off > .side { display: none; }
 .lock-toggle.active { color: var(--accent-strong); }
+/* "Open in VS Code" (OpenInEditor.tsx): the editor, and a narrow ▾ beside it to pick another */
+.open-local { display: inline-flex; align-items: center; }
+.open-local-pick.icon-btn.sm { width: 14px; }
+.open-local-note { max-width: 260px; padding: 4px 10px 6px; font-size: 12px; color: var(--muted); }
 .editor-tab { display: flex; align-items: center; gap: 6px; padding: 0 6px 0 12px; height: 35px; border-right: 1px solid var(--border); cursor: pointer; font-size: 12.5px; color: var(--muted); white-space: nowrap; }
 .editor-tab.on { background: var(--bg); color: var(--text); box-shadow: inset 0 2px 0 var(--accent); }
 .editor-tab .dirty { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+.editor-tab .dirty.stuck { background: var(--warn); } /* unsaved, and auto-save can't: a conflict, a failed save, a deleted file */
+.editor-tab.gone { text-decoration: line-through; text-decoration-color: var(--border-strong); }
 .banner { display: flex; align-items: center; gap: 8px; padding: 7px 12px; font-size: 12.5px; background: var(--warn-soft); color: var(--warn); flex: none; }
 .banner.info { background: var(--info-soft); color: var(--info); }
 .banner.subtle { background: var(--surface-2); color: var(--muted); border-bottom: 1px solid var(--border); padding: 5px 12px; }
@@ -734,9 +790,22 @@ a.icon-btn.disabled { opacity: 0.4; pointer-events: none; }
 .editor-tab.exited .term-title { font-style: italic; color: var(--faint); }
 .term-actions { flex: none; display: flex; align-items: center; padding: 0 6px; border-left: 1px solid var(--border); }
 .term-new { width: auto; padding: 0 5px 0 7px; gap: 1px; }
-.term-views { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--bg); }
+.term-views { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--bg); container: termviews / inline-size; }
 .term-slot { flex: 1; min-height: 0; flex-direction: column; }
-.term-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+/* split: the panes side by side (stacked when the panel is narrow), a hairline between, the one in use marked on top */
+.term-views.split { flex-direction: row; gap: 1px; background: var(--border); }
+.term-views.split > .term-slot { min-width: 0; background: var(--bg); }
+.term-views.split > .term-slot.focused { box-shadow: inset 0 2px 0 var(--accent); }
+@container termviews (max-width: 620px) { .term-views.split { flex-direction: column; } }
+.editor-tab.paned { color: var(--text-2); } /* shown in another pane */
+.term-view { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; }
+/* find in the terminal (TerminalView), over its top right corner, above xterm's layers */
+.term-find {
+  position: absolute; top: 6px; right: 14px; z-index: 12; display: flex; align-items: center; gap: 2px; max-width: calc(100% - 24px);
+  padding: 3px 4px 3px 8px; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 8px; box-shadow: var(--shadow-lg);
+}
+.term-find input { flex: 1 1 160px; width: 160px; min-width: 60px; height: 26px; border: 0; outline: 0; background: transparent; color: var(--text); font-size: 12.5px; }
+.term-find-n { flex: none; padding: 0 4px; font-size: 11.5px; color: var(--muted); white-space: nowrap; }
 .term-host { flex: 1; min-height: 0; margin: 6px 2px 0 10px; overflow: hidden; touch-action: none; } /* xterm fits itself to this box (no padding: it counts it) */
 .term-keys { flex: none; display: none; gap: 4px; padding: 5px 6px; border-top: 1px solid var(--border); background: var(--sidebar); }
 .term-keys button {

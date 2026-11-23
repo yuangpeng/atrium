@@ -7,6 +7,7 @@ import { ArrowDown, ArrowUp } from "lucide-react";
 import { useApp } from "../store";
 import { useCompact, useLayout } from "../layout";
 import { trackEditor } from "../lsp/client";
+import { editorBridge } from "../editorStatus";
 import { useDiffPrefs } from "./DiffOptions";
 
 function useMonacoTheme(): string {
@@ -43,6 +44,7 @@ const fileOptions: Monaco.editor.IStandaloneEditorConstructionOptions = {
 export interface Reveal {
   line: number;
   column?: number;
+  endColumn?: number; // selected from column to here (a search match)
   nonce: number;
 }
 
@@ -54,7 +56,8 @@ function addSave(editor: Monaco.editor.IStandaloneCodeEditor, m: typeof Monaco, 
 
 function revealIn(editor: Monaco.editor.IStandaloneCodeEditor, r: Reveal) {
   const pos = { lineNumber: r.line, column: r.column ?? 1 };
-  editor.setPosition(pos);
+  if (r.endColumn && r.endColumn > pos.column) editor.setSelection({ startLineNumber: r.line, startColumn: pos.column, endLineNumber: r.line, endColumn: r.endColumn });
+  else editor.setPosition(pos);
   editor.revealPositionInCenter(pos);
   editor.focus();
 }
@@ -91,13 +94,33 @@ export function CodeEditor({
   const handleChange = useCallback((v?: string) => changeRef.current?.(v ?? ""), []);
   const edRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
   const tracking = useRef<Monaco.IDisposable | null>(null);
+  const selected = useRef<() => string | undefined>(undefined);
+  const cursor = useRef<() => { line: number; column: number } | undefined>(undefined);
   const onMount: OnMount = (editor, m) => {
     edRef.current = editor;
     addSave(editor, m, saveRef);
-    if (filePath) tracking.current = trackEditor(editor);
+    if (filePath) {
+      tracking.current = trackEditor(editor);
+      // what ⌘⇧F looks for, and where "Open in VS Code" goes
+      selected.current = editorBridge.selectedText = () => {
+        const sel = editor.getSelection();
+        return sel && !sel.isEmpty() ? editor.getModel()?.getValueInRange(sel) : undefined;
+      };
+      cursor.current = editorBridge.cursor = () => {
+        const p = editor.getPosition();
+        return p ? { line: p.lineNumber, column: p.column } : undefined;
+      };
+    }
     if (reveal) revealIn(editor, reveal);
   };
-  useEffect(() => () => tracking.current?.dispose(), []);
+  useEffect(
+    () => () => {
+      tracking.current?.dispose();
+      if (editorBridge.selectedText === selected.current) editorBridge.selectedText = undefined;
+      if (editorBridge.cursor === cursor.current) editorBridge.cursor = undefined;
+    },
+    [],
+  );
   useEffect(() => {
     if (reveal && edRef.current) revealIn(edRef.current, reveal);
     // eslint-disable-next-line react-hooks/exhaustive-deps

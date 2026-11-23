@@ -16,6 +16,7 @@ export type Theme = "light" | "dark" | "system";
 export interface FileTarget {
   line?: number;
   column?: number;
+  endColumn?: number; // on the same line: what is between is selected (a search match)
   external?: boolean;
   content?: string;
 }
@@ -93,6 +94,7 @@ interface AppState {
   setChatWidth: (w: number) => void;
   setChatFloor: (w: number) => void;
   setTheme: (t: Theme) => void;
+  setAutoSave: (on: boolean) => void; // the Files editor's auto-save (settings.json ui.auto_save)
   setShowArchived: (v: boolean) => void;
   setPickerOpen: (v: false | "open" | "create") => void;
   setUnsaved: (names: string[]) => void;
@@ -373,6 +375,15 @@ export const useApp = create<AppState>((set, get) => {
       localStorage.setItem("atrium.theme", t);
       applyTheme(t);
       set({ theme: t, boardVersion: get().boardVersion + 1 });
+    },
+    setAutoSave: (on) => {
+      // shown at once; the settings file follows (every page reads it when it loads)
+      const put = (v: boolean) => set((s) => (s.meta ? { meta: { ...s.meta, settings: { ...s.meta.settings, ui: { ...s.meta.settings.ui, auto_save: v } } } } : {}));
+      put(on);
+      api.patchSetting("ui.auto_save", on).catch((e: Error) => {
+        put(!on);
+        get().toast(e.message, "error");
+      });
     },
     setShowArchived: (v) => {
       set((s) => ({ showArchived: v, sessions: v ? s.sessions : s.sessions.filter((r) => !r.archived) })); // hiding them needs no request

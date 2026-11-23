@@ -131,7 +131,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # max_mb: what is kept in $ATRIUM_HOME/captures, the oldest going first (0 = no limit), compactions and the
     # agent's last call before each aside: they hold the whole conversation a compaction replaced, and stay.
     "capture": {"enabled": True, "max_mb": 1024},
-    "ui": {"theme": "system"},
+    # auto_save: the Files editor saves a file a moment after you stop typing, and when you leave it (its toggle in the
+    # editor's bar sets this). False: ⌘S or the Save button.
+    "ui": {"theme": "system", "auto_save": True},
 }
 
 _ENV_SECRETS = {("web", "serper_api_key"): "SERPER_API_KEY", ("web", "jina_api_key"): "JINA_API_KEY"}

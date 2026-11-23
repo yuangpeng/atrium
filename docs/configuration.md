@@ -98,7 +98,7 @@ The defaults:
   "lsp": {"enabled": true, "commands": {}, "python": {"typeCheckingMode": "standard"}},
   "terminal": {"enabled": true, "shell": ""},
   "capture": {"enabled": true, "max_mb": 1024},
-  "ui": {"theme": "system"}
+  "ui": {"theme": "system", "auto_save": true}
 }
 ```
 
@@ -277,11 +277,27 @@ microphone; if that was denied, allow it in the browser's settings for the site.
 | Key | Default | |
 |---|---|---|
 | `lsp.enabled` | `true` | Language servers behind the editor. |
-| `lsp.commands` | `{}` | A server per language instead of the one found automatically: a program (name or path, no arguments) or an argument list, e.g. `{"c": "clangd", "python": ["pyright-langserver", "--stdio"]}`. Languages: `python`, `c`, `cpp`, `go`, `rust`. |
+| `lsp.commands` | `{}` | A server per language instead of the one found automatically: a program (name or path, no arguments) or an argument list, e.g. `{"c": "clangd", "python": ["pyright-langserver", "--stdio"]}`. Languages: `python`, `c`, `cpp`, `go`, `rust`, `typescript`, `javascript` (one server reads both; a `typescript` entry serves JavaScript too). |
 | `lsp.python.typeCheckingMode` | `"standard"` | `off`, `basic`, `standard`, `strict`, `recommended` or `all`. |
 | `ui.theme` | `"system"` | Not read: the browser remembers the rail's theme switch. |
+| `ui.auto_save` | `true` | The Files editor saves a file a moment (1 s) after you stop typing, and at once when you switch to another file or panel, close its tab or leave the page. The toggle beside the lock in the editor's bar sets it. `false`: ⌘S or the Save button saves. Either way, a file that changed on disk meanwhile isn't overwritten: the editor asks. |
 
 `lsp` changes reach language servers started afterwards.
+
+Found automatically, in Atrium's environment or on `PATH`: basedpyright (installed with Atrium), pyright or pylsp for
+Python, clangd for C and C++, gopls for Go, rust-analyzer for Rust, and for TypeScript and JavaScript
+`typescript-language-server` or `vtsls` (`npm install -g typescript-language-server typescript`, or
+`npm install -g @vtsls/language-server`). With one of those, TypeScript reads the project as VS Code does (its
+`tsconfig.json` and `node_modules`); without, the editor's own TypeScript sees one file at a time. What a server
+offers shows in the editor: ⌘-click and F12 go to a definition, ⇧F12 lists references, F2 renames a symbol in every
+file that uses it, ⌘. offers quick fixes, ⇧⌥F formats (where the server formats: clangd, gopls, rust-analyzer,
+TypeScript's; not basedpyright), ⇧⌘O lists the file's symbols. A rename writes the files that aren't open; in open
+ones it changes the text, which auto-save then writes.
+
+An open file follows the disk wherever you didn't edit it: changes reach it through the file watch, and, while the
+Files panel shows, through a check of its size and modification time every 2 seconds. So a file the watch leaves out
+follows too: one in a directory `.gitignore` names (on Linux the watch skips those), in `node_modules`, or written by
+another machine on a network disk.
 
 ### Terminal
 

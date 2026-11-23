@@ -7,6 +7,7 @@ import mimetypes
 import os
 import secrets
 import shutil
+import stat
 import tempfile
 import threading
 import time
@@ -99,6 +100,26 @@ def read_file(project: Project, root: str | None, rel: str) -> dict[str, Any]:
     if b"\0" in data[:8192]:
         return {**info, "binary": True, "content": None, "sha": sha_of(data)}
     return {**info, "binary": False, "content": data.decode("utf-8", errors="replace"), "sha": sha_of(data)}
+
+
+STAT_MAX = 200  # files per request
+
+
+def stat_files(project: Project, items: list[Any]) -> list[dict[str, Any] | None]:
+    """The size and modification time of each of ``items`` ({root, path}), for the editor to tell whether its open
+    files changed on disk where the file watch doesn't look: a directory git ignores (watch.py), node_modules, a write
+    from another machine on a network disk, a file outside the project (read_file reads those too). None for one that
+    is gone."""
+    roots = project.roots()  # once: every locate would list the worktrees again
+    out: list[dict[str, Any] | None] = []
+    for it in items[:STAT_MAX]:
+        try:
+            st = project.locate(str(it["path"]), root=it.get("root") or None, roots=roots)[0].stat()
+        except (OSError, KeyError, TypeError, AttributeError):  # PermissionError is an OSError
+            out.append(None)
+            continue
+        out.append({"size": st.st_size, "mtime": st.st_mtime} if stat.S_ISREG(st.st_mode) else None)
+    return out
 
 
 # ---- a file as itself: what the Files panel's preview shows (an image, a PDF, a page and what it loads) -----------
@@ -305,7 +326,8 @@ def write_file(project: Project, root: str | None, rel: str, content: str, base_
     if p.exists():
         shutil.copymode(p, tmp)
     tmp.replace(p)
-    return {"path": _rel(root, p), "sha": sha_of(data), "mtime": p.stat().st_mtime}
+    st = p.stat()
+    return {"path": _rel(root, p), "sha": sha_of(data), "mtime": st.st_mtime, "size": st.st_size}
 
 
 def create(project: Project, root: str | None, rel: str, kind: str) -> dict[str, Any]:

@@ -53,7 +53,8 @@ export interface Settings {
   web: { serper_api_key: boolean; jina_api_key: boolean; replace_builtin_web_tools: boolean };
   // the composer's mic (chat/Voice.tsx): on once base_url and asr_model are set
   voice?: { base_url: string; api_key: boolean; asr_model: string; refine_model: string; refine_effort: string };
-  ui: { theme: "system" | "light" | "dark" };
+  // auto_save: the Files editor saves by itself (FilesPanel), as it is told by the toggle in its bar
+  ui: { theme: "system" | "light" | "dark"; auto_save?: boolean };
   _error?: string | null;
 }
 
@@ -456,6 +457,17 @@ export interface FileData {
   sha: string | null;
 }
 
+// Find in Files (search.py): matching lines by file, a line's matches as [start, end) in its text as sent
+export interface SearchResults {
+  files: { path: string; matches: { line: number; col: number; text: string; ranges: number[][] }[]; more: number }[];
+  total: number; // lines sent
+  more: number; // matching lines past the first 200 of a file: counted, not sent
+  truncated: boolean; // stopped at the limit (or the time limit: error says so)
+  engine: string;
+  elapsed: number;
+  error: string | null; // a bad regular expression, a search that ran out of time
+}
+
 export interface ChangeFile {
   path: string;
   rel: string;
@@ -645,12 +657,14 @@ const whyGone = (res: Response, data: any, url: string) => {
   return pid ? projectGone(pid) : undefined;
 };
 
-async function req<T>(method: string, url: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+/** keepalive: the request outlives the page (a save as it goes away); browsers take only small bodies so. */
+async function req<T>(method: string, url: string, body?: unknown, signal?: AbortSignal, keepalive?: boolean): Promise<T> {
   const res = await fetch(url, {
     method,
     headers: body !== undefined ? { "content-type": "application/json" } : undefined,
     body: body !== undefined ? JSON.stringify(body) : undefined,
     signal,
+    keepalive,
   });
   const text = await res.text();
   let data: any = null;
@@ -833,8 +847,18 @@ export const api = {
    *  the project, `path` absolute) */
   resolvePaths: (pid: string, cwd: string, paths: string[], fresh = false) =>
     req<{ files: Record<string, { root: string; path: string } | null> }>("POST", `/api/p/${pid}/file/resolve`, { cwd, paths, fresh }),
-  writeFile: (pid: string, body: { root?: string; path: string; content: string; base_sha?: string | null; force?: boolean }) =>
-    req<{ path: string; sha: string; mtime: number }>("PUT", `/api/p/${pid}/file`, body),
+  writeFile: (pid: string, body: { root?: string; path: string; content: string; base_sha?: string | null; force?: boolean }, keepalive = false) =>
+    req<{ path: string; sha: string; mtime: number; size: number }>("PUT", `/api/p/${pid}/file`, body, undefined, keepalive),
+  /** a checkout's files, for quick open (search.list_files) */
+  allFiles: (pid: string, root?: string) => req<{ root: string; files: string[]; truncated: boolean }>("GET", `/api/p/${pid}/files/all${q({ root })}`),
+  /** Find in Files; `page`: this page's id, whose previous search the server stops */
+  search: (
+    pid: string,
+    body: { root?: string; query: string; case?: boolean; word?: boolean; regex?: boolean; include?: string; exclude?: string; ignored?: boolean; limit?: number; page?: string },
+  ) => req<SearchResults>("POST", `/api/p/${pid}/search`, body),
+  /** size and modification time of open files (null: gone), to see changes the file watch doesn't (fs.stat_files) */
+  fileStats: (pid: string, files: { root?: string; path: string }[]) =>
+    req<{ stats: ({ size: number; mtime: number } | null)[] }>("POST", `/api/p/${pid}/file/stat`, { files }),
   createFile: (pid: string, body: { root?: string; path: string; kind: "file" | "dir" }) => req("POST", `/api/p/${pid}/file/create`, body),
   renameFile: (pid: string, body: { root?: string; src: string; dst: string }) => req("POST", `/api/p/${pid}/file/rename`, body),
   deleteFile: (pid: string, body: { root?: string; path: string }) => req("POST", `/api/p/${pid}/file/delete`, body),

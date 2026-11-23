@@ -194,20 +194,21 @@ class Project:
                 seen.pop(p, None)
             _write_json(self.state_dir / "worktrees.json", seen)
 
-    def locate(self, rel: str, root: str | None = None) -> tuple[Path, str | None]:
+    def locate(self, rel: str, root: str | None = None, roots: list[str] | None = None) -> tuple[Path, str | None]:
         """``rel`` taken from ``root`` (one of the project's roots, or a directory in one), and the innermost root
-        holding it: None when it is outside the project."""
+        holding it: None when it is outside the project. ``roots``: ``self.roots()`` already listed, for a caller
+        resolving many paths (each listing asks git)."""
         base = os.path.realpath(root or self.path)
-        roots = self.roots()
+        roots = roots if roots is not None else self.roots()
         if base not in roots and not any(base.startswith(r + os.sep) for r in roots):
             raise PermissionError(f"{base} is not part of this project")
         target = os.path.realpath(os.path.join(base, rel)) if not os.path.isabs(rel) else os.path.realpath(rel)
         inner = max((r for r in roots if target == r or target.startswith(r + os.sep)), key=len, default=None)
         return Path(target), inner
 
-    def resolve(self, rel: str, root: str | None = None) -> Path:
+    def resolve(self, rel: str, root: str | None = None, roots: list[str] | None = None) -> Path:
         """Resolve a path inside one of the project's roots; refuse anything outside."""
-        target, inner = self.locate(rel, root)
+        target, inner = self.locate(rel, root, roots)
         if inner is None:
             raise PermissionError(f"{rel} is outside the project")
         return target

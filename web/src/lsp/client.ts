@@ -41,6 +41,7 @@ class Connection {
   private attachWaiters = new Map<string, (v: Server | string) => void>();
   onMessage: (key: string, msg: Json) => void = () => {};
   onReset: () => void = () => {};
+  onApplyEdit: (id: number, edit: Json) => void = () => {};
 
   private connect(): Promise<void> {
     if (this.ws?.readyState === WebSocket.OPEN) return Promise.resolve();
@@ -114,7 +115,14 @@ class Connection {
         done?.(msg);
         break;
       }
+      case "applyEdit": // the server wants files changed (a command's result): the page makes the change
+        this.onApplyEdit(msg.id, msg.edit);
+        break;
     }
+  }
+
+  answerEdit(id: number, result: { applied: boolean; failureReason?: string }) {
+    this.send({ op: "applied", id, ...result });
   }
 
   attach(language: string, root: string): Promise<Server | string> {
@@ -171,6 +179,8 @@ class Connection {
 
 const conn = new Connection();
 const docs = new Map<string, Doc>(); // uri -> document open on a server
+const servers = new Map<string, Server>(); // key -> a server attached (for the commands its code actions run)
+const fileEditors = new Set<Monaco.editor.ICodeEditor>(); // the Files panel's editor(s): what they show is the file
 const tracked = new Set<string>(); // uris shown in a Files editor (get diagnostics + semantic colours)
 const diagnostics = new Map<string, Json[]>();
 const externalRoot = new Map<string, string>(); // library file -> root of the server that pointed there
@@ -181,6 +191,7 @@ const status = () => useEditorStatus.getState();
 // ---------------------------------------------------------------------------- helpers
 const toPos = (p: Monaco.IPosition) => ({ line: p.lineNumber - 1, character: p.column - 1 });
 const toRange = (r: Json) => new monaco.Range(r.start.line + 1, r.start.character + 1, r.end.line + 1, r.end.character + 1);
+const fromRange = (r: Monaco.IRange) => ({ start: { line: r.startLineNumber - 1, character: r.startColumn - 1 }, end: { line: r.endLineNumber - 1, character: r.endColumn - 1 } });
 const docPos = (doc: Doc, p: Monaco.IPosition) => ({ textDocument: { uri: doc.uri }, position: toPos(p) });
 
 function projectRoots(): string[] {
@@ -235,9 +246,11 @@ async function ensureDoc(model: Monaco.editor.ITextModel): Promise<Doc | null> {
   if (model.isDisposed()) return null;
   const raced = docs.get(uri);
   if (raced) return raced;
+  servers.set(server.key, server);
   const doc: Doc = { uri, model, server, dirty: false, timer: null, listeners: [], semanticRetries: 0 };
   docs.set(uri, doc);
-  conn.notify(server, "textDocument/didOpen", { textDocument: { uri, languageId: language, version: model.getVersionId(), text: model.getValue() } });
+  const languageId = /\.tsx$/i.test(path) ? "typescriptreact" : /\.jsx$/i.test(path) ? "javascriptreact" : language; // JSX by its name
+  conn.notify(server, "textDocument/didOpen", { textDocument: { uri, languageId, version: model.getVersionId(), text: model.getValue() } });
   doc.listeners.push(
     model.onDidChangeContent(() => {
       doc.dirty = true;
@@ -342,8 +355,119 @@ async function ensureModel(uri: Monaco.Uri, fromRoot: string) {
   if (res.text != null && !monaco.editor.getModel(uri)) monaco.editor.createModel(res.text, undefined, uri);
 }
 
+// ---------------------------------------------------------------------------- edits across files
+type FileEdits = Map<string, Json[]>; // uri (as Monaco writes it) -> LSP TextEdits
+
+/** A WorkspaceEdit's text edits by file. Creating, renaming or deleting files is refused (Atrium makes text edits). */
+function editsOf(edit: Json): FileEdits {
+  const out: FileEdits = new Map();
+  const add = (uri: string, es: Json[]) => {
+    const key = monaco.Uri.parse(uri).toString();
+    out.set(key, [...(out.get(key) ?? []), ...es]);
+  };
+  for (const c of edit?.documentChanges ?? []) {
+    if (c.kind) throw new Error(`it would ${c.kind} a file, which Atrium doesn't do`);
+    add(c.textDocument.uri, c.edits ?? []);
+  }
+  for (const [uri, es] of Object.entries(edit?.changes ?? {})) add(uri, es as Json[]);
+  return out;
+}
+
+/** The model the Files editor shows for this file, if it shows it: editing that is editing the file (its tab). */
+const shownModel = (uri: string) =>
+  [...fileEditors].map((e) => e.getModel()).find((m): m is Monaco.editor.ITextModel => !!m && !m.isDisposed() && m.uri.toString() === uri) ?? null;
+
+/** Makes a WorkspaceEdit: where the Files editor shows the file, in the editor (undo takes it back); else in the file
+ *  itself, through the Files panel (an open tab's text, or the file on disk), and in any hidden copy of it (a peek,
+ *  what the language server was told). `skip`: the file whose edits Monaco makes itself (the one a rename or a quick
+ *  fix was asked in). `files`: the files changed. */
+async function applyEdit(edit: Json, skip?: string): Promise<{ applied: boolean; failureReason?: string; files: number }> {
+  let byFile: FileEdits;
+  try {
+    byFile = editsOf(edit);
+  } catch (e: any) {
+    return { applied: false, failureReason: e.message, files: 0 };
+  }
+  let files = 0;
+  for (const [uri, es] of byFile) {
+    if (uri === skip || !es.length) continue;
+    const u = monaco.Uri.parse(uri);
+    try {
+      const shown = shownModel(uri);
+      if (shown) shown.pushEditOperations([], es.map((e) => ({ range: toRange(e.range), text: e.newText, forceMoveMarkers: true })), () => null);
+      else {
+        if (!editorBridge.editFile) throw new Error("the Files panel isn't open");
+        const text = await editorBridge.editFile(u.path, es);
+        const hidden = monaco.editor.getModel(u);
+        if (hidden && !hidden.isDisposed() && hidden.getValue() !== text) hidden.pushEditOperations([], [{ range: hidden.getFullModelRange(), text }], () => null);
+      }
+      files++;
+    } catch (e: any) {
+      return { applied: false, failureReason: `${u.path}: ${e.message}`, files };
+    }
+  }
+  return { applied: true, files };
+}
+
+conn.onApplyEdit = (id, edit) => void applyEdit(edit).then(({ applied, failureReason }) => conn.answerEdit(id, { applied, failureReason }));
+
+// A code action whose edit reaches other files, or that runs a server command: Monaco makes the edit in the file it was
+// asked in, then runs this with the rest.
+const RUN = "atrium.lsp.run";
+monaco.editor.registerCommand(RUN, async (_accessor, key: string, rest: { skip: string; edit: Json } | null, command: Json | null) => {
+  if (rest) {
+    const done = await applyEdit(rest.edit, rest.skip);
+    if (!done.applied) return useApp.getState().toast(`Not applied: ${done.failureReason}`, "error");
+  }
+  const server = servers.get(key);
+  if (command && server) await conn.request(server, "workspace/executeCommand", { command: command.command, arguments: command.arguments });
+});
+
 // ---------------------------------------------------------------------------- providers
 const isStub = (u: Monaco.Uri) => u.path.endsWith(".pyi");
+
+type LspAction = Monaco.languages.CodeAction & { _lsp?: Json; _server?: Server; _uri?: string };
+
+function toAction(a: Json, model: Monaco.editor.ITextModel, server: Server): LspAction {
+  if (typeof a.command === "string") return { title: a.title, command: { id: RUN, title: a.title, arguments: [server.key, null, a] } }; // a bare Command
+  const uri = model.uri.toString();
+  let own: Json[] = [];
+  let rest: Json = null;
+  let disabled = a.disabled?.reason as string | undefined;
+  if (a.edit) {
+    try {
+      const byFile = editsOf(a.edit);
+      own = byFile.get(uri) ?? [];
+      if ([...byFile.keys()].some((k) => k !== uri)) rest = { skip: uri, edit: a.edit };
+    } catch (e: any) {
+      disabled = e.message;
+    }
+  }
+  return {
+    title: a.title,
+    kind: a.kind,
+    isPreferred: a.isPreferred,
+    disabled,
+    edit: own.length ? { edits: own.map((e) => ({ resource: model.uri, versionId: undefined, textEdit: { range: toRange(e.range), text: e.newText } })) } : undefined,
+    command: rest || a.command ? { id: RUN, title: a.title, arguments: [server.key, rest, a.command ?? null] } : undefined,
+    _lsp: a,
+    _server: server,
+    _uri: uri,
+  };
+}
+
+function toSymbol(s: Json): Monaco.languages.DocumentSymbol {
+  const range = toRange(s.location?.range ?? s.range);
+  return {
+    name: s.name,
+    detail: s.detail ?? s.containerName ?? "",
+    kind: Math.max(0, (s.kind ?? 13) - 1), // LSP counts SymbolKind from 1, Monaco from 0
+    tags: s.tags ?? (s.deprecated ? [monaco.languages.SymbolTag.Deprecated] : []),
+    range,
+    selectionRange: s.selectionRange ? toRange(s.selectionRange) : range,
+    children: s.children?.map(toSymbol),
+  };
+}
 
 async function locations(model: Monaco.editor.ITextModel, position: Monaco.Position, token: Monaco.CancellationToken, method: string, extra: Json = {}) {
   const doc = await ensureDoc(model);
@@ -402,6 +526,15 @@ function registerProviders(language: string, first: Server) {
   registered.add(language);
   const caps = first.caps;
   const L = monaco.languages;
+  // TypeScript / JavaScript: the server reads the project (tsconfig, node_modules); Monaco's own worker sees one file,
+  // so its completions, hovers and errors would come twice and contradict the server's. Its colouring stays.
+  if (language === "typescript" || language === "javascript") {
+    const defaults = language === "typescript" ? L.typescript.typescriptDefaults : L.typescript.javascriptDefaults;
+    defaults.setModeConfiguration({
+      completionItems: false, hovers: false, documentSymbols: false, definitions: false, references: false, documentHighlights: false, rename: false,
+      diagnostics: false, documentRangeFormattingEdits: false, signatureHelp: false, onTypeFormattingEdits: false, codeActions: false, inlayHints: false,
+    });
+  }
 
   if (caps.hoverProvider)
     L.registerHoverProvider(language, {
@@ -495,6 +628,109 @@ function registerProviders(language: string, first: Server) {
         };
       },
     });
+  if (caps.renameProvider)
+    L.registerRenameProvider(language, {
+      provideRenameEdits: async (model, position, newName, token) => {
+        const doc = await ensureDoc(model);
+        if (!doc) return { edits: [], rejectReason: "No language server for this file" };
+        const r = await conn.request(doc.server, "textDocument/rename", { ...docPos(doc, position), newName }, token);
+        if (!r) return { edits: [], rejectReason: "Nothing to rename here" };
+        // the other files first (their tabs, or the files themselves); Monaco makes this one's edits, so undo has them
+        const uri = model.uri.toString();
+        const done = await applyEdit(r, uri);
+        if (!done.applied) {
+          useApp.getState().toast(`Rename stopped: ${done.failureReason}`, "error");
+          return { edits: [], rejectReason: done.failureReason };
+        }
+        if (done.files) useApp.getState().toast(`Renamed in ${done.files + 1} files`, "ok");
+        let own: Json[] = [];
+        try {
+          own = editsOf(r).get(uri) ?? [];
+        } catch {
+          /* told above */
+        }
+        return { edits: own.map((e) => ({ resource: model.uri, versionId: undefined, textEdit: { range: toRange(e.range), text: e.newText } })) };
+      },
+      resolveRenameLocation: caps.renameProvider.prepareProvider
+        ? async (model, position, token) => {
+            const doc = await ensureDoc(model);
+            if (!doc) return null;
+            const r = await conn.request(doc.server, "textDocument/prepareRename", docPos(doc, position), token);
+            if (!r) return { range: new monaco.Range(position.lineNumber, position.column, position.lineNumber, position.column), text: "", rejectReason: "This can't be renamed" };
+            if (r.defaultBehavior) return null; // the word at the cursor
+            const range = toRange(r.range ?? r);
+            return { range, text: r.placeholder ?? model.getValueInRange(range) };
+          }
+        : undefined,
+    });
+  if (caps.documentFormattingProvider)
+    L.registerDocumentFormattingEditProvider(language, {
+      provideDocumentFormattingEdits: async (model, options, token) => {
+        const doc = await ensureDoc(model);
+        if (!doc) return [];
+        const r = await conn.request(doc.server, "textDocument/formatting", { textDocument: { uri: doc.uri }, options: { tabSize: options.tabSize, insertSpaces: options.insertSpaces } }, token);
+        return (r || []).map((e: Json) => ({ range: toRange(e.range), text: e.newText }));
+      },
+    });
+  if (caps.documentRangeFormattingProvider)
+    L.registerDocumentRangeFormattingEditProvider(language, {
+      provideDocumentRangeFormattingEdits: async (model, range, options, token) => {
+        const doc = await ensureDoc(model);
+        if (!doc) return [];
+        const r = await conn.request(
+          doc.server,
+          "textDocument/rangeFormatting",
+          { textDocument: { uri: doc.uri }, range: fromRange(range), options: { tabSize: options.tabSize, insertSpaces: options.insertSpaces } },
+          token,
+        );
+        return (r || []).map((e: Json) => ({ range: toRange(e.range), text: e.newText }));
+      },
+    });
+  if (caps.documentSymbolProvider)
+    L.registerDocumentSymbolProvider(language, {
+      provideDocumentSymbols: async (model, token) => {
+        const doc = await ensureDoc(model);
+        if (!doc) return [];
+        const r = await conn.request(doc.server, "textDocument/documentSymbol", { textDocument: { uri: doc.uri } }, token);
+        return (r || []).map(toSymbol);
+      },
+    });
+  if (caps.codeActionProvider) {
+    const kinds = caps.codeActionProvider.codeActionKinds;
+    L.registerCodeActionProvider(
+      language,
+      {
+        provideCodeActions: async (model, range, context, token) => {
+          const none = { actions: [], dispose() {} };
+          const doc = await ensureDoc(model);
+          if (!doc) return none;
+          // what the server said about here: its own diagnostics, as it sent them (some carry data it wants back)
+          const diags = (diagnostics.get(doc.uri) ?? []).filter((d: Json) => monaco.Range.areIntersectingOrTouching(toRange(d.range), range));
+          const r = await conn.request(
+            doc.server,
+            "textDocument/codeAction",
+            {
+              textDocument: { uri: doc.uri },
+              range: fromRange(range),
+              context: { diagnostics: diags, only: context.only ? [context.only] : undefined, triggerKind: context.trigger === monaco.languages.CodeActionTriggerType.Invoke ? 1 : 2 },
+            },
+            token,
+          );
+          if (!Array.isArray(r)) return none;
+          return { actions: r.map((a: Json) => toAction(a, model, doc.server)), dispose() {} };
+        },
+        resolveCodeAction: caps.codeActionProvider.resolveProvider
+          ? async (action: LspAction, token) => {
+              if (!action._lsp || !action._server || action._lsp.edit || typeof action._lsp.command === "string") return action;
+              const r = await conn.request(action._server, "codeAction/resolve", action._lsp, token);
+              const model = action._uri ? monaco.editor.getModel(monaco.Uri.parse(action._uri)) : null;
+              return r && model ? toAction(r, model, action._server) : action;
+            }
+          : undefined,
+      },
+      Array.isArray(kinds) ? { providedCodeActionKinds: kinds } : undefined,
+    );
+  }
   const st = caps.semanticTokensProvider;
   if (st?.legend && st.full) {
     const changed = new monaco.Emitter<void>();
@@ -553,6 +789,8 @@ editorBridge.closeFile = (path) => {
 
 /** Start language-server support for whatever file the editor shows (now and after model switches). */
 export function trackEditor(editor: Monaco.editor.ICodeEditor): Monaco.IDisposable {
+  fileEditors.add(editor);
+  editor.onDidDispose(() => fileEditors.delete(editor));
   const track = () => {
     const model = editor.getModel();
     if (!model || model.uri.scheme !== "file") return;

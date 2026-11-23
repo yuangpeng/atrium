@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.gzip import DEFAULT_EXCLUDED_CONTENT_TYPES, GZipMiddleware
 
-from . import __version__, changes, configfiles, fs, gitops, lsp, snapshots, voice
+from . import __version__, changes, configfiles, fs, gitops, lsp, search, snapshots, voice
 from .auth import AUTH_PATH, AuthMiddleware, auth
 from .auth import router as auth_router
 from .board import pages as board_pages
@@ -1000,6 +1000,28 @@ async def resolve_paths(pid: str, body: dict[str, Any] = Body(...)):
     paths = [str(p) for p in body.get("paths") or []]
     cwd = str(body["cwd"]) if body.get("cwd") else None
     return {"files": await asyncio.to_thread(fs.resolve_paths, P(pid), cwd, paths, bool(body.get("fresh")))}
+
+
+@app.post("/api/p/{pid}/file/stat")
+async def stat_files(pid: str, body: dict[str, Any] = Body(...)):
+    """Size and modification time of the files open in the editor (fs.stat_files): it asks every few seconds."""
+    items = [f for f in body.get("files") or [] if isinstance(f, dict)]
+    return {"stats": await asyncio.to_thread(fs.stat_files, P(pid), items)}
+
+
+@app.get("/api/p/{pid}/files/all")
+async def all_files(pid: str, root: str | None = None):
+    """A checkout's files, for quick open (search.list_files)."""
+    return await asyncio.to_thread(search.list_files, P(pid), root)
+
+
+@app.post("/api/p/{pid}/search")
+async def search_files(pid: str, body: dict[str, Any] = Body(...)):
+    """Find in Files (search.search). ``page``: the asking page's id, whose previous search this one stops."""
+    flags = {k: bool(body.get(k)) for k in ("regex", "case", "word", "ignored")}
+    return await search.search(P(pid), body.get("root") or None, str(body.get("query") or ""), include=str(body.get("include") or ""),
+                               exclude=str(body.get("exclude") or ""), limit=int(body.get("limit") or 1000), page=str(body.get("page") or "") or None,
+                               **flags)
 
 
 @app.get("/api/site/{key}/{path:path}")
