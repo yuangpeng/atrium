@@ -31,6 +31,7 @@ What an agent gets is decided in three places:
 
 The permission mode always comes from 1 or 2; the harness's own default mode isn't used.
 
+- [Recommended setup](#recommended-setup)
 - [Which file sets what](#which-file-sets-what)
 - [Atrium's settings.json](#atriums-settingsjson)
 - [Claude Code](#claude-code)
@@ -42,6 +43,73 @@ The permission mode always comes from 1 or 2; the harness's own default mode isn
 - [Files in a project](#files-in-a-project)
 - [Environment variables](#environment-variables)
 - [Checking your setup](#checking-your-setup)
+
+## Recommended setup
+
+The defaults are the recommended settings: agents start with full access ([permission modes](#permission-modes)),
+and the Tracker, the Code Review Agent and TODO agents run by themselves. Three things need keys of yours and are
+off until they have them: Atrium's web search, voice input and Tab completion. To have them, add this to
+`~/.atrium/settings.json`; nothing else needs changing:
+
+```json
+{
+  "web": {
+    "serper_api_key": "<Serper key>",
+    "jina_api_key": "<Jina key, optional>"
+  },
+  "voice": {
+    "base_url": "https://<your server>",
+    "api_key": "<its key>",
+    "asr_model": "doubao-seed-2-1-lite-260915",
+    "refine_model": "gpt-6-luna",
+    "refine_effort": "low"
+  },
+  "completion": {
+    "base_url": "https://<your server>",
+    "api_key": "<its key>",
+    "model": "gpt-6-luna",
+    "effort": "none"
+  }
+}
+```
+
+- `web`: a [Serper](https://serper.dev) key for `web.search`; a [Jina Reader](https://jina.ai/reader) key raises
+  `web.fetch`'s rate limits ([Web tools](#web-tools-and-mcp-servers)).
+- `voice` and `completion`: an OpenAI-compatible server with both models. Doubao Seed 2.1 Lite hears the recording
+  (through `/v1/chat/completions`); gpt-6-luna refines what it heard (`/v1/responses`) and suggests code
+  (`/v1/chat/completions`). Each section takes its own server and key, even when they are the same. A server that
+  routes models by a suffix (`<model>:<route>`) wants its own names for them. Other models:
+  [Voice input](#voice-input), [Editor and UI](#editor-and-ui).
+- Signing in to each harness is the harness's own: [Claude Code](#claude-code), [Codex](#codex),
+  [Antigravity](#antigravity), [Grok Build](#grok-build).
+
+**Having an agent do it**: tell one, say, *Set Atrium up as docs/configuration.md → Recommended setup says*. It should:
+
+1. Ask the human for the keys, the server, and, on a server that routes by suffix, its names for the two models.
+   Make none of them up. Leave out a part the human can't fill in (no placeholder goes into the file), and say
+   which one stays off.
+2. Merge the block into `$ATRIUM_HOME/settings.json` (`~/.atrium/settings.json`) key by key, leaving every other
+   key as it is: the file holds other settings and secrets of the human's, so don't write it anew. Copy it first to
+   `$ATRIUM_HOME/backups/atrium-<YYYYmmdd-HHMMSS>.json` (e.g. `atrium-20261123-223000.json`), named as ⚙ Settings
+   names its own copies, of which it keeps the latest 20 by name. Both files stay readable by their owner alone
+   (mode 600, which `cp` keeps); the settings file stays valid JSON.
+3. Any other key whose value in the file isn't [the default](#atriums-settingsjson) is the human's choice, or the
+   default of an older Atrium (the file holds a copy of the defaults of its first start): list them, and delete
+   those the human wants back at the default. A deleted key takes the current default.
+4. No restart: Atrium reads the file again when it changes. A page already open shows the mic and the Files
+   editor's ✦ switch after a reload. Web search reaches agents started afterwards: new ones, and ones woken up after
+   `sessions.idle_close_minutes` ([Web tools](#web-tools-and-mcp-servers)). A running agent, the one doing this
+   included, keeps the tools it started with, and its `web.search` still says it isn't configured.
+5. Check it, from the Atrium checkout (8787, or the port Atrium runs on):
+
+   ```bash
+   curl -s --noproxy '*' -H "Authorization: Bearer $(.venv/bin/atrium --token)" http://127.0.0.1:8787/api/meta
+   ```
+
+   Under `settings`, `_error` is `null`; `web.serper_api_key`, `voice.api_key` and `completion.api_key` read `true`
+   (`/api/meta` only says whether a key is set), the servers and models as written. Then the human records a
+   sentence with the mic, types in a code file in Files (when the model can't be reached, the ✦ switch's tip says
+   why), and has a new agent search the web.
 
 ## Which file sets what
 
@@ -72,7 +140,7 @@ The permission mode always comes from 1 or 2; the harness's own default mode isn
   it runs with its defaults until you add it.
 - **A file that isn't valid JSON is ignored**: the last good settings stay in use, and `/api/meta` shows
   the error as `settings._error`. ⚙ Settings doesn't save invalid JSON.
-- It holds secrets (the web keys, the voice key), so it is created with mode 600. `SERPER_API_KEY` and
+- It holds secrets (the web keys, the voice and completion keys), so it is created with mode 600. `SERPER_API_KEY` and
   `JINA_API_KEY` in Atrium's environment win over the file.
 
 The defaults:
@@ -95,10 +163,11 @@ The defaults:
   "web": {"serper_api_key": "", "jina_api_key": "", "replace_builtin_web_tools": true},
   "mcp_servers": {},
   "voice": {"base_url": "", "api_key": "", "asr_model": "", "refine_model": "", "refine_effort": "low"},
+  "completion": {"model": "", "base_url": "", "api_key": "", "effort": "none", "max_per_minute": 40, "next_edit": true},
   "lsp": {"enabled": true, "commands": {}, "python": {"typeCheckingMode": "standard"}},
   "terminal": {"enabled": true, "shell": ""},
   "capture": {"enabled": true, "max_mb": 1024},
-  "ui": {"theme": "system", "auto_save": true}
+  "ui": {"theme": "system", "auto_save": true, "completion": true}
 }
 ```
 
@@ -253,20 +322,9 @@ in as heard. A recording stops by itself after 5 minutes.
 | `voice.refine_model` | `""` | The model that refines the transcript, through the Responses API. `""` = the transcript goes in as heard. |
 | `voice.refine_effort` | `"low"` | Its reasoning effort, one the model takes (`minimal`, `low`, `medium`, `high`…); low keeps dictation quick. A model without reasoning that refuses it is asked again without it, and sent none until Atrium restarts; `""` sends none at all. |
 
-Recommended: Doubao Seed 2.1 Lite to hear (it takes the chat route), gpt-6-luna to refine, at `low`:
-
-```json
-"voice": {
-  "base_url": "https://<your server>",
-  "api_key": "…",
-  "asr_model": "doubao-seed-2-1-lite-260915",
-  "refine_model": "gpt-6-luna",
-  "refine_effort": "low"
-}
-```
-
-On one such server a 13 s recording took 3–5 s to transcribe and 2–3 s to refine. A server that routes models by
-a suffix (`<model>:<route>`) wants its own names for them here.
+Recommended: Doubao Seed 2.1 Lite to hear (it takes the chat route), gpt-6-luna to refine, at `low`: the `voice`
+part of the [recommended setup](#recommended-setup). On one such server a 13 s recording took 3–5 s to transcribe
+and 2–3 s to refine. A server that routes models by a suffix (`<model>:<route>`) wants its own names for them here.
 
 Browsers give the microphone only to secure pages: Atrium opened over HTTPS, or on `localhost`. Opened as
 `http://<address>` from a phone, the mic says so instead of recording. The first recording asks for the
@@ -282,7 +340,7 @@ microphone; if that was denied, allow it in the browser's settings for the site.
 | `ui.theme` | `"system"` | Not read: the browser remembers the rail's theme switch. |
 | `ui.auto_save` | `true` | The Files editor, and the editable side of a diff in Changes (by agent, and the working tree), save a file a moment (1 s) after you stop typing, and at once when you switch to another file or panel, close its tab or leave the page. The toggle beside the lock in the editor's bar sets it. `false`: ⌘S or the Save button saves. Either way, a file that changed on disk meanwhile isn't overwritten: the editor asks. A binary or deleted file's side of a diff is read-only. |
 | `ui.completion` | `true` | Inline completion in the Files editor (below), once `completion.model` is set. The ✦ switch in the editor's bar sets it. |
-| `completion.model` | `""` | The model that suggests code as you type, through `/v1/chat/completions`. `""` = no inline completion. |
+| `completion.model` | `""` | The model that suggests code as you type, through `/v1/chat/completions`. `""` = no inline completion. Recommended: `gpt-6-luna` ([recommended setup](#recommended-setup)). |
 | `completion.base_url` | `""` | Its server, with or without `/v1`, as `voice.base_url`; nothing is taken from `voice`, so set it even when the two are the same. |
 | `completion.api_key` | `""` | Sent as `Authorization: Bearer …`; not sent when empty. Its own, like the server: `voice.api_key` isn't used. `/api/meta` only says whether it is set. |
 | `completion.max_per_minute` | `40` | Requests to the model a minute at most (`0`: no limit). Keep it under what the server allows: one gateway allows 50 a minute per model and key, shared with everything else that uses them. A request goes at a pause in the typing (0.3 s), and none while one on its way may still hold the answer; past three quarters of the limit, nothing is asked for ahead; at the limit, no suggestions until a minute has passed. When the server itself says it is asked too often (429), none until the time it gives; the ✦ switch says so. |

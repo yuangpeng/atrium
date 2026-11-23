@@ -26,6 +26,7 @@ Atrium 只有一个属于自己的配置文件：`~/.atrium/settings.json`。其
 
 权限模式永远来自 1 或 2，harness 自己配置的默认模式不起作用。
 
+- [推荐配置](#推荐配置)
 - [哪个文件管什么](#哪个文件管什么)
 - [Atrium 的 settings.json](#atrium-的-settingsjson)
 - [Claude Code](#claude-code)
@@ -37,6 +38,67 @@ Atrium 只有一个属于自己的配置文件：`~/.atrium/settings.json`。其
 - [项目里的文件](#项目里的文件)
 - [环境变量](#环境变量)
 - [检查配置](#检查配置)
+
+## 推荐配置
+
+默认值就是推荐的设置：agent 一开始就有完全权限（见[权限模式](#权限模式)），Tracker、Code Review Agent 和
+TODO agent 自动运行。有三样要用你自己的 key，没有 key 时是关着的：Atrium 的网页搜索、语音输入和 Tab 补全。
+要打开它们，在 `~/.atrium/settings.json` 里加上下面这些，其它都不用改：
+
+```json
+{
+  "web": {
+    "serper_api_key": "<Serper 的 key>",
+    "jina_api_key": "<Jina 的 key，可不填>"
+  },
+  "voice": {
+    "base_url": "https://<你的服务器>",
+    "api_key": "<它的 key>",
+    "asr_model": "doubao-seed-2-1-lite-260915",
+    "refine_model": "gpt-6-luna",
+    "refine_effort": "low"
+  },
+  "completion": {
+    "base_url": "https://<你的服务器>",
+    "api_key": "<它的 key>",
+    "model": "gpt-6-luna",
+    "effort": "none"
+  }
+}
+```
+
+- `web`：`web.search` 用 [Serper](https://serper.dev) 的 key；[Jina Reader](https://jina.ai/reader) 的 key 提高
+  `web.fetch` 的频率限制（见 [Web 工具](#web-工具与-mcp-服务器)）。
+- `voice` 和 `completion`：一台同时提供这两个模型的 OpenAI 兼容服务器。Doubao Seed 2.1 Lite 听录音（走
+  `/v1/chat/completions`）；gpt-6-luna 改写听到的内容（走 `/v1/responses`），也给出代码建议（走
+  `/v1/chat/completions`）。两段各写各的服务器和 key，相同也要都写上。按后缀路由模型的服务器（`<模型>:<路由>`）
+  要写它自己的模型名。换别的模型：见[语音输入](#语音输入)和[编辑器与界面](#编辑器与界面)。
+- 各个 harness 的登录在它们自己那里：见 [Claude Code](#claude-code)、[Codex](#codex)、[Antigravity](#antigravity)、
+  [Grok Build](#grok-build)。
+
+**交给 agent 来配**：对它说，比如“按 docs/configuration.zh-CN.md 的「推荐配置」配置 Atrium”。它应当：
+
+1. 向用户要 key、服务器地址；服务器按后缀路由时，再要这两个模型在它那里的名字。一个都不要自己编。用户填不了的
+   那一段整段不写（不要把占位符写进文件），并告诉用户哪一项因此不能用。
+2. 把这段按 key 合并进 `$ATRIUM_HOME/settings.json`（即 `~/.atrium/settings.json`），其它 key 原样保留：文件里还有
+   用户别的设置和密钥，不要整个重写。改之前先复制一份到 `$ATRIUM_HOME/backups/atrium-<YYYYmmdd-HHMMSS>.json`
+   （例如 `atrium-20261123-223000.json`）：和 ⚙ Settings 自己的备份同样命名，它按文件名只保留最新的 20 份。两个文件
+   都只有主人可读（权限 600，用 `cp` 复制会保留）；settings.json 改完仍是合法 JSON。
+3. 除此之外，文件里值和[默认值](#atrium-的-settingsjson)不同的 key，要么是用户自己选的，要么是旧版 Atrium 的
+   默认值（文件里存的是首次启动时那一版默认值）：列给用户看，用户想恢复默认的就删掉。删掉的 key 会用当前的默认值。
+4. 不用重启：文件一变，Atrium 就会重新读取。已经打开的页面要刷新，才会出现麦克风和 Files 编辑器的 ✦ 开关。网页搜索
+   只对之后启动的 agent 生效：新建的，以及闲置 `sessions.idle_close_minutes` 后被重新唤醒的（见
+   [Web 工具](#web-工具与-mcp-服务器)）。正在运行的 agent（包括正在做这次配置的那个）用的还是启动时拿到的工具，
+   它的 `web.search` 仍会说没有配置。
+5. 检查：在 Atrium 目录里运行（端口是 8787，或 Atrium 实际用的那个）：
+
+   ```bash
+   curl -s --noproxy '*' -H "Authorization: Bearer $(.venv/bin/atrium --token)" http://127.0.0.1:8787/api/meta
+   ```
+
+   `settings` 下 `_error` 为 `null`；`web.serper_api_key`、`voice.api_key`、`completion.api_key` 显示 `true`
+   （`/api/meta` 只报告 key 设没设），服务器和模型名照原样显示。然后请用户用麦克风录一句话；在 Files 里打开一个
+   代码文件打几个字（连不上模型时，✦ 开关的提示会说明原因）；再新建一个 agent，让它搜一次网页。
 
 ## 哪个文件管什么
 
@@ -64,7 +126,7 @@ Atrium 只有一个属于自己的配置文件：`~/.atrium/settings.json`。其
   不在你的文件里，在你手动加上之前按默认值运行。
 - **不是合法 JSON 的文件会被忽略**：继续用上一次读到的正确配置，`/api/meta` 在 `settings._error` 里给出
   错误。⚙ Settings 不会保存不合法的 JSON。
-- 文件里有密钥（web 工具的 key、语音输入的 key），所以创建时权限是 600。Atrium 环境变量里的
+- 文件里有密钥（web 工具的 key、语音输入和补全的 key），所以创建时权限是 600。Atrium 环境变量里的
   `SERPER_API_KEY` 和 `JINA_API_KEY` 优先于文件。
 
 默认值：
@@ -87,10 +149,11 @@ Atrium 只有一个属于自己的配置文件：`~/.atrium/settings.json`。其
   "web": {"serper_api_key": "", "jina_api_key": "", "replace_builtin_web_tools": true},
   "mcp_servers": {},
   "voice": {"base_url": "", "api_key": "", "asr_model": "", "refine_model": "", "refine_effort": "low"},
+  "completion": {"model": "", "base_url": "", "api_key": "", "effort": "none", "max_per_minute": 40, "next_edit": true},
   "lsp": {"enabled": true, "commands": {}, "python": {"typeCheckingMode": "standard"}},
   "terminal": {"enabled": true, "shell": ""},
   "capture": {"enabled": true, "max_mb": 1024},
-  "ui": {"theme": "system", "auto_save": true}
+  "ui": {"theme": "system", "auto_save": true, "completion": true}
 }
 ```
 
@@ -235,20 +298,9 @@ TODO；需要你处理时，它会报告等你。harness、模型和 effort 在 
 | `voice.refine_model` | `""` | 改写转写结果的模型，走 Responses API。`""` = 直接放入听到的原文。 |
 | `voice.refine_effort` | `"low"` | 它的推理强度，取模型支持的值（`minimal`、`low`、`medium`、`high`……）；low 让听写保持快速。不带推理的模型拒绝这个参数时，会去掉它再请求一次，之后直到 Atrium 重启都不再发送；`""` = 一开始就不发送。 |
 
-推荐配置：用 Doubao Seed 2.1 Lite 听写（它走 chat 那条路），用 gpt-6-luna 以 `low` 改写：
-
-```json
-"voice": {
-  "base_url": "https://<你的服务器>",
-  "api_key": "…",
-  "asr_model": "doubao-seed-2-1-lite-260915",
-  "refine_model": "gpt-6-luna",
-  "refine_effort": "low"
-}
-```
-
-在一台这样的服务器上实测：13 秒的录音，转写 3–5 秒，改写 2–3 秒。按后缀路由模型的服务器（`<模型>:<路由>`）
-这里要写它自己的模型名。
+推荐：用 Doubao Seed 2.1 Lite 听写（它走 chat 那条路），用 gpt-6-luna 以 `low` 改写，即[推荐配置](#推荐配置)里的
+`voice` 一段。在一台这样的服务器上实测：13 秒的录音，转写 3–5 秒，改写 2–3 秒。按后缀路由模型的服务器
+（`<模型>:<路由>`）这里要写它自己的模型名。
 
 浏览器只把麦克风给安全的页面：通过 HTTPS 打开的 Atrium，或 `localhost`。在手机上以 `http://<地址>` 打开时，
 麦克风会提示这一点，而不会录音。第一次录音时浏览器会请求麦克风权限；如果被拒绝了，到浏览器里这个网站的
@@ -264,7 +316,7 @@ TODO；需要你处理时，它会报告等你。harness、模型和 effort 在 
 | `ui.theme` | `"system"` | 不会被读取：侧边栏主题开关的选择由浏览器记住。 |
 | `ui.auto_save` | `true` | Files 编辑器，以及 Changes 里 diff 可编辑的一侧（按 agent 看和 Working tree），在你停止输入片刻（1 秒）后自动保存；切换到别的文件或面板、关掉标签页、离开页面时立即保存。编辑器工具栏里锁旁边的开关改的就是它。`false`：用 ⌘S 或保存按钮保存。无论开关如何，文件在此期间如果已在磁盘上被改过，都不会被覆盖，编辑器会先问你。二进制文件和已删除的文件，在 diff 里那一侧是只读的。 |
 | `ui.completion` | `true` | Files 编辑器的行内补全（见下文），设了 `completion.model` 才有。编辑器工具栏里的 ✦ 开关改的就是它。 |
-| `completion.model` | `""` | 边打字边给出代码建议的模型，走 `/v1/chat/completions`。`""` = 没有行内补全。 |
+| `completion.model` | `""` | 边打字边给出代码建议的模型，走 `/v1/chat/completions`。`""` = 没有行内补全。推荐 `gpt-6-luna`（见[推荐配置](#推荐配置)）。 |
 | `completion.base_url` | `""` | 它的服务器，带不带 `/v1` 都行，写法同 `voice.base_url`；不会沿用 `voice` 的设置，两者相同也要写上。 |
 | `completion.api_key` | `""` | 以 `Authorization: Bearer …` 发送，为空时不发。和服务器一样是它自己的，不用 `voice.api_key`。`/api/meta` 只说明是否已设置。 |
 | `completion.max_per_minute` | `40` | 每分钟最多向模型发多少个请求（`0`：不限）。要低于服务器允许的量：某个网关对每个模型、每个 key 限 50 次/分钟，而且和用同一模型、同一 key 的其它东西共用。打字停顿（0.3 秒）时才发请求，已经在路上、可能给出答案的请求没回来之前不再发新的；用到四分之三后不再预取；到上限后一分钟内不再给建议。服务器自己回 429（请求太频繁）时，按它给的时间暂停，✦ 开关上会显示。 |

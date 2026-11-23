@@ -225,7 +225,9 @@ a relay or any OpenAI-compatible endpoint is a custom model in its `~/.grok/conf
 
 How to configure Atrium and each harness — which file sets what, sign-in and relays, the defaults new
 agents get, MCP servers, instructions: [docs/configuration.md](docs/configuration.md)
-([中文](docs/configuration.zh-CN.md)).
+([中文](docs/configuration.zh-CN.md)). Web search, voice input and Tab completion need keys of yours:
+[Recommended setup](docs/configuration.md#recommended-setup) ([中文](docs/configuration.zh-CN.md#推荐配置)) has the
+settings, and the steps for an agent to set them up for you.
 
 ```bash
 make install          # python venv + npm deps
